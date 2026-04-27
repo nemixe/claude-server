@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildAgentOptions } from "../src/agent-service.js";
+import { buildAgentOptions, buildAgentPrompt } from "../src/agent-service.js";
 import { buildSandboxSettings } from "../src/sandbox.js";
 import type { SessionMetadata } from "../src/types.js";
 import { createTempConfig } from "./helpers.js";
@@ -44,5 +44,35 @@ describe("sandbox and agent options", () => {
     expect(bypassOptions.allowDangerouslySkipPermissions).toBe(true);
     expect(bypassOptions.resume).toBe(session.id);
     expect(bypassOptions.sessionId).toBeUndefined();
+  });
+
+  it("maps text and image requests to Agent SDK prompt shapes", async () => {
+    const textPrompt = buildAgentPrompt({ prompt: "inspect" });
+    expect(textPrompt).toBe("inspect");
+
+    const imagePrompt = buildAgentPrompt({
+      prompt: "describe this",
+      images: [{ mediaType: "image/png", dataBase64: "aGVsbG8=", name: "pixel.png" }]
+    });
+    expect(typeof imagePrompt).not.toBe("string");
+
+    const messages = [];
+    for await (const message of imagePrompt as AsyncIterable<Record<string, unknown>>) {
+      messages.push(message);
+    }
+
+    expect(messages).toEqual([
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } }
+          ]
+        },
+        parent_tool_use_id: null
+      }
+    ]);
   });
 });

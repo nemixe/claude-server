@@ -1,7 +1,9 @@
-import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AppConfig } from "./config.js";
 import { buildSafeAgentEnv, buildSandboxSettings } from "./sandbox.js";
 import type { ClaudeMode, NormalizedAgentEvent, SessionMetadata, StreamMessageRequest } from "./types.js";
+
+export type AgentPrompt = string | AsyncIterable<SDKUserMessage>;
 
 export type AgentQuery = AsyncIterable<unknown> & {
   interrupt?: () => Promise<void>;
@@ -9,7 +11,7 @@ export type AgentQuery = AsyncIterable<unknown> & {
 };
 
 export type AgentSdkAdapter = {
-  query: (input: { prompt: string; options: Record<string, unknown> }) => AgentQuery;
+  query: (input: { prompt: AgentPrompt; options: Record<string, unknown> }) => AgentQuery;
   getSessionMessages: (sessionId: string, options?: { dir?: string; limit?: number; offset?: number }) => Promise<unknown[]>;
 };
 
@@ -52,7 +54,7 @@ export class AgentService {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), this.config.runTimeoutMs);
     const options = buildAgentOptions(this.config, input.session, input.request, abortController);
-    const agentQuery = this.adapter.query({ prompt: input.request.prompt, options });
+    const agentQuery = this.adapter.query({ prompt: buildAgentPrompt(input.request), options });
     const activeRun: ActiveRun = { query: agentQuery, abortController, observers: new Set() };
     this.activeRuns.set(input.session.id, activeRun);
 
@@ -203,6 +205,37 @@ export function buildAgentOptions(
     sandbox: buildSandboxSettings(config, session.workspacePath),
     disallowedTools: mode === "plan" ? ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"] : []
   };
+}
+
+export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
+  if (!request.images || request.images.length === 0) {
+    return request.prompt;
+  }
+
+  const message: SDKUserMessage = {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: request.prompt },
+        ...request.images.map((image) => ({
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: image.mediaType,
+            data: image.dataBase64
+          }
+        }))
+      ]
+    },
+    parent_tool_use_id: null
+  };
+
+  return singleMessagePrompt(message);
+}
+
+async function* singleMessagePrompt(message: SDKUserMessage): AsyncGenerator<SDKUserMessage> {
+  yield message;
 }
 
 function permissionModeFor(mode: ClaudeMode): string {

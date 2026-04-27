@@ -36,4 +36,30 @@ describe("browser client", () => {
       })
     );
   });
+
+  it("serializes image prompts for streaming requests", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response("event: done\ndata: {\"ok\":true}\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await client.streamMessage("s1", {
+      prompt: "describe this",
+      images: [{ name: "pixel.png", mediaType: "image/png", dataBase64: "aGVsbG8=" }]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/sessions/s1/messages:stream",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          prompt: "describe this",
+          images: [{ name: "pixel.png", mediaType: "image/png", dataBase64: "aGVsbG8=" }]
+        })
+      })
+    );
+  });
 });

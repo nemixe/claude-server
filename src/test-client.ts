@@ -152,16 +152,76 @@ export function renderTestClient(): string {
         opacity: 0.55;
       }
 
-      pre {
+      .events {
         min-height: 520px;
         max-height: 72vh;
-        margin: 0;
         padding: 16px;
         overflow: auto;
         border-top: 1px solid var(--line);
         background: var(--event);
+      }
+
+      .event-entry {
+        margin: 0 0 12px;
+        padding: 12px;
+        border: 1px solid rgba(15, 107, 95, 0.16);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.62);
+      }
+
+      .event-entry:last-child {
+        margin-bottom: 0;
+      }
+
+      .event-title {
+        margin-bottom: 8px;
+        color: var(--accent-dark);
+        font-size: 12px;
+      }
+
+      .event-entry pre {
+        margin: 0;
+        overflow: auto;
         white-space: pre-wrap;
         word-break: break-word;
+        font: inherit;
+      }
+
+      .image-picker {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .image-previews {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+        gap: 8px;
+      }
+
+      .image-preview {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+      }
+
+      .image-preview img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+        background: #f1eee7;
+      }
+
+      .image-preview span {
+        display: block;
+        padding: 7px 8px;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .toolbar {
@@ -270,6 +330,12 @@ export function renderTestClient(): string {
               <textarea id="prompt">Inspect the current workspace and summarize what you can do.</textarea>
             </label>
 
+            <label class="image-picker">
+              Images
+              <input id="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple />
+              <div class="image-previews" id="selectedImages"></div>
+            </label>
+
             <div class="actions">
               <button id="send" type="submit">Send</button>
               <button id="interrupt" class="danger" type="button" disabled>Interrupt</button>
@@ -286,7 +352,7 @@ export function renderTestClient(): string {
               <span class="session" id="session">No session</span>
             </span>
           </div>
-          <pre id="events"></pre>
+          <div id="events" class="events"></div>
         </section>
       </div>
     </main>
@@ -306,10 +372,16 @@ export function renderTestClient(): string {
       const modeInput = document.querySelector("#mode");
       const maxTurnsInput = document.querySelector("#maxTurns");
       const promptInput = document.querySelector("#prompt");
+      const imagesInput = document.querySelector("#images");
+      const selectedImagesEl = document.querySelector("#selectedImages");
 
       const storageKey = "claude-test-client:last-session";
+      const imageMediaTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+      const maxImages = 5;
+      const maxImageBytes = 5 * 1024 * 1024;
       let sessionId = "";
       let sessions = [];
+      let selectedImages = [];
       let controller;
       let observeController;
       let isSending = false;
@@ -321,6 +393,19 @@ export function renderTestClient(): string {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         await runPrompt();
+      });
+
+      imagesInput.addEventListener("change", async () => {
+        selectedImages = [];
+        selectedImagesEl.textContent = "";
+
+        try {
+          selectedImages = await readPromptImages(imagesInput.files || []);
+          renderSelectedImages();
+        } catch (error) {
+          imagesInput.value = "";
+          appendEntry("client_error", String(error && error.message ? error.message : error));
+        }
       });
 
       interruptButton.addEventListener("click", async () => {
@@ -367,7 +452,12 @@ export function renderTestClient(): string {
           }
 
           stopObserving();
-          appendEntry("prompt", { prompt: promptInput.value, mode: modeInput.value });
+          const images = selectedImages.map((image) => ({
+            name: image.name,
+            mediaType: image.mediaType,
+            dataBase64: image.dataBase64
+          }));
+          appendEntry("prompt", { prompt: promptInput.value, mode: modeInput.value, images });
 
           const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(sessionId) + "/messages:stream"), {
             method: "POST",
@@ -375,6 +465,7 @@ export function renderTestClient(): string {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               prompt: promptInput.value,
+              ...(images.length > 0 ? { images } : {}),
               mode: modeInput.value,
               maxTurns: Number(maxTurnsInput.value || 30)
             })
@@ -386,12 +477,14 @@ export function renderTestClient(): string {
 
           await readSse(response.body);
           statusEl.textContent = "Complete";
-          await loadSessionView(sessionId, "history_refreshed");
+          clearSelectedImages();
+          await loadSessions({ restoreSaved: false });
+          observeSession(sessionId);
         } catch (error) {
           statusEl.textContent = "Error";
           appendEntry("client_error", String(error && error.message ? error.message : error));
           if (sessionId) {
-            await loadSessionView(sessionId, "history_refreshed");
+            observeSession(sessionId);
           }
         } finally {
           isSending = false;
@@ -477,25 +570,33 @@ export function renderTestClient(): string {
       }
 
       async function observeSession(id) {
-        observeController = new AbortController();
+        stopObserving();
+        const controller = new AbortController();
+        observeController = controller;
 
         try {
           const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(id) + "/events:stream"), {
-            signal: observeController.signal
+            signal: controller.signal
           });
 
           if (!response.ok || !response.body) {
             throw new Error(await response.text());
           }
 
-          await readSse(response.body);
+          await readSse(response.body, "observer");
         } catch (error) {
-          if (!observeController || observeController.signal.aborted) return;
+          if (controller.signal.aborted) return;
           appendEntry("client_error", "Could not observe session events: " + String(error && error.message ? error.message : error));
+        } finally {
+          if (observeController === controller) {
+            observeController = undefined;
+            isObservedRunning = false;
+            setBusy();
+          }
         }
       }
 
-      async function readSse(body) {
+      async function readSse(body, source) {
         const reader = body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -506,14 +607,14 @@ export function renderTestClient(): string {
           buffer += decoder.decode(chunk.value, { stream: true });
           const parts = buffer.split(/\\r?\\n\\r?\\n/);
           buffer = parts.pop() || "";
-          for (const part of parts) emitSse(part);
+          for (const part of parts) emitSse(part, source);
         }
 
         buffer += decoder.decode();
-        if (buffer.trim()) emitSse(buffer);
+        if (buffer.trim()) emitSse(buffer, source);
       }
 
-      function emitSse(raw) {
+      function emitSse(raw, source) {
         let event = "message";
         const data = [];
 
@@ -532,9 +633,14 @@ export function renderTestClient(): string {
           setBusy();
           return;
         }
-        if (event === "done" && parsed && parsed.observing === false) return;
-        if (event === "done") {
-          isObservedRunning = false;
+        if (event === "done" && source === "observer") {
+          if (parsed && parsed.observing === false) {
+            isObservedRunning = false;
+            setBusy();
+            return;
+          }
+        }
+        if (event === "done" && source !== "observer") {
           setBusy();
         }
         appendEntry(event, parsed);
@@ -550,8 +656,171 @@ export function renderTestClient(): string {
 
       function appendEntry(type, data) {
         const now = new Date().toLocaleTimeString();
-        eventsEl.textContent += "[" + now + "] " + type + "\\n" + JSON.stringify(data, null, 2) + "\\n\\n";
+        const entry = document.createElement("article");
+        entry.className = "event-entry";
+
+        const title = document.createElement("div");
+        title.className = "event-title";
+        title.textContent = "[" + now + "] " + type;
+        entry.append(title);
+
+        const pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(redactImageData(data), null, 2);
+        entry.append(pre);
+
+        const images = extractImageBlocks(data);
+        if (images.length > 0) {
+          entry.append(renderImageGrid(images));
+        }
+
+        eventsEl.append(entry);
         eventsEl.scrollTop = eventsEl.scrollHeight;
+      }
+
+      async function readPromptImages(fileList) {
+        const files = Array.from(fileList);
+        if (files.length > maxImages) throw new Error("Choose " + maxImages + " images or fewer");
+
+        return Promise.all(
+          files.map(async (file) => {
+            if (!imageMediaTypes.has(file.type)) throw new Error(file.name + " is not a supported image type");
+            if (file.size > maxImageBytes) throw new Error(file.name + " is larger than 5 MB");
+
+            const dataUrl = await readAsDataUrl(file);
+            const commaIndex = dataUrl.indexOf(",");
+            return {
+              name: file.name,
+              mediaType: file.type,
+              size: file.size,
+              previewUrl: dataUrl,
+              dataBase64: commaIndex === -1 ? dataUrl : dataUrl.slice(commaIndex + 1)
+            };
+          })
+        );
+      }
+
+      function readAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.addEventListener("load", () => resolve(String(reader.result || "")));
+          reader.addEventListener("error", () => reject(reader.error || new Error("Could not read image")));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function renderSelectedImages() {
+        selectedImagesEl.textContent = "";
+        if (selectedImages.length === 0) return;
+        const grid = renderImageGrid(
+          selectedImages.map((image) => ({
+            name: image.name,
+            mediaType: image.mediaType,
+            size: image.size,
+            dataBase64: image.dataBase64
+          }))
+        );
+        selectedImagesEl.replaceChildren(...Array.from(grid.children));
+      }
+
+      function clearSelectedImages() {
+        selectedImages = [];
+        imagesInput.value = "";
+        selectedImagesEl.textContent = "";
+      }
+
+      function renderImageGrid(images) {
+        const grid = document.createElement("div");
+        grid.className = "image-previews";
+
+        for (const image of images) {
+          const item = document.createElement("figure");
+          item.className = "image-preview";
+
+          if (image.dataBase64 && image.mediaType) {
+            const img = document.createElement("img");
+            img.alt = image.name || image.mediaType;
+            img.src = "data:" + image.mediaType + ";base64," + image.dataBase64;
+            item.append(img);
+          }
+
+          const caption = document.createElement("span");
+          caption.textContent = [image.name || image.mediaType, formatBytes(image.size)].filter(Boolean).join(" - ");
+          item.append(caption);
+          grid.append(item);
+        }
+
+        return grid;
+      }
+
+      function extractImageBlocks(value) {
+        const images = [];
+        const seen = new Set();
+
+        function visit(node) {
+          if (!node || typeof node !== "object") return;
+          if (Array.isArray(node)) {
+            for (const item of node) visit(item);
+            return;
+          }
+
+          if (node.type === "image" && node.source && node.source.type === "base64" && node.source.data && node.source.media_type) {
+            const key = node.source.media_type + ":" + node.source.data.slice(0, 40);
+            if (!seen.has(key)) {
+              seen.add(key);
+              images.push({
+                mediaType: node.source.media_type,
+                dataBase64: node.source.data,
+                size: estimateBase64Bytes(node.source.data)
+              });
+            }
+          }
+
+          if (node.mediaType && node.dataBase64) {
+            const key = node.mediaType + ":" + node.dataBase64.slice(0, 40);
+            if (!seen.has(key)) {
+              seen.add(key);
+              images.push({
+                name: node.name,
+                mediaType: node.mediaType,
+                dataBase64: node.dataBase64,
+                size: node.size || estimateBase64Bytes(node.dataBase64)
+              });
+            }
+          }
+
+          for (const item of Object.values(node)) visit(item);
+        }
+
+        visit(value);
+        return images;
+      }
+
+      function redactImageData(value) {
+        if (!value || typeof value !== "object") return value;
+        if (Array.isArray(value)) return value.map(redactImageData);
+
+        const copy = {};
+        for (const [key, item] of Object.entries(value)) {
+          if ((key === "data" || key === "dataBase64") && typeof item === "string" && item.length > 80) {
+            copy[key] = "[base64 image data redacted, " + formatBytes(estimateBase64Bytes(item)) + "]";
+          } else {
+            copy[key] = redactImageData(item);
+          }
+        }
+        return copy;
+      }
+
+      function estimateBase64Bytes(value) {
+        const clean = String(value).replace(/^data:image\\/[^;]+;base64,/i, "").replace(/\\s/g, "");
+        const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+        return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
+      }
+
+      function formatBytes(value) {
+        if (!Number.isFinite(value)) return "";
+        if (value < 1024) return value + " B";
+        if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KB";
+        return (value / (1024 * 1024)).toFixed(1) + " MB";
       }
 
       function apiPath(path) {

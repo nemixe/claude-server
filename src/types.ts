@@ -8,6 +8,12 @@ export type UploadedFile = {
   contentBase64?: string;
 };
 
+export type PromptImage = {
+  name?: string;
+  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  dataBase64: string;
+};
+
 export type SessionMetadata = {
   id: string;
   title?: string;
@@ -35,6 +41,7 @@ export type NormalizedAgentEvent = {
 
 export type StreamMessageRequest = {
   prompt: string;
+  images?: PromptImage[];
   mode?: ClaudeMode;
   model?: string;
   maxTurns?: number;

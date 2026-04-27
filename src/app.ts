@@ -6,7 +6,11 @@ import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { SessionStore } from "./session-store.js";
 import { renderTestClient } from "./test-client.js";
-import { CLAUDE_MODES, type PublicSession, type SessionMetadata } from "./types.js";
+import { CLAUDE_MODES, type PromptImage, type PublicSession, type SessionMetadata } from "./types.js";
+
+const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
+const MAX_PROMPT_IMAGES = 5;
+const MAX_PROMPT_IMAGE_BYTES = 5 * 1024 * 1024;
 
 export type AppDependencies = {
   config: AppConfig;
@@ -28,8 +32,28 @@ const createSessionSchema = z.object({
     .optional()
 });
 
+const promptImageSchema = z
+  .object({
+    name: z.string().min(1).max(255).optional(),
+    mediaType: z.enum(IMAGE_MEDIA_TYPES),
+    dataBase64: z.string().min(1)
+  })
+  .transform((image, context): PromptImage => {
+    const normalized = normalizePromptImage(image);
+    if (!normalized.ok) {
+      context.addIssue({
+        code: "custom",
+        path: ["dataBase64"],
+        message: normalized.message
+      });
+      return z.NEVER;
+    }
+    return normalized.image;
+  });
+
 const streamMessageSchema = z.object({
   prompt: z.string().min(1),
+  images: z.array(promptImageSchema).max(MAX_PROMPT_IMAGES).optional(),
   mode: z.enum(CLAUDE_MODES).optional(),
   model: z.string().min(1).optional(),
   maxTurns: z.number().int().positive().optional()
@@ -173,5 +197,42 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     hasRun: session.hasRun
+  };
+}
+
+function normalizePromptImage(image: PromptImage): { ok: true; image: PromptImage } | { ok: false; message: string } {
+  const dataUrlMatch = image.dataBase64.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,(.*)$/is);
+  const mediaTypeFromDataUrl = dataUrlMatch?.[1]?.toLowerCase();
+  const base64 = (dataUrlMatch ? dataUrlMatch[2] : image.dataBase64).replace(/\s/g, "");
+
+  if (mediaTypeFromDataUrl && mediaTypeFromDataUrl !== image.mediaType) {
+    return { ok: false, message: `Image data URL media type ${mediaTypeFromDataUrl} does not match ${image.mediaType}` };
+  }
+
+  if (!base64 || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length % 4 === 1) {
+    return { ok: false, message: "Image dataBase64 must be valid base64" };
+  }
+
+  const buffer = Buffer.from(base64, "base64");
+  if (buffer.length === 0) {
+    return { ok: false, message: "Image dataBase64 must decode to bytes" };
+  }
+
+  const canonical = buffer.toString("base64").replace(/=+$/, "");
+  const comparable = base64.replace(/=+$/, "");
+  if (canonical !== comparable) {
+    return { ok: false, message: "Image dataBase64 must be valid base64" };
+  }
+
+  if (buffer.length > MAX_PROMPT_IMAGE_BYTES) {
+    return { ok: false, message: "Image must be 5 MB or smaller" };
+  }
+
+  return {
+    ok: true,
+    image: {
+      ...image,
+      dataBase64: base64
+    }
   };
 }
