@@ -1,4 +1,4 @@
-import type { ClaudeMode, SessionMetadata, StreamMessageRequest, UploadedFile } from "./types.js";
+import type { ClaudeMode, PublicSession, StreamMessageRequest, UploadedFile } from "./types.js";
 
 export type ClaudeClientOptions = {
   baseUrl: string;
@@ -11,11 +11,7 @@ export type CreateClientSessionRequest = {
   files?: UploadedFile[];
 };
 
-export type CreatedSession = {
-  sessionId: string;
-  mode: ClaudeMode;
-  createdAt: string;
-};
+export type CreatedSession = PublicSession;
 
 export type ClientSseEvent = {
   event: string;
@@ -83,8 +79,8 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       await readSseStream(response.body, handlers);
     },
 
-    listSessions(): Promise<{ sessions: SessionMetadata[] }> {
-      return requestJson<{ sessions: SessionMetadata[] }>("/v1/sessions");
+    listSessions(): Promise<{ sessions: PublicSession[] }> {
+      return requestJson<{ sessions: PublicSession[] }>("/v1/sessions");
     },
 
     getMessages(sessionId: string): Promise<{ messages: unknown[] }> {

@@ -18,6 +18,12 @@ export type AgentRunInput = {
   request: StreamMessageRequest;
 };
 
+type ActiveRun = {
+  query: AgentQuery;
+  abortController: AbortController;
+  observers: Set<EventQueue<NormalizedAgentEvent>>;
+};
+
 export const defaultAgentSdkAdapter: AgentSdkAdapter = {
   query: (input) => query(input as never) as AgentQuery,
   getSessionMessages: (sessionId, options) => getSessionMessages(sessionId, options) as Promise<unknown[]>
@@ -31,7 +37,7 @@ export class ConcurrencyLimitError extends Error {
 }
 
 export class AgentService {
-  private readonly activeRuns = new Map<string, { query: AgentQuery; abortController: AbortController }>();
+  private readonly activeRuns = new Map<string, ActiveRun>();
 
   constructor(
     private readonly config: AppConfig,
@@ -47,17 +53,42 @@ export class AgentService {
     const timeout = setTimeout(() => abortController.abort(), this.config.runTimeoutMs);
     const options = buildAgentOptions(this.config, input.session, input.request, abortController);
     const agentQuery = this.adapter.query({ prompt: input.request.prompt, options });
-    this.activeRuns.set(input.session.id, { query: agentQuery, abortController });
+    const activeRun: ActiveRun = { query: agentQuery, abortController, observers: new Set() };
+    this.activeRuns.set(input.session.id, activeRun);
 
     try {
       for await (const message of agentQuery) {
-        yield normalizeAgentMessage(message);
+        const event = normalizeAgentMessage(message);
+        broadcastEvent(activeRun, event);
+        yield event;
       }
+    } catch (error) {
+      broadcastEvent(activeRun, { type: "error", data: { error: { code: "agent_error", message: errorMessage(error) } } });
+      throw error;
     } finally {
       clearTimeout(timeout);
       agentQuery.close?.();
       this.activeRuns.delete(input.session.id);
+      closeObservers(activeRun);
     }
+  }
+
+  observe(sessionId: string): { running: boolean; events: AsyncIterable<NormalizedAgentEvent> } {
+    const active = this.activeRuns.get(sessionId);
+    if (!active) {
+      return {
+        running: false,
+        events: emptyEvents()
+      };
+    }
+
+    const queue = new EventQueue<NormalizedAgentEvent>();
+    active.observers.add(queue);
+
+    return {
+      running: true,
+      events: queue.iterate(() => active.observers.delete(queue))
+    };
   }
 
   async interrupt(sessionId: string): Promise<boolean> {
@@ -78,6 +109,74 @@ export class AgentService {
   }
 }
 
+class EventQueue<T> {
+  private readonly queue: T[] = [];
+  private closed = false;
+  private waiting: ((result: IteratorResult<T>) => void) | undefined;
+
+  enqueue(value: T): void {
+    if (this.closed) return;
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = undefined;
+      resolve({ done: false, value });
+      return;
+    }
+    this.queue.push(value);
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.waiting) {
+      const resolve = this.waiting;
+      this.waiting = undefined;
+      resolve({ done: true, value: undefined });
+    }
+  }
+
+  async *iterate(onClose: () => void): AsyncGenerator<T> {
+    try {
+      while (true) {
+        const next = await this.next();
+        if (next.done) return;
+        yield next.value;
+      }
+    } finally {
+      onClose();
+      this.close();
+    }
+  }
+
+  private next(): Promise<IteratorResult<T>> {
+    if (this.queue.length > 0) {
+      return Promise.resolve({ done: false, value: this.queue.shift() as T });
+    }
+    if (this.closed) {
+      return Promise.resolve({ done: true, value: undefined });
+    }
+    return new Promise((resolve) => {
+      this.waiting = resolve;
+    });
+  }
+}
+
+function broadcastEvent(activeRun: ActiveRun, event: NormalizedAgentEvent): void {
+  for (const observer of activeRun.observers) {
+    observer.enqueue(event);
+  }
+}
+
+function closeObservers(activeRun: ActiveRun): void {
+  for (const observer of activeRun.observers) {
+    observer.close();
+  }
+  activeRun.observers.clear();
+}
+
+async function* emptyEvents(): AsyncGenerator<NormalizedAgentEvent> {
+  return;
+}
+
 export function buildAgentOptions(
   config: AppConfig,
   session: SessionMetadata,
@@ -89,8 +188,7 @@ export function buildAgentOptions(
   return {
     abortController,
     cwd: session.workspacePath,
-    sessionId: session.id,
-    ...(session.hasRun ? { resume: session.id } : {}),
+    ...(session.hasRun ? { resume: session.id } : { sessionId: session.id }),
     persistSession: true,
     settingSources: ["project"],
     systemPrompt: { type: "preset", preset: "claude_code" },
@@ -132,4 +230,8 @@ export function normalizeAgentMessage(message: unknown): NormalizedAgentEvent {
   }
 
   return { type: "message", data: message };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
 }

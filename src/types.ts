@@ -18,6 +18,16 @@ export type SessionMetadata = {
   hasRun: boolean;
 };
 
+export type PublicSession = {
+  id: string;
+  sessionId: string;
+  title?: string;
+  mode: ClaudeMode;
+  createdAt: string;
+  updatedAt: string;
+  hasRun: boolean;
+};
+
 export type NormalizedAgentEvent = {
   type: string;
   data: unknown;

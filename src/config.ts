@@ -47,7 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     workspaceDir: resolveFromCwd(raw.WORKSPACE_DIR ?? ".data/workspaces", cwd),
     sessionDir: resolveFromCwd(raw.SESSION_DIR ?? ".data/sessions", cwd),
     maxConcurrentRuns: parseInteger(raw.MAX_CONCURRENT_RUNS, 4, "MAX_CONCURRENT_RUNS"),
-    maxTurns: parseInteger(raw.MAX_TURNS, 10, "MAX_TURNS"),
+    maxTurns: parseInteger(raw.MAX_TURNS, 30, "MAX_TURNS"),
     maxBudgetUsd: parseNumber(raw.MAX_BUDGET_USD, 1, "MAX_BUDGET_USD"),
     runTimeoutMs: parseInteger(raw.RUN_TIMEOUT_MS, 600_000, "RUN_TIMEOUT_MS"),
     sandboxAllowedDomains: parseCsv(raw.SANDBOX_ALLOWED_DOMAINS ?? "api.anthropic.com,claude.ai,statsig.anthropic.com")

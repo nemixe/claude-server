@@ -43,5 +43,6 @@ describe("sandbox and agent options", () => {
     expect(bypassOptions.permissionMode).toBe("bypassPermissions");
     expect(bypassOptions.allowDangerouslySkipPermissions).toBe(true);
     expect(bypassOptions.resume).toBe(session.id);
+    expect(bypassOptions.sessionId).toBeUndefined();
   });
 });

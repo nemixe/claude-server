@@ -21,7 +21,7 @@ describe("browser client", () => {
 
   it("calls REST endpoints with the configured base URL", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
-      return new Response(JSON.stringify({ sessionId: "s1", mode: "plan", createdAt: "now" }), {
+      return new Response(JSON.stringify({ id: "s1", sessionId: "s1", mode: "plan", createdAt: "now", updatedAt: "now", hasRun: false }), {
         status: 201,
         headers: { "content-type": "application/json" }
       });

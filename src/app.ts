@@ -5,7 +5,8 @@ import { AgentService, ConcurrencyLimitError } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { SessionStore } from "./session-store.js";
-import { CLAUDE_MODES } from "./types.js";
+import { renderTestClient } from "./test-client.js";
+import { CLAUDE_MODES, type PublicSession, type SessionMetadata } from "./types.js";
 
 export type AppDependencies = {
   config: AppConfig;
@@ -45,15 +46,19 @@ export function createApp(dependencies: AppDependencies): Hono {
     return c.json({ ok: true, service: "claude-server", timestamp: new Date().toISOString() });
   });
 
+  app.get("/client", (c) => {
+    return c.html(renderTestClient());
+  });
+
   app.post("/v1/sessions", async (c) => {
     const body = createSessionSchema.parse(await c.req.json().catch(() => ({})));
     const session = await sessionStore.create(body);
-    return c.json({ sessionId: session.id, mode: session.mode, createdAt: session.createdAt }, 201);
+    return c.json(toPublicSession(session), 201);
   });
 
   app.get("/v1/sessions", async (c) => {
     const sessions = await sessionStore.list();
-    return c.json({ sessions });
+    return c.json({ sessions: sessions.map(toPublicSession) });
   });
 
   app.get("/v1/sessions/:sessionId/messages", async (c) => {
@@ -66,6 +71,32 @@ export function createApp(dependencies: AppDependencies): Hono {
     return c.json({ messages });
   });
 
+  app.get("/v1/sessions/:sessionId/events:stream", async (c) => {
+    const session = await sessionStore.get(c.req.param("sessionId"));
+    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+
+    const observation = agentService.observe(session.id);
+
+    return streamSSE(c, async (stream) => {
+      await stream.writeSSE({
+        event: "status",
+        data: JSON.stringify({ running: observation.running })
+      });
+
+      for await (const event of observation.events) {
+        await stream.writeSSE({
+          event: event.type,
+          data: JSON.stringify(event.data)
+        });
+      }
+
+      await stream.writeSSE({
+        event: "done",
+        data: JSON.stringify({ observing: false })
+      });
+    });
+  });
+
   app.post("/v1/sessions/:sessionId/messages:stream", async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
@@ -73,15 +104,20 @@ export function createApp(dependencies: AppDependencies): Hono {
     const request = streamMessageSchema.parse(await c.req.json());
 
     return streamSSE(c, async (stream) => {
+      let sessionMarkedAsRun = false;
       try {
         for await (const event of agentService.stream({ session, request })) {
+          if (!sessionMarkedAsRun) {
+            await sessionStore.markRun(session.id);
+            sessionMarkedAsRun = true;
+          }
+
           await stream.writeSSE({
             event: event.type,
             data: JSON.stringify(event.data)
           });
         }
 
-        await sessionStore.markRun(session.id);
         await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true }) });
       } catch (error) {
         const status = error instanceof ConcurrencyLimitError ? "concurrency_limit" : "agent_error";
@@ -126,4 +162,16 @@ function parseOptionalInteger(value: string | undefined): number | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function toPublicSession(session: SessionMetadata): PublicSession {
+  return {
+    id: session.id,
+    sessionId: session.id,
+    title: session.title,
+    mode: session.mode,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    hasRun: session.hasRun
+  };
 }
