@@ -60,9 +60,25 @@ export class AgentService {
 
     try {
       for await (const message of agentQuery) {
+        const questionTool = getAskUserQuestionToolFromEvent(message);
         const event = normalizeAgentMessage(message);
         broadcastEvent(activeRun, event);
         yield event;
+        if (questionTool) {
+          abortController.abort();
+          agentQuery.close?.();
+          const pendingEvent = {
+            type: "question_pending",
+            data: {
+              waitingForUserQuestion: true,
+              toolUseId: questionTool.id,
+              input: questionTool.input
+            }
+          };
+          broadcastEvent(activeRun, pendingEvent);
+          yield pendingEvent;
+          break;
+        }
       }
     } catch (error) {
       broadcastEvent(activeRun, { type: "error", data: { error: { code: "agent_error", message: errorMessage(error) } } });
@@ -208,6 +224,25 @@ export function buildAgentOptions(
 }
 
 export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
+  if (request.toolResult) {
+    const message: SDKUserMessage = {
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result" as const,
+            tool_use_id: request.toolResult.toolUseId,
+            content: request.toolResult.content
+          }
+        ]
+      },
+      parent_tool_use_id: null
+    };
+
+    return singleMessagePrompt(message);
+  }
+
   if (!request.images || request.images.length === 0) {
     return request.prompt;
   }
@@ -263,6 +298,26 @@ export function normalizeAgentMessage(message: unknown): NormalizedAgentEvent {
   }
 
   return { type: "message", data: message };
+}
+
+export function getAskUserQuestionTool(message: unknown): Record<string, unknown> | null {
+  if (!message || typeof message !== "object") return null;
+  const record = message as Record<string, unknown>;
+  if (record.stop_reason !== "tool_use" && record.stop_reason !== null && record.stop_reason !== undefined) return null;
+  const content = Array.isArray(record.content) ? record.content : [];
+  const tool = content.find((block) => {
+    if (!block || typeof block !== "object") return false;
+    const blockRecord = block as Record<string, unknown>;
+    return blockRecord.type === "tool_use" && blockRecord.name === "AskUserQuestion";
+  });
+  return tool && typeof tool === "object" ? (tool as Record<string, unknown>) : null;
+}
+
+function getAskUserQuestionToolFromEvent(event: unknown): Record<string, unknown> | null {
+  if (!event || typeof event !== "object") return null;
+  const record = event as Record<string, unknown>;
+  if (record.type !== "assistant") return null;
+  return getAskUserQuestionTool(record.message);
 }
 
 function errorMessage(error: unknown): string {

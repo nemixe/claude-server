@@ -62,6 +62,10 @@ export type NormalizedAgentEvent = {
 export type StreamMessageRequest = {
   prompt: string;
   images?: PromptImage[];
+  toolResult?: {
+    toolUseId: string;
+    content: string;
+  };
   mode?: ClaudeMode;
   model?: string;
   maxTurns?: number;

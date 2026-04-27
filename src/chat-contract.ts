@@ -83,7 +83,7 @@ export function createClaudeWebChatContract(options: ClaudeClientOptions) {
 
   async function createSession(request: CreateWebChatSessionRequest = {}): Promise<PublicSession> {
     return client.createSession({
-      mode: request.mode ?? "plan",
+      mode: request.mode ?? "bypass",
       title: request.title,
       files: request.files
     });

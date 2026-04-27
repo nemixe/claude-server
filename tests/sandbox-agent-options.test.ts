@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildAgentOptions, buildAgentPrompt } from "../src/agent-service.js";
+import { AgentService, buildAgentOptions, buildAgentPrompt, getAskUserQuestionTool, type AgentSdkAdapter } from "../src/agent-service.js";
 import { buildSandboxSettings } from "../src/sandbox.js";
 import type { SessionMetadata } from "../src/types.js";
 import { createTempConfig } from "./helpers.js";
@@ -74,5 +74,134 @@ describe("sandbox and agent options", () => {
         parent_tool_use_id: null
       }
     ]);
+  });
+
+  it("maps AskUserQuestion answers to Agent SDK tool_result prompts", async () => {
+    const prompt = buildAgentPrompt({
+      prompt: "Subject: SaaS product\ncontinue",
+      toolResult: {
+        toolUseId: "toolu_question",
+        content: JSON.stringify({
+          questions: [{ question: "What is the landing page for?" }],
+          answers: { "What is the landing page for?": "SaaS product" }
+        })
+      }
+    });
+
+    const messages = [];
+    for await (const message of prompt as AsyncIterable<Record<string, unknown>>) {
+      messages.push(message);
+    }
+
+    expect(messages).toEqual([
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_question",
+              content: JSON.stringify({
+                questions: [{ question: "What is the landing page for?" }],
+                answers: { "What is the landing page for?": "SaaS product" }
+              })
+            }
+          ]
+        },
+        parent_tool_use_id: null
+      }
+    ]);
+  });
+
+  it("detects only AskUserQuestion tool_use messages that stopped for tool use", () => {
+    const askTool = getAskUserQuestionTool({
+      stop_reason: "tool_use",
+      content: [
+        { type: "text", text: "Let me ask." },
+        {
+          type: "tool_use",
+          id: "toolu_question",
+          name: "AskUserQuestion",
+          input: { questions: [{ question: "Which stack?", options: [] }] }
+        }
+      ]
+    });
+
+    expect(askTool).toMatchObject({ id: "toolu_question", name: "AskUserQuestion" });
+    expect(
+      getAskUserQuestionTool({
+        stop_reason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_glob", name: "Glob", input: { pattern: "**/*" } }]
+      })
+    ).toBeNull();
+    expect(
+      getAskUserQuestionTool({
+        stop_reason: "end_turn",
+        content: [{ type: "tool_use", id: "toolu_question", name: "AskUserQuestion", input: { questions: [] } }]
+      })
+    ).toBeNull();
+    expect(
+      getAskUserQuestionTool({
+        stop_reason: null,
+        content: [{ type: "tool_use", id: "toolu_question_streamed", name: "AskUserQuestion", input: { questions: [] } }]
+      })
+    ).toMatchObject({ id: "toolu_question_streamed", name: "AskUserQuestion" });
+  });
+
+  it("stops streaming after exact AskUserQuestion tool use", async () => {
+    const config = await createTempConfig();
+    const session: SessionMetadata = {
+      id: "00000000-0000-4000-8000-000000000001",
+      mode: "bypass",
+      workspacePath: path.join(config.workspaceDir, "session-question"),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      hasRun: true
+    };
+    let closed = false;
+    const adapter: AgentSdkAdapter = {
+      query: () => ({
+        close: () => {
+          closed = true;
+        },
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              stop_reason: null,
+              content: [
+                {
+                  type: "tool_use",
+                  id: "toolu_question",
+                  name: "AskUserQuestion",
+                  input: { questions: [{ question: "What should I build?", options: [] }] }
+                }
+              ]
+            }
+          };
+          if (!closed) {
+            yield {
+              type: "user",
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: "toolu_question", is_error: true, content: "Answer questions?" }]
+              }
+            };
+          }
+        }
+      }),
+      getSessionMessages: async () => []
+    };
+
+    const events = [];
+    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "ask" } })) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual(["message", "question_pending"]);
+    expect(closed).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("Answer questions?");
   });
 });

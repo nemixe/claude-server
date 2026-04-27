@@ -1,37 +1,16 @@
-import React, {
-  forwardRef,
-  memo,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState
-} from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "antd/dist/reset.css";
 import "./styles.css";
-import { Bubble } from "@ant-design/x";
 import {
-  CheckOutlined,
-  CloseOutlined,
   CopyOutlined,
   DeleteOutlined,
-  DownloadOutlined,
   FileSearchOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
-  MinusOutlined,
-  PaperClipOutlined,
-  PauseOutlined,
-  PlusOutlined,
   ReloadOutlined,
-  SearchOutlined,
   SendOutlined,
   SettingOutlined,
   ToolOutlined
 } from "@ant-design/icons";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Alert,
   Button,
@@ -42,39 +21,24 @@ import {
   List,
   Select,
   Space,
-  Spin,
-  Tag,
-  Timeline,
-  Tooltip,
-  Typography
+  Tag
 } from "antd";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import AgentChatMessageList from "./agent-chat/agent-chat-message-list.jsx";
+import ChatFooter from "./agent-chat/chat-footer.jsx";
+import ChatHeader from "./agent-chat/chat-header.jsx";
+import MarkdownText from "./agent-chat/markdown-text.jsx";
+import SessionSidebar from "./agent-chat/session-sidebar.jsx";
 
-const { Text } = Typography;
 const { TextArea } = Input;
 
 const storageKey = "claude-test-client:last-session";
 const imageMediaTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const maxImages = 5;
 const maxImageBytes = 5 * 1024 * 1024;
-const defaultPrompt = "Inspect the current workspace and summarize what you can do.";
-const MESSAGE_LIST_BOTTOM_THRESHOLD_PX = 24;
-const ESTIMATE_SIZE = 86;
-const OVERSCAN = 10;
-const BUBBLE_GAP = 4;
 const ACTIVITY_ROLE = "assistant_activity";
-const GROUP_ROLE = "assistant_activity_group";
-
-const modeOptions = [
-  { value: "plan", label: "Plan" },
-  { value: "edit", label: "Accept Edits" },
-  { value: "bypass", label: "Bypass" }
-];
 
 const modeLabel = {
   plan: "Plan",
-  edit: "Accept Edits",
   bypass: "Bypass"
 };
 
@@ -88,9 +52,9 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isClosed, setIsClosed] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
-  const [mode, setMode] = useState("plan");
+  const [mode, setMode] = useState("bypass");
   const [maxTurns, setMaxTurns] = useState(30);
-  const [prompt, setPrompt] = useState(defaultPrompt);
+  const [prompt, setPrompt] = useState("");
   const [selectedImages, setSelectedImages] = useState([]);
   const [events, setEvents] = useState([]);
   const [commands, setCommands] = useState([]);
@@ -107,8 +71,13 @@ function App() {
   const [historyCopyLabel, setHistoryCopyLabel] = useState("Copy JSON");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [position, setPosition] = useState(initialChatPosition);
+  const [hasGrabContext, setHasGrabContext] = useState(false);
+  const [isAnnotating, setIsAnnotating] = useState(false);
+  const [latestAnnotation, setLatestAnnotation] = useState(null);
+  const [hasChipAnswer, setHasChipAnswer] = useState(false);
   const controllerRef = useRef();
   const observeControllerRef = useRef();
+  const askQuestionFooterRef = useRef(null);
   const sessionIdRef = useRef("");
   const baseUrlRef = useRef(baseUrl);
   const commandsRef = useRef([]);
@@ -190,6 +159,11 @@ function App() {
     }),
     []
   );
+  const mentionSuggestions = useMemo(() => {
+    const paths = searchResults.map((result) => result.path).filter(Boolean);
+    return Array.from(new Set(paths));
+  }, [searchResults]);
+  const activeAskUserQuestion = useMemo(() => getActiveAskUserQuestion(events), [events]);
 
   function apiPath(path) {
     return String(baseUrlRef.current || "").replace(/\/$/, "") + path;
@@ -292,7 +266,7 @@ function App() {
     observeSession(id);
   }
 
-  async function runPrompt(value) {
+  async function runPrompt(value, options = {}) {
     const nextPrompt = String(value ?? prompt).trim();
     if (!nextPrompt) return;
 
@@ -316,12 +290,12 @@ function App() {
       }
 
       stopObserving();
-      const images = selectedImages.map((image) => ({
+      const images = options.toolResult ? [] : selectedImages.map((image) => ({
         name: image.name,
         mediaType: image.mediaType,
         dataBase64: image.dataBase64
       }));
-      appendEntry("prompt", { prompt: nextPrompt, mode, images });
+      appendEntry("prompt", { prompt: nextPrompt, mode, images, toolResult: options.toolResult });
       setPrompt("");
 
       const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(activeSessionId) + "/messages:stream"), {
@@ -331,6 +305,7 @@ function App() {
         body: JSON.stringify({
           prompt: nextPrompt,
           images: images.length > 0 ? images : undefined,
+          toolResult: options.toolResult,
           mode,
           maxTurns: Number(maxTurns || 30)
         })
@@ -338,8 +313,14 @@ function App() {
 
       if (!response.ok || !response.body) throw new Error(await response.text());
 
-      await readSse(response.body);
-      setStatus("Complete");
+      const streamOutcome = await readSse(response.body);
+      if (streamOutcome.waitingForUserQuestion) {
+        setStatus("Waiting for user");
+      } else if (streamOutcome.ok) {
+        setStatus("Complete");
+      } else {
+        setStatus("Error");
+      }
       setSelectedImages([]);
       await loadSessions({ restoreSaved: false });
       observeSession(activeSessionId);
@@ -536,6 +517,7 @@ function App() {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    const outcome = { ok: true, waitingForUserQuestion: false };
 
     while (true) {
       const chunk = await reader.read();
@@ -543,11 +525,12 @@ function App() {
       buffer += decoder.decode(chunk.value, { stream: true });
       const parts = buffer.split(/\r?\n\r?\n/);
       buffer = parts.pop() || "";
-      parts.forEach((part) => emitSse(part, source));
+      parts.forEach((part) => updateStreamOutcome(outcome, emitSse(part, source), source));
     }
 
     buffer += decoder.decode();
-    if (buffer.trim()) emitSse(buffer, source);
+    if (buffer.trim()) updateStreamOutcome(outcome, emitSse(buffer, source), source);
+    return outcome;
   }
 
   function emitSse(raw, source) {
@@ -566,13 +549,29 @@ function App() {
     const parsed = parseJsonOrText(data.join("\n"));
     if (event === "status" && parsed && typeof parsed.running === "boolean") {
       setIsObservedRunning(parsed.running);
-      return;
+      return { event, data: parsed, consumed: true };
     }
     if (event === "done" && source === "observer" && parsed && parsed.observing === false) {
       setIsObservedRunning(false);
-      return;
+      return { event, data: parsed, consumed: true };
     }
     appendEntry(event, parsed);
+    return { event, data: parsed, consumed: false };
+  }
+
+  function updateStreamOutcome(outcome, emitted, source) {
+    if (!emitted || source === "observer") return;
+    if (emitted.event === "question_pending") {
+      outcome.waitingForUserQuestion = true;
+      outcome.ok = true;
+    }
+    if (emitted.event === "done") {
+      outcome.waitingForUserQuestion = Boolean(emitted.data?.waitingForUserQuestion);
+      outcome.ok = emitted.data?.ok !== false;
+    }
+    if (emitted.event === "error") {
+      outcome.ok = false;
+    }
   }
 
   async function onFilesSelected(files) {
@@ -621,7 +620,7 @@ function App() {
   function selectSession(session, eventName) {
     const id = getSessionId(session);
     setSessionId(id);
-    setMode(session.mode || mode);
+    setMode("bypass");
     rememberSession({ sessionId: id });
     loadSessionView(id, eventName, session);
   }
@@ -707,6 +706,34 @@ function App() {
     }, 1600);
   }
 
+  function activateInspect() {
+    setHasGrabContext(true);
+    appendEntry("client", { inspectContext: "workspace", active: true });
+  }
+
+  function clearInspectContext() {
+    setHasGrabContext(false);
+    appendEntry("client", { inspectContext: "workspace", active: false });
+  }
+
+  function toggleAnnotating() {
+    setIsAnnotating((current) => {
+      const next = !current;
+      if (next) {
+        const annotation = { label: "Manual annotation context", createdAt: new Date().toISOString() };
+        setLatestAnnotation(annotation);
+        appendEntry("client", { annotation });
+      }
+      return next;
+    });
+  }
+
+  function clearAnnotation() {
+    setIsAnnotating(false);
+    setLatestAnnotation(null);
+    appendEntry("client", { annotation: null });
+  }
+
   function startDrag(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (event.target.closest("button, input, textarea, select, a, .ant-dropdown, .ant-drawer")) return;
@@ -766,6 +793,7 @@ function App() {
             connectionId={sessionId}
             hasCurrentUserIdentity={Boolean(activeSession)}
             currentUserDisplayLabel={activeSession ? activeSession.title || "Claude session" : "No session"}
+            onLogout={forgetSession}
             onClose={() => setIsClosed(true)}
             onMinimize={() => setIsMinimized((value) => !value)}
             onExportSession={copySessionHistoryJson}
@@ -833,14 +861,34 @@ function App() {
                 <button className="ai-chat-sidebar-backdrop" type="button" aria-label="Hide sessions" onClick={() => setIsSidebarOpen(false)} />
               ) : null}
               <main className="ai-chat-main-column">
-                <AgentChatMessageList bubbleItems={bubbleItems} bubbleRoles={bubbleRoles} isStreaming={busy} open={!isClosed && !isMinimized} />
+                <AgentChatMessageList
+                  bubbleItems={bubbleItems}
+                  bubbleRoles={bubbleRoles}
+                  isStreaming={busy}
+                  open={!isClosed && !isMinimized}
+                  writeClipboard={writeClipboard}
+                />
                 <ChatFooter
                   senderValue={prompt}
                   setSenderValue={setPrompt}
                   permissionMode={mode}
                   onPermissionChange={setMode}
+                  showQuestionFooter={Boolean(activeAskUserQuestion)}
+                  activeAskUserQuestionData={activeAskUserQuestion?.data}
+                  activeAskUserQuestionMessageId={activeAskUserQuestion?.id}
+                  activeAskUserQuestionToolUseId={activeAskUserQuestion?.toolUseId}
+                  hasGrabContext={hasGrabContext}
+                  isAnnotating={isAnnotating}
+                  latestAnnotation={latestAnnotation}
                   isStreamingActiveSession={isSending}
                   isSessionOwner={true}
+                  hasChipAnswer={hasChipAnswer}
+                  setHasChipAnswer={setHasChipAnswer}
+                  askQuestionFooterRef={askQuestionFooterRef}
+                  onActivateInspect={activateInspect}
+                  onInspectPillClear={clearInspectContext}
+                  onStartAnnotating={toggleAnnotating}
+                  onClearAnnotation={clearAnnotation}
                   onStopStreaming={interrupt}
                   onSubmit={runPrompt}
                   pendingUploads={selectedImages}
@@ -848,8 +896,10 @@ function App() {
                   onRemoveUpload={(id) => setSelectedImages((current) => current.filter((image) => image.id !== id))}
                   onClearUploads={() => setSelectedImages([])}
                   slashCommands={slashCommands}
-                  maxTurns={maxTurns}
-                  setMaxTurns={setMaxTurns}
+                  mentionSuggestions={mentionSuggestions}
+                  formatBytes={formatBytes}
+                  estimateBase64Bytes={estimateBase64Bytes}
+                  imageSrc={imageSrc}
                 />
               </main>
             </div>
@@ -879,174 +929,30 @@ function App() {
   );
 }
 
-function ChatHeader({
-  isSidebarOpen,
-  onToggleSidebar,
-  hasStreamingSessions,
-  streamingCount,
-  activeSessionParticipants,
-  connectionId,
-  hasCurrentUserIdentity,
-  currentUserDisplayLabel,
-  onClose,
-  onMinimize,
-  onExportSession,
-  onOpenHistory,
-  canExportSession,
-  dragHandleProps,
-  status,
-  isMinimized
-}) {
+function MessageContent({ text, images }) {
   return (
-    <div className="ai-chat-header" {...dragHandleProps}>
-      <div className="ai-chat-title-shell">
-        <Button
-          size="middle"
-          type="text"
-          className="ai-chat-sidebar-toggle"
-          icon={isSidebarOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
-          onClick={onToggleSidebar}
-          onMouseDown={(event) => event.stopPropagation()}
-          title={isSidebarOpen ? "Hide Sessions" : "Show Sessions"}
-          aria-label={isSidebarOpen ? "Hide sessions sidebar" : "Show sessions sidebar"}
-        />
-        <div className="ai-chat-title-wrap">
-          <div className="ai-chat-title-main">
-            {hasStreamingSessions ? `AI Assistant (${streamingCount} running)` : "AI Assistant"}
-          </div>
-          {activeSessionParticipants.length > 0 ? (
-            <div className="ai-chat-title-presence" role="status" aria-label="Session participants">
-              <span className="ai-chat-title-presence-count">{status}</span>
-              <span className="ai-chat-title-presence-list" role="list">
-                {activeSessionParticipants.map((participant) => {
-                  const participantLabel = getDisplayLabel(participant.user_label);
-                  const isCurrentConnection = Boolean(connectionId) && participant.connection_id === connectionId;
-                  const theme = getAvatarThemeFromLabel(participantLabel);
-                  return (
-                    <span
-                      key={`${participant.connection_id || participantLabel}-${participantLabel}`}
-                      className={`ai-chat-presence-chip${isCurrentConnection ? " is-self" : ""}`}
-                      role="listitem"
-                    >
-                      <span className="ai-chat-presence-dot" style={{ backgroundColor: theme.bg }} />
-                      <span className="ai-chat-presence-label">{participantLabel}</span>
-                      {isCurrentConnection ? <span className="ai-chat-presence-self">(you)</span> : null}
-                    </span>
-                  );
-                })}
-              </span>
-            </div>
-          ) : (
-            <div className="ai-chat-title-presence-count">{status}</div>
-          )}
-        </div>
-      </div>
-
-      <Space size={4} onMouseDown={(event) => event.stopPropagation()}>
-        {hasStreamingSessions ? <Spin size="small" /> : null}
-        <Button
-          size="small"
-          type="text"
-          icon={<DownloadOutlined />}
-          aria-label="Copy session as JSON"
-          title="Copy session as JSON"
-          disabled={!canExportSession}
-          onClick={onExportSession}
-        />
-        <Button
-          size="small"
-          type="text"
-          icon={<FileSearchOutlined />}
-          aria-label="Open raw session history"
-          title="Raw session history"
-          onClick={onOpenHistory}
-        />
-        {hasCurrentUserIdentity ? (
-          <Button size="small" type="text" aria-label="Session label" title="Current session">
-            {`Name: ${currentUserDisplayLabel}`}
-          </Button>
-        ) : null}
-        <Button
-          size="small"
-          type="text"
-          icon={<MinusOutlined />}
-          aria-label={isMinimized ? "Restore chat" : "Minimize chat"}
-          onClick={onMinimize}
-        />
-        <Button size="small" type="text" icon={<CloseOutlined />} aria-label="Close chat" onClick={onClose} />
-      </Space>
+    <div className="ai-chat-message-content">
+      {text ? <MarkdownText text={text} /> : null}
+      <ImageAttachmentGrid images={images} />
     </div>
   );
 }
 
-function SessionSidebar({
-  filteredSessions,
-  activeSessionKey,
-  sessionSearchQuery,
-  setSessionSearchQuery,
-  hideEmptySessions,
-  setHideEmptySessions,
-  onCreateNewSession,
-  onSessionSelect,
-  onRefreshSessions
-}) {
+function ImageAttachmentGrid({ images }) {
+  if (!images || images.length === 0) return null;
   return (
-    <>
-      <div className="ai-chat-sessions-controls">
-        <Input
-          size="small"
-          placeholder="Search..."
-          prefix={<SearchOutlined />}
-          value={sessionSearchQuery}
-          onChange={(event) => setSessionSearchQuery(event.target.value)}
-          allowClear
-          aria-label="Search sessions"
-        />
-        <Tooltip title="Refresh sessions">
-          <Button size="small" type="text" icon={<ReloadOutlined />} onClick={onRefreshSessions} aria-label="Refresh sessions" />
-        </Tooltip>
-        <Tooltip title={hideEmptySessions ? "Show empty sessions" : "Hide empty sessions"}>
-          <Button
-            size="small"
-            type="text"
-            icon={<FilterGlyph />}
-            className={hideEmptySessions ? "ai-chat-filter-active" : ""}
-            onClick={() => setHideEmptySessions((value) => !value)}
-            aria-pressed={hideEmptySessions}
-            aria-label={hideEmptySessions ? "Show empty sessions" : "Hide empty sessions"}
-          />
-        </Tooltip>
-      </div>
-      <div className="ai-chat-sessions-list" role="list" aria-label="Chat sessions">
-        <button type="button" className="ai-chat-session-item ai-chat-session-item-create" onClick={onCreateNewSession} aria-label="New session" role="listitem">
-          <span className="ai-chat-session-create-label">
-            <PlusOutlined />
-            <span>New Session</span>
-          </span>
-        </button>
-        {filteredSessions.map((session) => {
-          const id = getSessionId(session);
-          const isActive = id === activeSessionKey;
-          return (
-            <button
-              key={id}
-              type="button"
-              className={`ai-chat-session-item${isActive ? " active" : ""}`}
-              onClick={() => onSessionSelect(id)}
-              role="listitem"
-              aria-current={isActive ? "true" : undefined}
-            >
-              <span className="ai-chat-session-title">
-                {normalizeSessionTitle(session.title, id ? `Session ${id.slice(0, 8)}` : "New chat")}
-              </span>
-              <span className="ai-chat-session-meta">
-                {[formatSessionTimestamp(session.updatedAt ?? session.createdAt), session.mode, session.hasRun ? "run" : "empty"].filter(Boolean).join(" · ")}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </>
+    <div className="ai-chat-attachment-body">
+      {images.map((image, index) => (
+        <figure className="ai-chat-attachment-row" key={String(index) + ":" + (image.name || image.mediaType || "")}>
+          <div className="ai-chat-attachment-thumb">
+            <img src={imageSrc(image)} alt={image.name || image.mediaType || "Image attachment"} />
+          </div>
+          <figcaption className="ai-chat-attachment-note">
+            {[image.name || image.mediaType, formatBytes(image.size || image.sizeBytes || estimateBase64Bytes(image.dataBase64))].filter(Boolean).join(" · ")}
+          </figcaption>
+        </figure>
+      ))}
+    </div>
   );
 }
 
@@ -1063,11 +969,22 @@ function DeveloperTools(props) {
         <div className="ai-chat-tool-panel">
           <label className="ai-chat-field">
             <span>API base URL</span>
-            <Input size="small" value={props.baseUrl} placeholder="http://localhost:3000" onChange={(event) => props.setBaseUrl(event.target.value)} />
+            <Input
+              size="small"
+              value={props.baseUrl}
+              placeholder="http://localhost:3000"
+              onChange={(event) => props.setBaseUrl(event.target.value)}
+            />
           </label>
           <label className="ai-chat-field">
             <span>Max turns</span>
-            <InputNumber size="small" min={1} value={props.maxTurns} onChange={(value) => props.setMaxTurns(value || 30)} style={{ width: "100%" }} />
+            <InputNumber
+              size="small"
+              min={1}
+              value={props.maxTurns}
+              onChange={(value) => props.setMaxTurns(value || 30)}
+              style={{ width: "100%" }}
+            />
           </label>
           <Space size={6} wrap>
             <Button size="small" onClick={props.openHistory}>
@@ -1105,11 +1022,23 @@ function DeveloperTools(props) {
           </label>
           <label className="ai-chat-field">
             <span>Command path</span>
-            <Input size="small" disabled={!props.sessionId} value={props.commandPath} placeholder="review/fix.md" onChange={(event) => props.setCommandPath(event.target.value)} />
+            <Input
+              size="small"
+              disabled={!props.sessionId}
+              value={props.commandPath}
+              placeholder="review/fix.md"
+              onChange={(event) => props.setCommandPath(event.target.value)}
+            />
           </label>
           <label className="ai-chat-field">
             <span>Command content</span>
-            <TextArea disabled={!props.sessionId} rows={5} value={props.commandContent} placeholder="Write the Claude slash command markdown here." onChange={(event) => props.setCommandContent(event.target.value)} />
+            <TextArea
+              disabled={!props.sessionId}
+              rows={5}
+              value={props.commandContent}
+              placeholder="Write the Claude slash command markdown here."
+              onChange={(event) => props.setCommandContent(event.target.value)}
+            />
           </label>
           <Space size={6} wrap>
             <Button size="small" type="primary" disabled={!props.sessionId} onClick={props.saveCommand}>
@@ -1118,10 +1047,21 @@ function DeveloperTools(props) {
             <Button size="small" disabled={!props.sessionId} onClick={props.clearCommandEditor}>
               New
             </Button>
-            <Button size="small" danger disabled={!props.sessionId} icon={<DeleteOutlined />} onClick={props.deleteCommand}>
+            <Button
+              size="small"
+              danger
+              disabled={!props.sessionId}
+              icon={<DeleteOutlined />}
+              onClick={props.deleteCommand}
+            >
               Delete
             </Button>
-            <Button size="small" disabled={!props.sessionId} icon={<ReloadOutlined />} onClick={() => props.loadClaudeCommands()}>
+            <Button
+              size="small"
+              disabled={!props.sessionId}
+              icon={<ReloadOutlined />}
+              onClick={() => props.loadClaudeCommands()}
+            >
               Refresh
             </Button>
           </Space>
@@ -1139,8 +1079,22 @@ function DeveloperTools(props) {
         <div className="ai-chat-tool-panel">
           <p className="ai-chat-tool-hint">{props.searchHint}</p>
           <div className="ai-chat-search-row">
-            <Input size="small" disabled={!props.sessionId} value={props.searchQuery} placeholder="cmpbtn" onChange={(event) => props.setSearchQuery(event.target.value)} onPressEnter={props.runWorkspaceSearch} />
-            <InputNumber size="small" disabled={!props.sessionId} min={1} max={200} value={props.searchLimit} onChange={(value) => props.setSearchLimit(value || 20)} />
+            <Input
+              size="small"
+              disabled={!props.sessionId}
+              value={props.searchQuery}
+              placeholder="cmpbtn"
+              onChange={(event) => props.setSearchQuery(event.target.value)}
+              onPressEnter={props.runWorkspaceSearch}
+            />
+            <InputNumber
+              size="small"
+              disabled={!props.sessionId}
+              min={1}
+              max={200}
+              value={props.searchLimit}
+              onChange={(value) => props.setSearchLimit(value || 20)}
+            />
           </div>
           <Space size={6} wrap>
             <Button size="small" type="primary" disabled={!props.sessionId} onClick={props.runWorkspaceSearch}>
@@ -1156,425 +1110,14 @@ function DeveloperTools(props) {
     }
   ];
 
-  return <Collapse size="small" ghost className="ai-chat-tools" items={collapseItems} defaultActiveKey={["settings"]} />;
-}
-
-function ChatFooter({
-  senderValue,
-  setSenderValue,
-  permissionMode,
-  onPermissionChange,
-  isStreamingActiveSession,
-  isSessionOwner,
-  onStopStreaming,
-  onSubmit,
-  pendingUploads,
-  onAddUploads,
-  onRemoveUpload,
-  onClearUploads,
-  slashCommands,
-  maxTurns,
-  setMaxTurns
-}) {
-  const fileInputRef = useRef(null);
-  const senderRef = useRef(null);
-  const dropdownRef = useRef(null);
-  const [isSlashActive, setIsSlashActive] = useState(false);
-  const [slashFilterText, setSlashFilterText] = useState("");
-  const [highlightIndex, setHighlightIndex] = useState(0);
-
-  const filteredCommands = useMemo(() => {
-    if (!isSlashActive) return [];
-    const lower = slashFilterText.toLowerCase();
-    return slashCommands.filter((command) => command.name.toLowerCase().includes(lower) || command.description?.toLowerCase().includes(lower));
-  }, [isSlashActive, slashCommands, slashFilterText]);
-
-  useEffect(() => {
-    if (senderValue.startsWith("/")) {
-      setIsSlashActive(true);
-      setSlashFilterText(senderValue.slice(1));
-      setHighlightIndex(0);
-    } else if (isSlashActive) {
-      setIsSlashActive(false);
-      setSlashFilterText("");
-      setHighlightIndex(0);
-    }
-  }, [senderValue, isSlashActive]);
-
-  useEffect(() => {
-    if (!isSlashActive || !dropdownRef.current) return;
-    const item = dropdownRef.current.children[highlightIndex];
-    if (item) item.scrollIntoView({ block: "nearest" });
-  }, [highlightIndex, isSlashActive]);
-
-  const selectCommand = (command) => {
-    setSenderValue(`/${command.name} `);
-    setIsSlashActive(false);
-    senderRef.current?.focus();
-  };
-
-  const moveHighlight = (direction) => {
-    setHighlightIndex((previous) => {
-      const length = filteredCommands.length;
-      if (length === 0) return 0;
-      return direction === "up" ? (previous - 1 + length) % length : (previous + 1) % length;
-    });
-  };
-
-  const handleTextareaKeyDown = (event) => {
-    if (isSlashActive && filteredCommands.length > 0) {
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        moveHighlight("up");
-        return;
-      }
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        moveHighlight("down");
-        return;
-      }
-      if (event.key === "Enter" || event.key === "Tab") {
-        event.preventDefault();
-        selectCommand(filteredCommands[highlightIndex]);
-        return;
-      }
-    }
-    if (event.key === "Escape" && isSlashActive) {
-      event.preventDefault();
-      setIsSlashActive(false);
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleSendClick();
-    }
-  };
-
-  const handleSendClick = () => {
-    if (!senderValue.trim() || isStreamingActiveSession) return;
-    void onSubmit(senderValue);
-  };
-
-  const handleFileSelect = (event) => {
-    const files = Array.from(event.target.files || []);
-    if (files.length > 0) void onAddUploads(files);
-    event.target.value = "";
-  };
-
-  const showSlashDropdown = isSlashActive && filteredCommands.length > 0;
-
   return (
-    <div className="ai-chat-footer">
-      <div className="ai-chat-footer-toolbar" role="toolbar" aria-label="Chat controls">
-        <Button size="small" shape="round" icon={<PaperClipOutlined />} onClick={() => fileInputRef.current?.click()} disabled={!isSessionOwner || isStreamingActiveSession} aria-label="Upload images">
-          Upload
-        </Button>
-        <input ref={fileInputRef} type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp" onChange={handleFileSelect} style={{ display: "none" }} />
-        {pendingUploads.length > 0 ? (
-          <Button size="small" shape="circle" icon={<CloseOutlined style={{ fontSize: 11 }} />} onClick={onClearUploads} aria-label="Clear uploads" title="Clear uploads" />
-        ) : null}
-        <span className="ai-chat-turns-control">
-          <span>Turns</span>
-          <InputNumber size="small" min={1} value={maxTurns} onChange={(value) => setMaxTurns(value || 30)} />
-        </span>
-        <div className="ai-chat-mode-toggle" aria-label="Permission mode">
-          {modeOptions.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`ai-chat-mode-btn ${permissionMode === option.value ? "is-active" : ""}`}
-              onClick={() => onPermissionChange(option.value)}
-              aria-pressed={permissionMode === option.value}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {pendingUploads.length > 0 ? (
-        <div className="ai-chat-upload-preview">
-          {pendingUploads.map((file) => (
-            <div key={file.id} className="ai-chat-upload-card">
-              <img src={file.previewUrl || imageSrc(file)} alt={file.name || file.mediaType} className="ai-chat-upload-card-thumb" />
-              <div className="ai-chat-upload-card-info">
-                <span className="ai-chat-upload-card-name" title={file.name}>
-                  {file.name || file.mediaType}
-                </span>
-                <span className="ai-chat-upload-card-size">{formatBytes(file.size || estimateBase64Bytes(file.dataBase64))}</span>
-              </div>
-              <button type="button" className="ai-chat-upload-card-remove" onClick={() => onRemoveUpload(file.id)} aria-label={`Remove ${file.name || "upload"}`}>
-                <CloseOutlined style={{ fontSize: 10 }} />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <div className="ai-chat-input">
-        {showSlashDropdown ? (
-          <div ref={dropdownRef} className="ai-chat-slash-dropdown" role="listbox" aria-label="Slash commands">
-            {filteredCommands.map((command, index) => (
-              <div
-                key={command.id}
-                className={`ai-chat-slash-dropdown-item${index === highlightIndex ? " is-highlighted" : ""}`}
-                role="option"
-                aria-selected={index === highlightIndex}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  selectCommand(command);
-                }}
-                onMouseEnter={() => setHighlightIndex(index)}
-              >
-                <span className="ai-chat-slash-dropdown-name">/{command.name}</span>
-                {command.description ? <span className="ai-chat-slash-dropdown-desc">{command.description}</span> : null}
-              </div>
-            ))}
-          </div>
-        ) : null}
-        <textarea
-          ref={senderRef}
-          className="ai-chat-input-textarea"
-          aria-label="Message input"
-          placeholder={!isSessionOwner ? "View only - you cannot interact with this session" : "Ask AI about this workspace..."}
-          value={senderValue}
-          onChange={(event) => {
-            setSenderValue(event.target.value);
-            event.target.style.height = "auto";
-            event.target.style.height = `${event.target.scrollHeight}px`;
-          }}
-          onKeyDown={handleTextareaKeyDown}
-          rows={1}
-          disabled={!isSessionOwner}
-        />
-        {isStreamingActiveSession ? (
-          <button className="ai-chat-input-btn ai-chat-input-btn-stop" onClick={onStopStreaming} aria-label="Stop generation" title="Stop">
-            <PauseOutlined />
-          </button>
-        ) : (
-          <button className="ai-chat-input-btn ai-chat-input-btn-send" onClick={handleSendClick} disabled={!isSessionOwner || !senderValue.trim()} aria-label="Send message" title="Send">
-            <SendOutlined />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-const AgentChatMessageList = forwardRef(({ bubbleItems, bubbleRoles, isStreaming, open }, ref) => {
-  const scrollElementRef = useRef(null);
-  const isPinnedToBottomRef = useRef(true);
-  const processedItems = useMemo(() => groupBubbleItems(bubbleItems), [bubbleItems]);
-
-  const virtualizer = useVirtualizer({
-    count: processedItems.length,
-    getScrollElement: () => scrollElementRef.current,
-    estimateSize: () => ESTIMATE_SIZE,
-    overscan: OVERSCAN
-  });
-
-  useEffect(() => {
-    if (!open || !isStreaming || processedItems.length === 0) return;
-    const el = scrollElementRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom > MESSAGE_LIST_BOTTOM_THRESHOLD_PX) {
-      isPinnedToBottomRef.current = false;
-      return;
-    }
-    virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
-  }, [open, isStreaming, processedItems, virtualizer]);
-
-  useEffect(() => {
-    if (!open || processedItems.length === 0 || !isPinnedToBottomRef.current) return;
-    virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
-  }, [open, processedItems.length, virtualizer]);
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      scrollToMessage: (messageId) => {
-        const index = processedItems.findIndex((item) => {
-          if (item.role === GROUP_ROLE) return item.items.some((child) => child.key === messageId);
-          return item.key === messageId;
-        });
-        if (index < 0) return false;
-        virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
-        return true;
-      },
-      scrollToBottom: () => {
-        if (processedItems.length === 0) return;
-        virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
-      }
-    }),
-    [processedItems, virtualizer]
-  );
-
-  const handleScroll = useCallback(() => {
-    const el = scrollElementRef.current;
-    if (!el) return;
-    isPinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD_PX;
-  }, []);
-
-  const virtualItems = virtualizer.getVirtualItems();
-
-  if (processedItems.length === 0) {
-    return (
-      <div ref={scrollElementRef} className="ai-chat-messages ai-chat-empty-state" role="log" aria-label="Chat messages">
-        <div>
-          <h1>Claude AI Chat</h1>
-          <p>Choose or create a session, then ask about this workspace.</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div ref={scrollElementRef} className="ai-chat-messages" role="log" aria-label="Chat messages" aria-live="polite" aria-busy={isStreaming} onScroll={handleScroll}>
-      <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
-        {virtualItems.map((virtualRow) => {
-          const item = processedItems[virtualRow.index];
-          const isGroup = item.role === GROUP_ROLE;
-
-          return (
-            <div
-              key={virtualRow.key}
-              data-index={virtualRow.index}
-              ref={virtualizer.measureElement}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                transform: `translateY(${virtualRow.start}px)`,
-                paddingBottom: BUBBLE_GAP
-              }}
-            >
-              {isGroup ? (
-                <ActivityTimeline
-                  items={item.items}
-                  isLastGroup={(() => {
-                    if (!isStreaming) return false;
-                    const next = processedItems[virtualRow.index + 1];
-                    return !next || next.loading === true;
-                  })()}
-                />
-              ) : (
-                <MessageBubble roleConfig={bubbleRoles[item.role] || {}} item={item} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
-AgentChatMessageList.displayName = "AgentChatMessageList";
-
-const MessageBubble = memo(({ roleConfig, item }) => {
-  const textContent = useMemo(() => (item.loading ? "" : item.copyText || extractTextFromReact(item.content)), [item.content, item.copyText, item.loading]);
-
-  return (
-    <Bubble
-      placement={roleConfig.placement}
-      styles={roleConfig.styles}
-      classNames={roleConfig.classNames}
-      messageRender={roleConfig.messageRender}
-      content={item.content}
-      loading={item.loading}
-      className={item.className}
-      header={item.header}
-      avatar={item.avatar}
-      footer={textContent ? () => <div className="ai-chat-bubble-footer"><CopyButton text={textContent} /></div> : undefined}
+    <Collapse
+      size="small"
+      ghost
+      className="ai-chat-tools"
+      items={collapseItems}
+      defaultActiveKey={["settings"]}
     />
-  );
-});
-
-MessageBubble.displayName = "MessageBubble";
-
-const ActivityTimeline = memo(({ items, isLastGroup }) => {
-  const timelineItems = items.map((item, index) => {
-    const isLast = index === items.length - 1;
-    return {
-      color: item.tone === "error" ? "red" : "gray",
-      dot: isLast && isLastGroup ? <Spin size="small" /> : undefined,
-      children: <MarkdownText text={String(item.content ?? "")} className="ai-chat-timeline-item-content" />
-    };
-  });
-
-  return (
-    <div className="ai-chat-activity-timeline">
-      <Timeline items={timelineItems} />
-    </div>
-  );
-});
-
-ActivityTimeline.displayName = "ActivityTimeline";
-
-function CopyButton({ text }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(async () => {
-    if (!text || copied) return;
-    try {
-      await writeClipboard(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setCopied(false);
-    }
-  }, [copied, text]);
-
-  if (!text) return null;
-
-  return (
-    <button type="button" className="ai-chat-copy-button" onClick={handleCopy} title={copied ? "Copied!" : "Copy message"}>
-      {copied ? <CheckOutlined /> : <CopyOutlined />}
-    </button>
-  );
-}
-
-function MarkdownText({ text, className = "" }) {
-  return (
-    <div className={["ai-chat-markdown", className].filter(Boolean).join(" ")}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ node, ...props }) => {
-            void node;
-            return <a {...props} target="_blank" rel="noreferrer noopener" />;
-          }
-        }}
-      >
-        {String(text || "")}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function MessageContent({ text, images }) {
-  return (
-    <div className="ai-chat-message-content">
-      {text ? <MarkdownText text={text} /> : null}
-      <ImageAttachmentGrid images={images} />
-    </div>
-  );
-}
-
-function ImageAttachmentGrid({ images }) {
-  if (!images || images.length === 0) return null;
-  return (
-    <div className="ai-chat-attachment-body">
-      {images.map((image, index) => (
-        <figure className="ai-chat-attachment-row" key={String(index) + ":" + (image.name || image.mediaType || "")}>
-          <div className="ai-chat-attachment-thumb">
-            <img src={imageSrc(image)} alt={image.name || image.mediaType || "Image attachment"} />
-          </div>
-          <figcaption className="ai-chat-attachment-note">
-            {[image.name || image.mediaType, formatBytes(image.size || image.sizeBytes || estimateBase64Bytes(image.dataBase64))].filter(Boolean).join(" · ")}
-          </figcaption>
-        </figure>
-      ))}
-    </div>
   );
 }
 
@@ -1664,6 +1207,7 @@ function eventsToBubbleItems(events) {
 
 function resultToItems(entry) {
   const data = entry.data;
+  if (isEmptySuccessResult(data)) return [];
   if (data && typeof data === "object" && data.is_error === true) {
     return [createActivity(entry.id, "Run error", activityText(entry.type, data), "error")];
   }
@@ -1685,6 +1229,80 @@ function resultToItems(entry) {
       copyText: text
     })
   ];
+}
+
+function isEmptySuccessResult(data) {
+  return (
+    data &&
+    typeof data === "object" &&
+    data.type === "result" &&
+    data.subtype === "success" &&
+    !data.result &&
+    !data.terminal_reason &&
+    !Number.isFinite(data.duration_ms) &&
+    !Number.isFinite(data.total_cost_usd)
+  );
+}
+
+function getActiveAskUserQuestion(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const entry = events[index];
+    if (!entry) continue;
+    if (entry.type === "question_pending" && entry.data?.waitingForUserQuestion && Array.isArray(entry.data?.input?.questions)) {
+      return {
+        id: entry.id,
+        data: entry.data.input,
+        toolUseId: entry.data.toolUseId
+      };
+    }
+    const tool = findAskUserQuestionTool(entry.data);
+    if (tool?.input) {
+      return {
+        id: entry.id,
+        data: tool.input,
+        toolUseId: tool.id
+      };
+    }
+    if (closesAskUserQuestion(entry)) return null;
+  }
+  return null;
+}
+
+function closesAskUserQuestion(entry) {
+  if (!entry) return false;
+  if (entry.type === "prompt" || entry.type === "result") return true;
+  if (entry.type === "done") return !entry.data?.waitingForUserQuestion;
+  if (entry.type !== "history" && entry.type !== "message") return false;
+
+  const record = entry.data && typeof entry.data === "object" ? entry.data : {};
+  const message = record.message && typeof record.message === "object" ? record.message : record;
+  const role = normalizeRole(message.role || record.type);
+  const content = message.content !== undefined ? message.content : record.content;
+  const blocks = Array.isArray(content) ? content : [];
+
+  if (role !== "user") return false;
+  if (!Array.isArray(content)) return Boolean(extractTextContent(content));
+  if (blocks.some((block) => block && typeof block === "object" && block.type === "tool_result")) return true;
+  return blocks.some((block) => block && typeof block === "object" && block.type === "text" && String(block.text || "").trim());
+}
+
+function findAskUserQuestionTool(value) {
+  if (!value || typeof value !== "object") return null;
+  const record = value;
+  const message = record.message && typeof record.message === "object" ? record.message : record;
+  if (message.stop_reason !== "tool_use") return null;
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  return (
+    blocks.find(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        block.type === "tool_use" &&
+        block.name === "AskUserQuestion" &&
+        block.input &&
+        Array.isArray(block.input.questions)
+    ) || null
+  );
 }
 
 function toProtocolItems(value, meta, keyBase) {
@@ -1813,26 +1431,6 @@ function createActivity(key, label, text, tone = "muted") {
   };
 }
 
-function groupBubbleItems(items) {
-  const result = [];
-  let i = 0;
-  while (i < items.length) {
-    if (items[i].role === ACTIVITY_ROLE) {
-      const children = [];
-      const groupKey = items[i].key;
-      while (i < items.length && items[i].role === ACTIVITY_ROLE) {
-        children.push(items[i]);
-        i++;
-      }
-      result.push({ key: groupKey, role: GROUP_ROLE, items: children });
-    } else {
-      result.push(items[i]);
-      i++;
-    }
-  }
-  return result;
-}
-
 function BubbleHeader({ label, meta }) {
   return (
     <div className="ai-chat-bubble-header-inline">
@@ -1844,10 +1442,6 @@ function BubbleHeader({ label, meta }) {
 
 function AssistantAvatar() {
   return <div className="ai-chat-avatar">AI</div>;
-}
-
-function FilterGlyph() {
-  return <span className="ai-chat-filter-glyph">≡</span>;
 }
 
 function normalizeRole(value) {
@@ -1940,13 +1534,6 @@ function extractTextContent(value) {
   return "";
 }
 
-function extractTextFromReact(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map(extractTextFromReact).join("");
-  if (content?.props?.children) return extractTextFromReact(content.props.children);
-  return "";
-}
-
 function extractImageBlocks(value) {
   const images = [];
   const seen = new Set();
@@ -2014,50 +1601,6 @@ function imageSrc(image) {
 
 function getSessionId(session) {
   return session.sessionId || session.id || "";
-}
-
-function normalizeUserLabel(value) {
-  if (typeof value !== "string") return "";
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function getDisplayLabel(value) {
-  return normalizeUserLabel(value) || "Anonymous";
-}
-
-function getAvatarThemeFromLabel(value) {
-  const themes = [
-    { bg: "#2563eb", fg: "#ffffff" },
-    { bg: "#0891b2", fg: "#ffffff" },
-    { bg: "#059669", fg: "#ffffff" },
-    { bg: "#ca8a04", fg: "#111827" },
-    { bg: "#dc2626", fg: "#ffffff" },
-    { bg: "#9333ea", fg: "#ffffff" }
-  ];
-  const label = getDisplayLabel(value);
-  let hash = 0;
-  for (let index = 0; index < label.length; index += 1) {
-    hash = (hash * 31 + label.charCodeAt(index)) >>> 0;
-  }
-  return themes[hash % themes.length];
-}
-
-function normalizeSessionTitle(title, fallback = "Untitled chat") {
-  if (typeof title !== "string") return fallback;
-  const normalized = title.replace(/\s+/g, " ").trim();
-  return normalized || fallback;
-}
-
-function formatSessionTimestamp(value) {
-  if (!value) return "Recently";
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "Recently";
-  const now = new Date();
-  const isSameDay = now.getFullYear() === date.getFullYear() && now.getMonth() === date.getMonth() && now.getDate() === date.getDate();
-  if (isSameDay) {
-    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
-  return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function firstLine(value) {

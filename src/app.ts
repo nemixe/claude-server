@@ -20,7 +20,7 @@ export type AppDependencies = {
 };
 
 const createSessionSchema = z.object({
-  mode: z.enum(CLAUDE_MODES).default("plan"),
+  mode: z.enum(CLAUDE_MODES).default("bypass"),
   title: z.string().min(1).max(200).optional(),
   files: z
     .array(
@@ -55,6 +55,12 @@ const promptImageSchema = z
 const streamMessageSchema = z.object({
   prompt: z.string().min(1),
   images: z.array(promptImageSchema).max(MAX_PROMPT_IMAGES).optional(),
+  toolResult: z
+    .object({
+      toolUseId: z.string().min(1),
+      content: z.string().min(1)
+    })
+    .optional(),
   mode: z.enum(CLAUDE_MODES).optional(),
   model: z.string().min(1).optional(),
   maxTurns: z.number().int().positive().optional()
@@ -191,12 +197,14 @@ export function createApp(dependencies: AppDependencies): Hono {
 
     return streamSSE(c, async (stream) => {
       let sessionMarkedAsRun = false;
+      let waitingForUserQuestion = false;
       try {
         for await (const event of agentService.stream({ session, request })) {
           if (!sessionMarkedAsRun) {
             await sessionStore.markRun(session.id);
             sessionMarkedAsRun = true;
           }
+          if (event.type === "question_pending") waitingForUserQuestion = true;
 
           await stream.writeSSE({
             event: event.type,
@@ -204,7 +212,7 @@ export function createApp(dependencies: AppDependencies): Hono {
           });
         }
 
-        await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true }) });
+        await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true, waitingForUserQuestion }) });
       } catch (error) {
         const status = error instanceof ConcurrencyLimitError ? "concurrency_limit" : "agent_error";
         await stream.writeSSE({
