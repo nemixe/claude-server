@@ -6,7 +6,8 @@
   "main": "./dist/index.js",
   "exports": {
     ".": "./dist/app.js",
-    "./client": "./dist/client.js"
+    "./client": "./dist/client.js",
+    "./chat-contract": "./dist/chat-contract.js"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

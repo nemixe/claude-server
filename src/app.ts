@@ -59,6 +59,20 @@ const streamMessageSchema = z.object({
   maxTurns: z.number().int().positive().optional()
 });
 
+const claudeCommandSchema = z.object({
+  path: z.string().min(1).max(500),
+  content: z.string().max(200_000)
+});
+
+const deleteClaudeCommandSchema = z.object({
+  path: z.string().min(1).max(500)
+});
+
+const workspaceSearchSchema = z.object({
+  q: z.string().min(1).max(200),
+  limit: z.coerce.number().int().positive().max(200).default(50)
+});
+
 export function createApp(dependencies: AppDependencies): Hono {
   const app = new Hono();
   const sessionStore = dependencies.sessionStore ?? new SessionStore(dependencies.config);
@@ -93,6 +107,52 @@ export function createApp(dependencies: AppDependencies): Hono {
     const offset = parseOptionalInteger(c.req.query("offset"));
     const messages = await agentService.getMessages(session, limit, offset);
     return c.json({ messages });
+  });
+
+  app.get("/v1/sessions/:sessionId/claude-commands", async (c) => {
+    const session = await sessionStore.get(c.req.param("sessionId"));
+    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+
+    const commandPath = c.req.query("path");
+    if (commandPath) {
+      const command = await sessionStore.readClaudeCommand(session, commandPath);
+      if (!command) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
+      return c.json({ command });
+    }
+
+    const commands = await sessionStore.listClaudeCommands(session);
+    return c.json({ commands });
+  });
+
+  app.get("/v1/sessions/:sessionId/files:search", async (c) => {
+    const session = await sessionStore.get(c.req.param("sessionId"));
+    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+
+    const query = workspaceSearchSchema.parse({
+      q: c.req.query("q"),
+      limit: c.req.query("limit")
+    });
+    const results = await sessionStore.searchWorkspace(session, query.q, query.limit);
+    return c.json({ results });
+  });
+
+  app.post("/v1/sessions/:sessionId/claude-commands", async (c) => {
+    const session = await sessionStore.get(c.req.param("sessionId"));
+    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+
+    const body = claudeCommandSchema.parse(await c.req.json());
+    const command = await sessionStore.saveClaudeCommand(session, body);
+    return c.json({ command }, 201);
+  });
+
+  app.delete("/v1/sessions/:sessionId/claude-commands", async (c) => {
+    const session = await sessionStore.get(c.req.param("sessionId"));
+    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+
+    const body = deleteClaudeCommandSchema.parse(await c.req.json());
+    const deleted = await sessionStore.deleteClaudeCommand(session, body.path);
+    if (!deleted) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
+    return c.json({ deleted: true });
   });
 
   app.get("/v1/sessions/:sessionId/events:stream", async (c) => {
@@ -170,6 +230,10 @@ export function createApp(dependencies: AppDependencies): Hono {
   app.onError((error, c) => {
     if (error instanceof z.ZodError) {
       return c.json({ error: { code: "validation_error", message: z.prettifyError(error) } }, 400);
+    }
+
+    if (error instanceof Error && error.message.startsWith("Invalid ")) {
+      return c.json({ error: { code: "validation_error", message: error.message } }, 400);
     }
 
     return c.json({ error: { code: "internal_error", message: errorMessage(error) } }, 500);

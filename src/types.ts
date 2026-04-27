@@ -8,6 +8,26 @@ export type UploadedFile = {
   contentBase64?: string;
 };
 
+export type ClaudeCommand = {
+  path: string;
+  content: string;
+  updatedAt: string;
+};
+
+export type ClaudeCommandInput = {
+  path: string;
+  content: string;
+};
+
+export type WorkspaceSearchResult = {
+  path: string;
+  name: string;
+  type: "file" | "directory";
+  score: number;
+  size?: number;
+  updatedAt: string;
+};
+
 export type PromptImage = {
   name?: string;
   mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";

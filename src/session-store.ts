@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import type { ClaudeMode, SessionMetadata, UploadedFile } from "./types.js";
+import type { ClaudeCommand, ClaudeCommandInput, ClaudeMode, SessionMetadata, UploadedFile, WorkspaceSearchResult } from "./types.js";
+
+const CLAUDE_COMMANDS_DIR = ".claude/commands";
+const DEFAULT_WORKSPACE_SEARCH_LIMIT = 50;
+const MAX_WORKSPACE_SEARCH_LIMIT = 200;
 
 export type CreateSessionInput = {
   mode: ClaudeMode;
@@ -32,6 +36,7 @@ export class SessionStore {
     };
 
     await this.writeUploadedFiles(workspacePath, input.files ?? []);
+    await this.syncSharedClaudeCommandsToWorkspace(workspacePath);
     await this.save(metadata);
     return metadata;
   }
@@ -81,6 +86,75 @@ export class SessionStore {
     return true;
   }
 
+  async listClaudeCommands(session: SessionMetadata): Promise<ClaudeCommand[]> {
+    await this.syncSharedClaudeCommandsToWorkspace(session.workspacePath);
+    const commandsPath = this.config.claudeCommandsDir;
+    const files = await listMarkdownFiles(commandsPath);
+    const commands = await Promise.all(
+      files.map(async (relativePath) => this.readClaudeCommandFile(commandsPath, relativePath))
+    );
+
+    return commands
+      .filter((command): command is ClaudeCommand => Boolean(command))
+      .sort((left, right) => left.path.localeCompare(right.path));
+  }
+
+  async readClaudeCommand(session: SessionMetadata, commandPath: string): Promise<ClaudeCommand | undefined> {
+    const relativePath = sanitizeClaudeCommandPath(commandPath);
+    await this.syncSharedClaudeCommandsToWorkspace(session.workspacePath);
+    return this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
+  }
+
+  async saveClaudeCommand(session: SessionMetadata, command: ClaudeCommandInput): Promise<ClaudeCommand> {
+    const relativePath = sanitizeClaudeCommandPath(command.path);
+    const targetPath = path.join(this.config.claudeCommandsDir, relativePath);
+
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, command.content, "utf8");
+    await this.syncSharedClaudeCommandsToWorkspace(session.workspacePath, relativePath);
+
+    const saved = await this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
+    if (!saved) throw new Error(`Could not save Claude command: ${relativePath}`);
+    return saved;
+  }
+
+  async deleteClaudeCommand(session: SessionMetadata, commandPath: string): Promise<boolean> {
+    const relativePath = sanitizeClaudeCommandPath(commandPath);
+    const targetPath = path.join(this.config.claudeCommandsDir, relativePath);
+    const workspaceTargetPath = path.join(session.workspacePath, CLAUDE_COMMANDS_DIR, relativePath);
+
+    try {
+      const stat = await fs.stat(targetPath);
+      if (!stat.isFile()) return false;
+      await fs.rm(targetPath, { force: true });
+      await fs.rm(workspaceTargetPath, { force: true });
+      await pruneEmptyParents(path.dirname(targetPath), this.config.claudeCommandsDir);
+      await pruneEmptyParents(path.dirname(workspaceTargetPath), path.join(session.workspacePath, CLAUDE_COMMANDS_DIR));
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  async searchWorkspace(session: SessionMetadata, query: string, limit = DEFAULT_WORKSPACE_SEARCH_LIMIT): Promise<WorkspaceSearchResult[]> {
+    const normalizedQuery = normalizeSearchValue(query);
+    const boundedLimit = Math.min(Math.max(limit, 1), MAX_WORKSPACE_SEARCH_LIMIT);
+    if (!normalizedQuery) return [];
+
+    const entries = await listWorkspaceEntries(session.workspacePath);
+    return entries
+      .map((entry) => {
+        const score = fuzzyScore(normalizedQuery, normalizeSearchValue(entry.path));
+        if (score === undefined) return undefined;
+        return { ...entry, score };
+      })
+      .filter((entry): entry is WorkspaceSearchResult => Boolean(entry))
+      .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
+      .slice(0, boundedLimit);
+  }
+
   private async ensureBaseDirs(): Promise<void> {
     await Promise.all([
       fs.mkdir(this.config.workspaceDir, { recursive: true }),
@@ -116,6 +190,38 @@ export class SessionStore {
       })
     );
   }
+
+  private async syncSharedClaudeCommandsToWorkspace(workspacePath: string, onlyRelativePath?: string): Promise<void> {
+    const files = onlyRelativePath ? [sanitizeClaudeCommandPath(onlyRelativePath)] : await listMarkdownFiles(this.config.claudeCommandsDir);
+
+    await Promise.all(
+      files.map(async (relativePath) => {
+        const sourcePath = path.join(this.config.claudeCommandsDir, relativePath);
+        const targetPath = path.join(workspacePath, CLAUDE_COMMANDS_DIR, relativePath);
+        const content = await fs.readFile(sourcePath, "utf8");
+        await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        await fs.writeFile(targetPath, content, "utf8");
+      })
+    );
+  }
+
+  private async readClaudeCommandFile(rootPath: string, relativePath: string): Promise<ClaudeCommand | undefined> {
+    const targetPath = path.join(rootPath, relativePath);
+
+    try {
+      const [content, stat] = await Promise.all([fs.readFile(targetPath, "utf8"), fs.stat(targetPath)]);
+      if (!stat.isFile()) return undefined;
+      return {
+        path: relativePath,
+        content,
+        updatedAt: stat.mtime.toISOString()
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return undefined;
+      throw error;
+    }
+  }
 }
 
 export function sanitizeWorkspaceRelativePath(value: string): string {
@@ -124,4 +230,122 @@ export function sanitizeWorkspaceRelativePath(value: string): string {
     throw new Error(`Invalid workspace file path: ${value}`);
   }
   return normalized;
+}
+
+export function sanitizeClaudeCommandPath(value: string): string {
+  const normalized = sanitizeWorkspaceRelativePath(value);
+  const withoutPrefix = normalized.startsWith(`${CLAUDE_COMMANDS_DIR}/`)
+    ? normalized.slice(CLAUDE_COMMANDS_DIR.length + 1)
+    : normalized;
+
+  if (
+    !withoutPrefix ||
+    withoutPrefix === "." ||
+    withoutPrefix.startsWith("../") ||
+    withoutPrefix === ".." ||
+    withoutPrefix.includes("\0") ||
+    path.posix.basename(withoutPrefix).startsWith(".") ||
+    !withoutPrefix.endsWith(".md")
+  ) {
+    throw new Error(`Invalid Claude command path: ${value}`);
+  }
+
+  return withoutPrefix;
+}
+
+async function listMarkdownFiles(root: string, current: string = root): Promise<string[]> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return [];
+    throw error;
+  }
+
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) return listMarkdownFiles(root, entryPath);
+      if (!entry.isFile() || !entry.name.endsWith(".md")) return [];
+      return [path.relative(root, entryPath).replaceAll(path.sep, "/")];
+    })
+  );
+
+  return files.flat();
+}
+
+async function listWorkspaceEntries(root: string, current: string = root): Promise<Omit<WorkspaceSearchResult, "score">[]> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await fs.readdir(current, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return [];
+    throw error;
+  }
+
+  const results = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) return [];
+
+      const relativePath = path.relative(root, entryPath).replaceAll(path.sep, "/");
+      const stat = await fs.stat(entryPath);
+      const result: Omit<WorkspaceSearchResult, "score"> = {
+        path: relativePath,
+        name: entry.name,
+        type: entry.isDirectory() ? "directory" : "file",
+        ...(entry.isFile() ? { size: stat.size } : {}),
+        updatedAt: stat.mtime.toISOString()
+      };
+
+      if (!entry.isDirectory()) return [result];
+      return [result, ...(await listWorkspaceEntries(root, entryPath))];
+    })
+  );
+
+  return results.flat();
+}
+
+function normalizeSearchValue(value: string): string {
+  return value.trim().toLowerCase().replaceAll("\\", "/");
+}
+
+function fuzzyScore(query: string, value: string): number | undefined {
+  if (value.includes(query)) {
+    const start = value.indexOf(query);
+    return 10_000 - start * 10 - Math.max(0, value.length - query.length);
+  }
+
+  let queryIndex = 0;
+  let score = 0;
+  let previousMatch = -1;
+  for (let valueIndex = 0; valueIndex < value.length && queryIndex < query.length; valueIndex += 1) {
+    if (value[valueIndex] !== query[queryIndex]) continue;
+
+    score += previousMatch === valueIndex - 1 ? 25 : 10;
+    if (valueIndex === 0 || value[valueIndex - 1] === "/" || value[valueIndex - 1] === "-" || value[valueIndex - 1] === "_") {
+      score += 15;
+    }
+    previousMatch = valueIndex;
+    queryIndex += 1;
+  }
+
+  if (queryIndex !== query.length) return undefined;
+  return score - value.length;
+}
+
+async function pruneEmptyParents(current: string, stopAt: string): Promise<void> {
+  if (current === stopAt || !current.startsWith(stopAt)) return;
+
+  try {
+    await fs.rmdir(current);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTEMPTY") return;
+    throw error;
+  }
+
+  await pruneEmptyParents(path.dirname(current), stopAt);
 }

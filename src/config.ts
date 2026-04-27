@@ -7,6 +7,7 @@ export type AppConfig = {
   bindHost: string;
   allowedHosts: AllowedHostRule[];
   trustProxy: boolean;
+  claudeCommandsDir: string;
   workspaceDir: string;
   sessionDir: string;
   maxConcurrentRuns: number;
@@ -44,6 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     bindHost: raw.BIND_HOST ?? "0.0.0.0",
     allowedHosts,
     trustProxy: parseBoolean(raw.TRUST_PROXY, false, "TRUST_PROXY"),
+    claudeCommandsDir: resolveFromCwd(".claude/commands", cwd),
     workspaceDir: resolveFromCwd(raw.WORKSPACE_DIR ?? ".data/workspaces", cwd),
     sessionDir: resolveFromCwd(raw.SESSION_DIR ?? ".data/sessions", cwd),
     maxConcurrentRuns: parseInteger(raw.MAX_CONCURRENT_RUNS, 4, "MAX_CONCURRENT_RUNS"),

@@ -67,6 +67,11 @@ export function renderTestClient(): string {
         align-items: start;
       }
 
+      .stack {
+        display: grid;
+        gap: 16px;
+      }
+
       section {
         background: color-mix(in srgb, var(--panel) 94%, white);
         border: 1px solid var(--line);
@@ -120,6 +125,10 @@ export function renderTestClient(): string {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 12px;
+      }
+
+      .row.single {
+        grid-template-columns: 1fr;
       }
 
       .actions {
@@ -232,6 +241,64 @@ export function renderTestClient(): string {
         padding: 12px 16px;
       }
 
+      .panel-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 16px 0;
+      }
+
+      .panel-heading strong {
+        font-size: 14px;
+      }
+
+      .helper {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .search-results {
+        display: grid;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .search-empty {
+        padding: 10px 12px;
+        border: 1px dashed var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.6);
+        font-size: 12px;
+      }
+
+      .search-result {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.78);
+      }
+
+      .search-result strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 13px;
+      }
+
+      .search-result code {
+        display: block;
+        color: var(--accent-dark);
+        font-size: 12px;
+        word-break: break-word;
+      }
+
+      .search-meta {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
       .session {
         color: var(--muted);
         font-size: 12px;
@@ -292,57 +359,122 @@ export function renderTestClient(): string {
       </header>
 
       <div class="grid">
-        <section>
-          <form id="form">
-            <label>
-              API base URL
-              <input id="baseUrl" value="" placeholder="http://localhost:3000" />
-            </label>
-
-            <div class="session-picker">
+        <div class="stack">
+          <section>
+            <form id="form">
               <label>
-                Sessions
-                <select id="sessionList">
-                  <option value="">New session</option>
-                </select>
-              </label>
-              <button id="refreshSessions" class="secondary" type="button">Refresh</button>
-            </div>
-
-            <div class="row">
-              <label>
-                Mode
-                <select id="mode">
-                  <option value="plan">plan</option>
-                  <option value="edit">edit</option>
-                  <option value="bypass">bypass</option>
-                </select>
+                API base URL
+                <input id="baseUrl" value="" placeholder="http://localhost:3000" />
               </label>
 
+              <div class="session-picker">
+                <label>
+                  Sessions
+                  <select id="sessionList">
+                    <option value="">New session</option>
+                  </select>
+                </label>
+                <button id="refreshSessions" class="secondary" type="button">Refresh</button>
+              </div>
+
+              <div class="row">
+                <label>
+                  Mode
+                  <select id="mode">
+                    <option value="plan">plan</option>
+                    <option value="edit">edit</option>
+                    <option value="bypass">bypass</option>
+                  </select>
+                </label>
+
+                <label>
+                  Max turns
+                  <input id="maxTurns" type="number" min="1" value="30" />
+                </label>
+              </div>
+
               <label>
-                Max turns
-                <input id="maxTurns" type="number" min="1" value="30" />
+                Prompt
+                <textarea id="prompt">Inspect the current workspace and summarize what you can do.</textarea>
               </label>
+
+              <label class="image-picker">
+                Images
+                <input id="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple />
+                <div class="image-previews" id="selectedImages"></div>
+              </label>
+
+              <div class="actions">
+                <button id="send" type="submit">Send</button>
+                <button id="interrupt" class="danger" type="button" disabled>Interrupt</button>
+                <button id="clear" class="secondary" type="button">Clear</button>
+              </div>
+            </form>
+          </section>
+
+          <section>
+            <div class="panel-heading">
+              <strong>Claude Commands</strong>
+              <span class="helper" id="commandsHint">Pick a session to manage slash commands</span>
             </div>
+            <form id="commandForm">
+              <div class="session-picker">
+                <label>
+                  Commands
+                  <select id="commandList">
+                    <option value="">No command selected</option>
+                  </select>
+                </label>
+                <button id="refreshCommands" class="secondary" type="button">Refresh</button>
+              </div>
 
-            <label>
-              Prompt
-              <textarea id="prompt">Inspect the current workspace and summarize what you can do.</textarea>
-            </label>
+              <div class="row single">
+                <label>
+                  Command path
+                  <input id="commandPath" placeholder="review/fix.md" />
+                </label>
+              </div>
 
-            <label class="image-picker">
-              Images
-              <input id="images" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple />
-              <div class="image-previews" id="selectedImages"></div>
-            </label>
+              <label>
+                Command content
+                <textarea id="commandContent" placeholder="Write the Claude slash command markdown here."></textarea>
+              </label>
 
-            <div class="actions">
-              <button id="send" type="submit">Send</button>
-              <button id="interrupt" class="danger" type="button" disabled>Interrupt</button>
-              <button id="clear" class="secondary" type="button">Clear</button>
+              <div class="actions">
+                <button id="saveCommand" type="submit">Save command</button>
+                <button id="newCommand" class="secondary" type="button">New</button>
+                <button id="deleteCommand" class="danger" type="button">Delete</button>
+              </div>
+            </form>
+          </section>
+
+          <section>
+            <div class="panel-heading">
+              <strong>Workspace Search</strong>
+              <span class="helper" id="searchHint">Pick a session to search files and folders</span>
             </div>
-          </form>
-        </section>
+            <form id="searchForm">
+              <div class="row">
+                <label>
+                  Query
+                  <input id="searchQuery" placeholder="cmpbtn" />
+                </label>
+
+                <label>
+                  Limit
+                  <input id="searchLimit" type="number" min="1" max="200" value="20" />
+                </label>
+              </div>
+
+              <div class="actions">
+                <button id="runSearch" type="submit">Search</button>
+                <button id="clearSearch" class="secondary" type="button">Clear</button>
+              </div>
+
+              <div class="search-results" id="searchResults"></div>
+            </form>
+          </section>
+        </div>
 
         <section>
           <div class="toolbar">
@@ -374,6 +506,22 @@ export function renderTestClient(): string {
       const promptInput = document.querySelector("#prompt");
       const imagesInput = document.querySelector("#images");
       const selectedImagesEl = document.querySelector("#selectedImages");
+      const commandForm = document.querySelector("#commandForm");
+      const commandsHintEl = document.querySelector("#commandsHint");
+      const commandListInput = document.querySelector("#commandList");
+      const refreshCommandsButton = document.querySelector("#refreshCommands");
+      const commandPathInput = document.querySelector("#commandPath");
+      const commandContentInput = document.querySelector("#commandContent");
+      const saveCommandButton = document.querySelector("#saveCommand");
+      const newCommandButton = document.querySelector("#newCommand");
+      const deleteCommandButton = document.querySelector("#deleteCommand");
+      const searchForm = document.querySelector("#searchForm");
+      const searchHintEl = document.querySelector("#searchHint");
+      const searchQueryInput = document.querySelector("#searchQuery");
+      const searchLimitInput = document.querySelector("#searchLimit");
+      const runSearchButton = document.querySelector("#runSearch");
+      const clearSearchButton = document.querySelector("#clearSearch");
+      const searchResultsEl = document.querySelector("#searchResults");
 
       const storageKey = "claude-test-client:last-session";
       const imageMediaTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
@@ -381,6 +529,8 @@ export function renderTestClient(): string {
       const maxImageBytes = 5 * 1024 * 1024;
       let sessionId = "";
       let sessions = [];
+      let commands = [];
+      let searchResults = [];
       let selectedImages = [];
       let controller;
       let observeController;
@@ -422,6 +572,51 @@ export function renderTestClient(): string {
         await loadSessions({ restoreSaved: false });
       });
 
+      commandForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        await saveCommand();
+      });
+
+      refreshCommandsButton.addEventListener("click", async () => {
+        await loadClaudeCommands();
+      });
+
+      commandListInput.addEventListener("change", async () => {
+        if (!sessionId) return;
+        const path = commandListInput.value;
+        if (!path) {
+          clearCommandEditor();
+          return;
+        }
+
+        const existing = commands.find((command) => command.path === path);
+        if (existing) {
+          showCommand(existing);
+          return;
+        }
+
+        await loadClaudeCommand(path);
+      });
+
+      newCommandButton.addEventListener("click", () => {
+        clearCommandEditor();
+      });
+
+      deleteCommandButton.addEventListener("click", async () => {
+        await deleteCommand();
+      });
+
+      searchForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        await runWorkspaceSearch();
+      });
+
+      clearSearchButton.addEventListener("click", () => {
+        searchQueryInput.value = "";
+        searchResults = [];
+        renderSearchResults();
+      });
+
       sessionListInput.addEventListener("change", () => {
         const selected = sessions.find((session) => getSessionId(session) === sessionListInput.value);
 
@@ -449,6 +644,7 @@ export function renderTestClient(): string {
             rememberSession(created);
             showSession(created);
             await loadSessions({ restoreSaved: false });
+            await loadClaudeCommands();
           }
 
           stopObserving();
@@ -546,10 +742,16 @@ export function renderTestClient(): string {
       async function loadSessionView(id, eventName, session) {
         stopObserving();
         eventsEl.textContent = "";
+        searchResults = [];
+        renderSearchResults();
+        setWorkspaceSearchEnabled(true);
+        searchHintEl.textContent = "Enter a query to search this session workspace";
 
         if (session) {
           appendEntry(eventName, session);
         }
+
+        await loadClaudeCommands();
 
         try {
           const result = await getJson("/v1/sessions/" + encodeURIComponent(id) + "/messages");
@@ -567,6 +769,153 @@ export function renderTestClient(): string {
         }
 
         observeSession(id);
+      }
+
+      async function runWorkspaceSearch() {
+        if (!sessionId) {
+          appendEntry("client_error", "Select or create a session before searching the workspace");
+          return;
+        }
+
+        const query = String(searchQueryInput.value || "").trim();
+        if (!query) {
+          searchResults = [];
+          renderSearchResults();
+          searchHintEl.textContent = "Enter a query to search this session workspace";
+          return;
+        }
+
+        searchHintEl.textContent = "Searching workspace paths";
+        runSearchButton.disabled = true;
+
+        try {
+          const limit = Number(searchLimitInput.value || 20);
+          const result = await getJson(
+            "/v1/sessions/" +
+              encodeURIComponent(sessionId) +
+              "/files:search?q=" +
+              encodeURIComponent(query) +
+              "&limit=" +
+              encodeURIComponent(String(limit))
+          );
+          searchResults = Array.isArray(result.results) ? result.results : [];
+          renderSearchResults();
+          searchHintEl.textContent =
+            searchResults.length > 0
+              ? "Search results from the selected session workspace"
+              : "No matching files or folders in this session workspace";
+        } catch (error) {
+          searchHintEl.textContent = "Could not search workspace";
+          appendEntry("client_error", "Could not search workspace: " + String(error && error.message ? error.message : error));
+        } finally {
+          runSearchButton.disabled = false;
+        }
+      }
+
+      async function loadClaudeCommands() {
+        commands = [];
+        renderCommandList();
+
+        if (!sessionId) {
+          clearCommandEditor();
+          commandsHintEl.textContent = "Pick a session to manage slash commands";
+          setCommandEditorEnabled(false);
+          return;
+        }
+
+        commandsHintEl.textContent = "Loading commands from .claude/commands";
+        setCommandEditorEnabled(true);
+
+        try {
+          const result = await getJson("/v1/sessions/" + encodeURIComponent(sessionId) + "/claude-commands");
+          commands = Array.isArray(result.commands) ? result.commands : [];
+          renderCommandList();
+          commandsHintEl.textContent =
+            commands.length > 0
+              ? "Commands live in this session workspace under .claude/commands"
+              : "No commands saved yet for this session";
+        } catch (error) {
+          commandsHintEl.textContent = "Could not load commands";
+          appendEntry("client_error", "Could not load Claude commands: " + String(error && error.message ? error.message : error));
+        }
+      }
+
+      async function loadClaudeCommand(path) {
+        if (!sessionId) return;
+
+        try {
+          const result = await getJson(
+            "/v1/sessions/" + encodeURIComponent(sessionId) + "/claude-commands?path=" + encodeURIComponent(path)
+          );
+          if (result && result.command) {
+            mergeCommand(result.command);
+            showCommand(result.command);
+          }
+        } catch (error) {
+          appendEntry("client_error", "Could not load Claude command: " + String(error && error.message ? error.message : error));
+        }
+      }
+
+      async function saveCommand() {
+        if (!sessionId) {
+          appendEntry("client_error", "Select or create a session before saving commands");
+          return;
+        }
+
+        const path = String(commandPathInput.value || "").trim();
+        const content = String(commandContentInput.value || "");
+        if (!path) {
+          appendEntry("client_error", "Command path is required");
+          return;
+        }
+
+        try {
+          const result = await postJson("/v1/sessions/" + encodeURIComponent(sessionId) + "/claude-commands", {
+            path,
+            content
+          });
+          if (result && result.command) {
+            mergeCommand(result.command);
+            renderCommandList(result.command.path);
+            showCommand(result.command);
+            appendEntry("command_saved", { path: result.command.path, updatedAt: result.command.updatedAt });
+          }
+        } catch (error) {
+          appendEntry("client_error", "Could not save Claude command: " + String(error && error.message ? error.message : error));
+        }
+      }
+
+      async function deleteCommand() {
+        if (!sessionId) {
+          appendEntry("client_error", "Select or create a session before deleting commands");
+          return;
+        }
+
+        const path = String(commandPathInput.value || commandListInput.value || "").trim();
+        if (!path) {
+          appendEntry("client_error", "Choose a command to delete");
+          return;
+        }
+
+        try {
+          const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(sessionId) + "/claude-commands"), {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path })
+          });
+          if (!response.ok) throw new Error(await response.text());
+
+          commands = commands.filter((command) => command.path !== path);
+          renderCommandList();
+          clearCommandEditor();
+          appendEntry("command_deleted", { path });
+          commandsHintEl.textContent =
+            commands.length > 0
+              ? "Commands live in this session workspace under .claude/commands"
+              : "No commands saved yet for this session";
+        } catch (error) {
+          appendEntry("client_error", "Could not delete Claude command: " + String(error && error.message ? error.message : error));
+        }
       }
 
       async function observeSession(id) {
@@ -728,6 +1077,95 @@ export function renderTestClient(): string {
         selectedImagesEl.textContent = "";
       }
 
+      function showCommand(command) {
+        commandPathInput.value = command.path || "";
+        commandContentInput.value = command.content || "";
+        commandListInput.value = command.path || "";
+      }
+
+      function clearCommandEditor() {
+        commandPathInput.value = "";
+        commandContentInput.value = "";
+        commandListInput.value = "";
+      }
+
+      function setWorkspaceSearchEnabled(enabled) {
+        searchQueryInput.disabled = !enabled;
+        searchLimitInput.disabled = !enabled;
+        runSearchButton.disabled = !enabled;
+        clearSearchButton.disabled = !enabled;
+      }
+
+      function setCommandEditorEnabled(enabled) {
+        commandListInput.disabled = !enabled;
+        refreshCommandsButton.disabled = !enabled;
+        commandPathInput.disabled = !enabled;
+        commandContentInput.disabled = !enabled;
+        saveCommandButton.disabled = !enabled;
+        newCommandButton.disabled = !enabled;
+        deleteCommandButton.disabled = !enabled;
+      }
+
+      function renderCommandList(selectedPath) {
+        const current = selectedPath !== undefined ? selectedPath : commandListInput.value;
+        commandListInput.replaceChildren(new Option(commands.length > 0 ? "Choose a command" : "No command selected", ""));
+
+        for (const command of commands) {
+          commandListInput.add(new Option(command.path, command.path));
+        }
+
+        if (current && commands.some((command) => command.path === current)) {
+          commandListInput.value = current;
+        }
+      }
+
+      function mergeCommand(command) {
+        const next = commands.filter((item) => item.path !== command.path);
+        next.push(command);
+        commands = next.sort((left, right) => String(left.path).localeCompare(String(right.path)));
+      }
+
+      function renderSearchResults() {
+        searchResultsEl.textContent = "";
+
+        if (searchResults.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "search-empty";
+          empty.textContent = searchQueryInput.value.trim()
+            ? "No matching files or folders"
+            : "Search results will appear here";
+          searchResultsEl.append(empty);
+          return;
+        }
+
+        for (const result of searchResults) {
+          const item = document.createElement("article");
+          item.className = "search-result";
+
+          const title = document.createElement("strong");
+          title.textContent = result.name || result.path || "Untitled";
+          item.append(title);
+
+          const path = document.createElement("code");
+          path.textContent = result.path || "";
+          item.append(path);
+
+          const meta = document.createElement("div");
+          meta.className = "search-meta";
+          meta.textContent = [
+            result.type || "file",
+            Number.isFinite(result.score) ? "score " + result.score : "",
+            result.size ? formatBytes(result.size) : "",
+            result.updatedAt ? new Date(result.updatedAt).toLocaleString() : ""
+          ]
+            .filter(Boolean)
+            .join(" - ");
+          item.append(meta);
+
+          searchResultsEl.append(item);
+        }
+      }
+
       function renderImageGrid(images) {
         const grid = document.createElement("div");
         grid.className = "image-previews";
@@ -849,10 +1287,19 @@ export function renderTestClient(): string {
         stopObserving();
         isObservedRunning = false;
         sessionId = "";
+        commands = [];
+        searchResults = [];
         localStorage.removeItem(storageKey);
         sessionEl.textContent = "No session";
         sessionListInput.value = "";
         eventsEl.textContent = "";
+        clearCommandEditor();
+        renderCommandList();
+        renderSearchResults();
+        commandsHintEl.textContent = "Pick a session to manage slash commands";
+        searchHintEl.textContent = "Pick a session to search files and folders";
+        setCommandEditorEnabled(false);
+        setWorkspaceSearchEnabled(false);
       }
 
       function selectSession(session, eventName) {
@@ -907,6 +1354,10 @@ export function renderTestClient(): string {
         loaderEl.classList.toggle("active", isBusy);
         statusEl.textContent = isBusy ? "Generating" : "Idle";
       }
+
+      setCommandEditorEnabled(false);
+      setWorkspaceSearchEnabled(false);
+      renderSearchResults();
     </script>
   </body>
 </html>`;

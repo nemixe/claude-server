@@ -1,4 +1,12 @@
-import type { ClaudeMode, PublicSession, StreamMessageRequest, UploadedFile } from "./types.js";
+import type {
+  ClaudeCommand,
+  ClaudeCommandInput,
+  ClaudeMode,
+  PublicSession,
+  StreamMessageRequest,
+  UploadedFile,
+  WorkspaceSearchResult
+} from "./types.js";
 
 export type ClaudeClientOptions = {
   baseUrl: string;
@@ -85,6 +93,38 @@ export function createClaudeClient(options: ClaudeClientOptions) {
 
     getMessages(sessionId: string): Promise<{ messages: unknown[] }> {
       return requestJson<{ messages: unknown[] }>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`);
+    },
+
+    searchFiles(sessionId: string, query: string, options: { limit?: number } = {}): Promise<{ results: WorkspaceSearchResult[] }> {
+      const params = new URLSearchParams({ q: query });
+      if (options.limit !== undefined) params.set("limit", String(options.limit));
+      return requestJson<{ results: WorkspaceSearchResult[] }>(
+        `/v1/sessions/${encodeURIComponent(sessionId)}/files:search?${params.toString()}`
+      );
+    },
+
+    listClaudeCommands(sessionId: string): Promise<{ commands: ClaudeCommand[] }> {
+      return requestJson<{ commands: ClaudeCommand[] }>(`/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands`);
+    },
+
+    getClaudeCommand(sessionId: string, commandPath: string): Promise<{ command: ClaudeCommand }> {
+      return requestJson<{ command: ClaudeCommand }>(
+        `/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands?path=${encodeURIComponent(commandPath)}`
+      );
+    },
+
+    saveClaudeCommand(sessionId: string, command: ClaudeCommandInput): Promise<{ command: ClaudeCommand }> {
+      return requestJson<{ command: ClaudeCommand }>(`/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands`, {
+        method: "POST",
+        body: JSON.stringify(command)
+      });
+    },
+
+    deleteClaudeCommand(sessionId: string, commandPath: string): Promise<{ deleted: true }> {
+      return requestJson<{ deleted: true }>(`/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands`, {
+        method: "DELETE",
+        body: JSON.stringify({ path: commandPath })
+      });
     },
 
     interrupt(sessionId: string): Promise<{ interrupted: boolean }> {

@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentService, type AgentSdkAdapter } from "../src/agent-service.js";
 import { createApp } from "../src/app.js";
@@ -28,6 +30,18 @@ describe("Hono API", () => {
     expect(html).toContain('id="images"');
     expect(html).toContain("renderImageGrid");
     expect(html).toContain("redactImageData");
+    expect(html).toContain("Claude Commands");
+    expect(html).toContain('id="commandList"');
+    expect(html).toContain('id="commandPath"');
+    expect(html).toContain('id="commandContent"');
+    expect(html).toContain("loadClaudeCommands");
+    expect(html).toContain("saveCommand");
+    expect(html).toContain("deleteCommand");
+    expect(html).toContain("Workspace Search");
+    expect(html).toContain('id="searchQuery"');
+    expect(html).toContain('id="searchResults"');
+    expect(html).toContain("runWorkspaceSearch");
+    expect(html).toContain("renderSearchResults");
     expect(html).toContain("await loadSessions({ restoreSaved: false });");
     expect(html).toContain("observeSession(sessionId);");
     expect(html).not.toContain('loadSessionView(sessionId, "history_refreshed")');
@@ -209,5 +223,155 @@ describe("Hono API", () => {
       })
     });
     expect(oversizedResponse.status).toBe(400);
+  });
+
+  it("manages per-session Claude command files inside .claude/commands", async () => {
+    const config = await createTempConfig();
+    const app = createApp({ config });
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Commands" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const saveResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ path: "review/fix.md", content: "Review and fix this code." })
+    });
+    expect(saveResponse.status).toBe(201);
+    await expect(fs.readFile(path.join(config.claudeCommandsDir, "review/fix.md"), "utf8")).resolves.toBe("Review and fix this code.");
+    await expect(
+      fs.readFile(path.join(config.workspaceDir, created.sessionId, ".claude/commands/review/fix.md"), "utf8")
+    ).resolves.toBe("Review and fix this code.");
+
+    const listResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
+      headers: { host: "localhost" }
+    });
+    expect(listResponse.status).toBe(200);
+    expect(await listResponse.json()).toMatchObject({
+      commands: [{ path: "review/fix.md", content: "Review and fix this code." }]
+    });
+
+    const readResponse = await app.request(
+      `http://localhost/v1/sessions/${created.sessionId}/claude-commands?path=${encodeURIComponent(".claude/commands/review/fix.md")}`,
+      { headers: { host: "localhost" } }
+    );
+    expect(readResponse.status).toBe(200);
+    expect(await readResponse.json()).toMatchObject({
+      command: { path: "review/fix.md", content: "Review and fix this code." }
+    });
+
+    const deleteResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
+      method: "DELETE",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ path: "review/fix.md" })
+    });
+    expect(deleteResponse.status).toBe(200);
+    await expect(fs.stat(path.join(config.workspaceDir, created.sessionId, ".claude/commands/review/fix.md"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(fs.stat(path.join(config.claudeCommandsDir, "review/fix.md"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("rejects Claude command paths outside .claude/commands and non-markdown files", async () => {
+    const config = await createTempConfig();
+    const app = createApp({ config });
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Commands" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const traversalResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ path: "../secret.md", content: "bad" })
+    });
+    expect(traversalResponse.status).toBe(400);
+
+    const nonMarkdownResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ path: "review.txt", content: "bad" })
+    });
+    expect(nonMarkdownResponse.status).toBe(400);
+  });
+
+  it("lists repo Claude commands and mirrors them into the selected session workspace", async () => {
+    const config = await createTempConfig();
+    await fs.mkdir(path.join(config.claudeCommandsDir, "nested"), { recursive: true });
+    await fs.writeFile(path.join(config.claudeCommandsDir, "nested/test.md"), "From repo root", "utf8");
+    const app = createApp({ config });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Commands" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const listResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
+      headers: { host: "localhost" }
+    });
+
+    expect(listResponse.status).toBe(200);
+    expect(await listResponse.json()).toMatchObject({
+      commands: [{ path: "nested/test.md", content: "From repo root" }]
+    });
+    await expect(
+      fs.readFile(path.join(config.workspaceDir, created.sessionId, ".claude/commands/nested/test.md"), "utf8")
+    ).resolves.toBe("From repo root");
+  });
+
+  it("searches workspace files and folders with fuzzy path matching", async () => {
+    const config = await createTempConfig();
+    const app = createApp({ config });
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({
+        mode: "plan",
+        title: "Search",
+        files: [
+          { path: "src/components/Button.tsx", content: "export const Button = () => null;" },
+          { path: "docs/agent-guide.md", content: "# Agent guide" }
+        ]
+      })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const directoryResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=docs`, {
+      headers: { host: "localhost" }
+    });
+    expect(directoryResponse.status).toBe(200);
+    const directoryBody = (await directoryResponse.json()) as { results: Array<Record<string, unknown>> };
+    expect(directoryBody.results[0]).toMatchObject({
+      path: "docs",
+      name: "docs",
+      type: "directory"
+    });
+
+    const fuzzyResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=cmpbtn&limit=3`, {
+      headers: { host: "localhost" }
+    });
+    expect(fuzzyResponse.status).toBe(200);
+    const fuzzyBody = (await fuzzyResponse.json()) as { results: Array<Record<string, unknown>> };
+    expect(fuzzyBody.results[0]).toMatchObject({
+      path: "src/components/Button.tsx",
+      name: "Button.tsx",
+      type: "file"
+    });
+    expect(fuzzyBody.results[0]?.score).toEqual(expect.any(Number));
+    expect(fuzzyBody.results[0]?.updatedAt).toEqual(expect.any(String));
+
+    const invalidResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=`, {
+      headers: { host: "localhost" }
+    });
+    expect(invalidResponse.status).toBe(400);
   });
 });
