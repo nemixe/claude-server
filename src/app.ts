@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { AgentService, ConcurrencyLimitError } from "./agent-service.js";
@@ -79,6 +80,7 @@ export function createApp(dependencies: AppDependencies): Hono {
   const agentService = dependencies.agentService ?? new AgentService(dependencies.config);
 
   app.use("*", createHostnameGate(dependencies.config));
+  app.use("/client/assets/*", serveStatic({ root: "./dist" }));
 
   app.get("/health", (c) => {
     return c.json({ ok: true, service: "claude-server", timestamp: new Date().toISOString() });

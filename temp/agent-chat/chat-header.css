@@ -1,0 +1,124 @@
+/* ── Chat Header (drag handle) ── */
+
+.ai-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--ai-chat-color-border-light);
+  padding: 10px var(--ai-chat-space-lg);
+  background: var(--ai-chat-color-bg);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.ai-chat-header:active {
+  cursor: grabbing;
+}
+
+.ai-chat-title-shell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-chat-sidebar-toggle.ant-btn {
+  flex: none;
+  min-width: 28px;
+  height: 28px;
+  margin-left: -6px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ai-chat-sidebar-toggle.ant-btn .anticon {
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ai-chat-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ai-chat-space-sm);
+  min-width: 0;
+}
+
+.ai-chat-title-main {
+  font-size: var(--ai-chat-font-size-base);
+  font-weight: 600;
+  color: var(--ai-chat-color-text-primary);
+  line-height: 1.2;
+}
+
+.ai-chat-title-presence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ai-chat-space-sm);
+  min-width: 0;
+}
+
+.ai-chat-title-presence-count {
+  font-size: var(--ai-chat-font-size-sm);
+  color: #6b7280;
+  line-height: 1.2;
+}
+
+.ai-chat-title-presence-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ai-chat-space-sm);
+}
+
+.ai-chat-presence-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 180px;
+  border: none;
+  border-radius: var(--ai-chat-radius-pill);
+  padding: 2px 8px;
+  background: var(--ai-chat-color-bg-secondary);
+  font-size: var(--ai-chat-font-size-sm);
+  color: #334155;
+}
+
+.ai-chat-presence-chip.is-self {
+  background: var(--ai-chat-color-chip-selected-bg);
+}
+
+.ai-chat-presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--ai-chat-radius-pill);
+  flex: none;
+}
+
+.ai-chat-presence-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-chat-presence-self {
+  color: #64748b;
+}
+
+/* ── Header buttons ── */
+
+.ai-chat-header .ant-btn {
+  color: var(--ai-chat-color-text-tertiary);
+  border-radius: 6px;
+  transition: opacity var(--ai-chat-transition-fast);
+}
+
+.ai-chat-header .ant-btn:hover {
+  color: var(--ai-chat-color-text-primary);
+  opacity: 0.7;
+  background: transparent;
+}
