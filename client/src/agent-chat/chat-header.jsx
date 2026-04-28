@@ -6,19 +6,15 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  MinusOutlined
+  MinusOutlined,
+  MoreOutlined
 } from "@ant-design/icons";
-import { getAvatarThemeFromLabel, getDisplayLabel } from "./chat-ui-utils.js";
 
 export default function ChatHeader({
   isSidebarOpen,
   onToggleSidebar,
   hasStreamingSessions,
-  streamingCount,
-  activeSessionParticipants,
-  connectionId,
   hasCurrentUserIdentity,
-  currentUserDisplayLabel,
   onLogout,
   onClose,
   onMinimize,
@@ -29,6 +25,34 @@ export default function ChatHeader({
   status,
   isMinimized
 }) {
+  const menuItems = [
+    {
+      key: "history",
+      label: "Raw history",
+      icon: <FileSearchOutlined />,
+      onClick: onOpenHistory
+    },
+    {
+      key: "export",
+      label: "Export JSON",
+      icon: <DownloadOutlined />,
+      disabled: !canExportSession,
+      onClick: onExportSession
+    }
+  ];
+
+  if (hasCurrentUserIdentity) {
+    menuItems.push(
+      { type: "divider" },
+      {
+        key: "logout",
+        label: "Logout",
+        icon: <LogoutOutlined />,
+        onClick: onLogout
+      }
+    );
+  }
+
   return (
     <div className="ai-chat-header" {...dragHandleProps}>
       <div className="ai-chat-title-shell">
@@ -42,82 +66,25 @@ export default function ChatHeader({
           title={isSidebarOpen ? "Hide Sessions" : "Show Sessions"}
           aria-label={isSidebarOpen ? "Hide sessions sidebar" : "Show sessions sidebar"}
         />
-        <div className="ai-chat-title-wrap">
-          <div className="ai-chat-title-main">
-            {hasStreamingSessions ? `AI Assistant (${streamingCount} running)` : "AI Assistant"}
-          </div>
-          {activeSessionParticipants.length > 0 ? (
-            <div className="ai-chat-title-presence" role="status" aria-label="Session participants">
-              <span className="ai-chat-title-presence-count">
-                {`${activeSessionParticipants.length} collaborator${activeSessionParticipants.length > 1 ? "s" : ""}`}
-              </span>
-              <span className="ai-chat-title-presence-list" role="list">
-                {activeSessionParticipants.map((participant) => {
-                  const participantLabel = getDisplayLabel(participant.user_label);
-                  const isCurrentConnection =
-                    Boolean(connectionId) && participant.connection_id === connectionId;
-                  return (
-                    <span
-                      key={`${participant.connection_id || participantLabel}-${participantLabel}`}
-                      className={`ai-chat-presence-chip${isCurrentConnection ? " is-self" : ""}`}
-                      role="listitem"
-                    >
-                      <span
-                        className="ai-chat-presence-dot"
-                        style={{ backgroundColor: getAvatarThemeFromLabel(participantLabel).bg }}
-                      />
-                      <span className="ai-chat-presence-label">{participantLabel}</span>
-                      {isCurrentConnection ? <span className="ai-chat-presence-self">(you)</span> : null}
-                    </span>
-                  );
-                })}
-              </span>
-            </div>
-          ) : null}
-        </div>
+        <span
+          className={`ai-chat-status-dot${hasStreamingSessions ? " is-running" : ""}`}
+          role="status"
+          aria-label={status}
+          title={status}
+        />
+        <div className="ai-chat-title-main">AI Assistant</div>
       </div>
 
-      <Space size={4} onMouseDown={(event) => event.stopPropagation()}>
-        <span className={`ai-chat-status-chip${hasStreamingSessions ? " is-running" : ""}`}>
-          {status}
-        </span>
-        {canExportSession ? (
+      <Space className="ai-chat-header-actions" size={2} onMouseDown={(event) => event.stopPropagation()}>
+        <Dropdown menu={{ items: menuItems }} trigger={["click"]}>
           <Button
             size="small"
             type="text"
-            icon={<DownloadOutlined />}
-            aria-label="Export session as JSON"
-            title="Export session as JSON"
-            onClick={onExportSession}
+            icon={<MoreOutlined />}
+            aria-label="More panel actions"
+            title="More"
           />
-        ) : null}
-        <Button
-          size="small"
-          type="text"
-          icon={<FileSearchOutlined />}
-          aria-label="Open raw session history"
-          title="Raw session history"
-          onClick={onOpenHistory}
-        />
-        {hasCurrentUserIdentity ? (
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  key: "logout",
-                  label: "Logout",
-                  icon: <LogoutOutlined />,
-                  onClick: onLogout
-                }
-              ]
-            }}
-            trigger={["click"]}
-          >
-            <Button size="small" type="text" aria-label="User menu" title="User menu">
-              {`Name: ${currentUserDisplayLabel}`}
-            </Button>
-          </Dropdown>
-        ) : null}
+        </Dropdown>
         <Button
           size="small"
           type="text"

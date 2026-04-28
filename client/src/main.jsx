@@ -18,8 +18,7 @@ import {
   Input,
   InputNumber,
   Select,
-  Space,
-  Tag
+  Space
 } from "antd";
 import AgentChatMessageList from "./agent-chat/agent-chat-message-list.jsx";
 import ChatFooter from "./agent-chat/chat-footer.jsx";
@@ -829,6 +828,24 @@ function App() {
     window.addEventListener("pointerup", stop, { once: true });
   }
 
+  const chatHeader = (
+    <ChatHeader
+      isSidebarOpen={isSidebarOpen}
+      onToggleSidebar={() => setIsSidebarOpen((value) => !value)}
+      hasStreamingSessions={busy}
+      hasCurrentUserIdentity={Boolean(activeSession)}
+      onLogout={forgetSession}
+      onClose={() => setIsClosed(true)}
+      onMinimize={() => setIsMinimized((value) => !value)}
+      onExportSession={copySessionHistoryJson}
+      onOpenHistory={() => setIsHistoryOpen(true)}
+      canExportSession={events.length > 0}
+      dragHandleProps={{ onPointerDown: startDrag }}
+      status={busy ? "Generating" : status}
+      isMinimized={isMinimized}
+    />
+  );
+
   if (isClosed) {
     return (
       <div className="client-stage">
@@ -860,26 +877,9 @@ function App() {
         }}
       >
         <div className="ai-chat-card">
-          <ChatHeader
-            isSidebarOpen={isSidebarOpen}
-            onToggleSidebar={() => setIsSidebarOpen((value) => !value)}
-            hasStreamingSessions={busy}
-            streamingCount={busy ? 1 : 0}
-            activeSessionParticipants={activeSession ? [{ connection_id: sessionId, user_label: activeSession.title || "Session" }] : []}
-            connectionId={sessionId}
-            hasCurrentUserIdentity={Boolean(activeSession)}
-            currentUserDisplayLabel={activeSession ? activeSession.title || "Claude session" : "No session"}
-            onLogout={forgetSession}
-            onClose={() => setIsClosed(true)}
-            onMinimize={() => setIsMinimized((value) => !value)}
-            onExportSession={copySessionHistoryJson}
-            onOpenHistory={() => setIsHistoryOpen(true)}
-            canExportSession={events.length > 0}
-            dragHandleProps={{ onPointerDown: startDrag }}
-            status={busy ? "Generating" : status}
-            isMinimized={isMinimized}
-          />
-          {!isMinimized ? (
+          {isMinimized ? (
+            chatHeader
+          ) : (
             <div className={["ai-chat-two-columns", "is-narrow", isSidebarOpen ? "sidebar-open" : ""].join(" ")}>
               <aside
                 ref={sidebarRef}
@@ -889,41 +889,37 @@ function App() {
               >
                 {isSidebarOpen ? (
                   <>
-                  <div className="ai-chat-sessions-header">
-                    <span>Sessions</span>
-                    <Tag color={sessionId ? "blue" : "default"}>{sessionId ? "Active" : "New"}</Tag>
-                  </div>
-                  <SessionSidebar
-                    filteredSessions={filteredSessions}
-                    activeSessionKey={sessionId}
-                    sessionSearchQuery={sessionSearchQuery}
-                    setSessionSearchQuery={setSessionSearchQuery}
-                    hideEmptySessions={hideEmptySessions}
-                    setHideEmptySessions={setHideEmptySessions}
-                    onCreateNewSession={createSession}
-                    onSessionSelect={onSessionSelect}
-                    onRefreshSessions={() => loadSessions({ restoreSaved: false })}
-                  />
-                  <DeveloperTools
-                    sessionId={sessionId}
-                    maxTurns={maxTurns}
-                    setMaxTurns={setMaxTurns}
-                    commandsHint={commandsHint}
-                    commandOptions={commandOptions}
-                    selectedCommandPath={selectedCommandPath}
-                    commandPath={commandPath}
-                    commandContent={commandContent}
-                    setSelectedCommandPath={setSelectedCommandPath}
-                    setCommandPath={setCommandPath}
-                    setCommandContent={setCommandContent}
-                    loadClaudeCommand={loadClaudeCommand}
-                    loadClaudeCommands={loadClaudeCommands}
-                    saveCommand={saveCommand}
-                    deleteCommand={deleteCommand}
-                    clearCommandEditor={clearCommandEditor}
-                    clearEvents={() => setEvents([])}
-                    openHistory={() => setIsHistoryOpen(true)}
-                  />
+                    <SessionSidebar
+                      filteredSessions={filteredSessions}
+                      activeSessionKey={sessionId}
+                      sessionSearchQuery={sessionSearchQuery}
+                      setSessionSearchQuery={setSessionSearchQuery}
+                      hideEmptySessions={hideEmptySessions}
+                      setHideEmptySessions={setHideEmptySessions}
+                      onCreateNewSession={createSession}
+                      onSessionSelect={onSessionSelect}
+                      onRefreshSessions={() => loadSessions({ restoreSaved: false })}
+                    />
+                    <DeveloperTools
+                      sessionId={sessionId}
+                      maxTurns={maxTurns}
+                      setMaxTurns={setMaxTurns}
+                      commandsHint={commandsHint}
+                      commandOptions={commandOptions}
+                      selectedCommandPath={selectedCommandPath}
+                      commandPath={commandPath}
+                      commandContent={commandContent}
+                      setSelectedCommandPath={setSelectedCommandPath}
+                      setCommandPath={setCommandPath}
+                      setCommandContent={setCommandContent}
+                      loadClaudeCommand={loadClaudeCommand}
+                      loadClaudeCommands={loadClaudeCommands}
+                      saveCommand={saveCommand}
+                      deleteCommand={deleteCommand}
+                      clearCommandEditor={clearCommandEditor}
+                      clearEvents={() => setEvents([])}
+                      openHistory={() => setIsHistoryOpen(true)}
+                    />
                     <button
                       type="button"
                       className="ai-chat-sidebar-resize-handle"
@@ -938,6 +934,7 @@ function App() {
                 <button className="ai-chat-sidebar-backdrop" type="button" aria-label="Hide sessions" onClick={() => setIsSidebarOpen(false)} />
               ) : null}
               <main className="ai-chat-main-column">
+                {chatHeader}
                 <AgentChatMessageList
                   bubbleItems={bubbleItems}
                   bubbleRoles={bubbleRoles}
@@ -982,7 +979,7 @@ function App() {
                 />
               </main>
             </div>
-          ) : null}
+          )}
         </div>
         {!isMinimized ? (
           <>
@@ -1691,8 +1688,10 @@ async function writeClipboard(value) {
 }
 
 function initialChatFrame() {
-  const width = Math.min(DEFAULT_CHAT_WIDTH, Math.max(MIN_CHAT_WIDTH, window.innerWidth - 48));
-  const height = Math.min(DEFAULT_CHAT_HEIGHT, Math.max(MIN_CHAT_HEIGHT, window.innerHeight - 48));
+  const availableWidth = Math.max(0, window.innerWidth - VIEWPORT_PADDING * 2);
+  const availableHeight = Math.max(0, window.innerHeight - VIEWPORT_PADDING * 2);
+  const width = Math.min(DEFAULT_CHAT_WIDTH, Math.max(Math.min(MIN_CHAT_WIDTH, availableWidth), window.innerWidth - 48));
+  const height = Math.min(DEFAULT_CHAT_HEIGHT, Math.max(Math.min(MIN_CHAT_HEIGHT, availableHeight), window.innerHeight - 48));
   return clampChatFrame({
     x: Math.max(16, window.innerWidth - width - 28),
     y: 28,
@@ -1702,16 +1701,12 @@ function initialChatFrame() {
 }
 
 function clampChatFrame(frame) {
-  const width = clampNumber(
-    frame.width,
-    Math.min(MIN_CHAT_WIDTH, Math.max(0, window.innerWidth - VIEWPORT_PADDING * 2)),
-    Math.max(MIN_CHAT_WIDTH, window.innerWidth - VIEWPORT_PADDING * 2)
-  );
-  const height = clampNumber(
-    frame.height,
-    Math.min(MIN_CHAT_HEIGHT, Math.max(0, window.innerHeight - VIEWPORT_PADDING * 2)),
-    Math.max(MIN_CHAT_HEIGHT, window.innerHeight - VIEWPORT_PADDING * 2)
-  );
+  const maxWidth = Math.max(0, window.innerWidth - VIEWPORT_PADDING * 2);
+  const maxHeight = Math.max(0, window.innerHeight - VIEWPORT_PADDING * 2);
+  const minWidth = Math.min(MIN_CHAT_WIDTH, maxWidth);
+  const minHeight = Math.min(MIN_CHAT_HEIGHT, maxHeight);
+  const width = clampNumber(frame.width, minWidth, maxWidth);
+  const height = clampNumber(frame.height, minHeight, maxHeight);
   return {
     x: clampNumber(frame.x, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, window.innerWidth - width - VIEWPORT_PADDING)),
     y: clampNumber(frame.y, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, window.innerHeight - height - VIEWPORT_PADDING)),
