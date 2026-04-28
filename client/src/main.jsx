@@ -1612,7 +1612,7 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
     if (!text && images.length === 0) return [];
     items.push(
       createBubbleItem(keyBase, role === "user" ? "user" : "assistant", {
-        header: <BubbleHeader label={role === "user" ? userName : "Claude"} meta={meta} timeFirst={role === "user"} />,
+        header: <BubbleHeader label={role === "user" ? userName : "Agent"} meta={meta} timeFirst={role === "user"} />,
         avatar: role === "assistant" ? <AssistantAvatar /> : <UserAvatar label={userName} />,
         content: <MessageContent text={text} images={images} />,
         copyText: text,
@@ -1649,7 +1649,7 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
     if (!text && imageParts.length === 0) return;
     items.push(
       createBubbleItem(`${keyBase}:text:${index}`, role === "user" ? ACTIVITY_ROLE : "assistant", {
-        header: role === "assistant" ? <BubbleHeader label="Claude" meta={meta} /> : undefined,
+        header: role === "assistant" ? <BubbleHeader label="Agent" meta={meta} /> : undefined,
         avatar: role === "assistant" ? <AssistantAvatar /> : undefined,
         content: role === "assistant" ? <MessageContent text={text} images={imageParts} /> : `User protocol input\n\n${text}`,
         copyText: text
@@ -1756,7 +1756,7 @@ function BubbleHeader({ label, meta, timeFirst }) {
 }
 
 function AssistantAvatar() {
-  return <div className="ai-chat-avatar">AI</div>;
+  return <div className="ai-chat-avatar">🤖</div>;
 }
 
 function UserAvatar({ label }) {
