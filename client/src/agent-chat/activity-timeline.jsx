@@ -21,10 +21,32 @@ const ActivityTimeline = memo(({ items, isLastGroup }) => {
               key: item.key,
               label: <span className="ai-chat-timeline-collapse-label">{item.label}</span>,
               children: (
-                <MarkdownText
-                  text={String(item.details ?? "")}
-                  className="ai-chat-timeline-item-content"
-                />
+                <>
+                  <MarkdownText
+                    text={String(item.details ?? "")}
+                    className="ai-chat-timeline-item-content"
+                  />
+                  {item.toolResult ? (
+                    <Collapse
+                      ghost
+                      size="small"
+                      expandIconPosition="end"
+                      className="ai-chat-timeline-collapse ai-chat-timeline-result-collapse"
+                      items={[
+                        {
+                          key: item.key + "-result",
+                          label: <span className="ai-chat-timeline-collapse-label">Tool result</span>,
+                          children: (
+                            <MarkdownText
+                              text={String(item.toolResult)}
+                              className="ai-chat-timeline-item-content"
+                            />
+                          )
+                        }
+                      ]}
+                    />
+                  ) : null}
+                </>
               )
             }
           ]}

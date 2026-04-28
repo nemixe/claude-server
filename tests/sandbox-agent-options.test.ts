@@ -31,9 +31,9 @@ describe("sandbox and agent options", () => {
       hasRun: true
     };
 
-    const planOptions = buildAgentOptions(config, session, { prompt: "inspect", mode: "plan" }, new AbortController());
-    const editOptions = buildAgentOptions(config, session, { prompt: "edit", mode: "edit" }, new AbortController());
-    const bypassOptions = buildAgentOptions(config, session, { prompt: "run", mode: "bypass" }, new AbortController());
+    const planOptions = buildAgentOptions(config, session, { prompt: "inspect", mode: "plan" }, new AbortController(), config.maxTurns);
+    const editOptions = buildAgentOptions(config, session, { prompt: "edit", mode: "edit" }, new AbortController(), config.maxTurns);
+    const bypassOptions = buildAgentOptions(config, session, { prompt: "run", mode: "bypass" }, new AbortController(), config.maxTurns);
 
     expect(planOptions.permissionMode).toBe("plan");
     expect(planOptions.enableFileCheckpointing).toBe(false);

@@ -116,6 +116,7 @@ function App() {
     getJson("/v1/settings")
       .then((result) => {
         if (Number.isInteger(result?.maxConcurrentRuns)) setMaxConcurrentRuns(result.maxConcurrentRuns);
+        if (Number.isInteger(result?.maxTurns)) setMaxTurns(result.maxTurns);
       })
       .catch(() => {});
     return () => {
@@ -639,6 +640,17 @@ function App() {
       });
   }
 
+  function changeMaxTurns(value) {
+    setMaxTurns(value);
+    patchJson("/v1/settings", { maxTurns: value })
+      .then((result) => {
+        if (Number.isInteger(result?.maxTurns)) setMaxTurns(result.maxTurns);
+      })
+      .catch((error) => {
+        appendEntry("client_error", "Could not update max turns: " + errorMessage(error));
+      });
+  }
+
   function onSessionSelect(id) {
     const selected = sessions.find((session) => getSessionId(session) === id);
     if (!selected) {
@@ -912,7 +924,7 @@ function App() {
                     />
                     <DeveloperTools
                       maxTurns={maxTurns}
-                      setMaxTurns={setMaxTurns}
+                      onChangeMaxTurns={changeMaxTurns}
                       maxConcurrentRuns={maxConcurrentRuns}
                       onChangeMaxConcurrentRuns={changeMaxConcurrentRuns}
                       commandsHint={commandsHint}
@@ -1082,8 +1094,13 @@ function DeveloperTools(props) {
             <InputNumber
               size="small"
               min={1}
+              max={200}
               value={props.maxTurns}
-              onChange={(value) => props.setMaxTurns(value || 30)}
+              onChange={(value) => {
+                if (typeof value === "number" && Number.isInteger(value) && value >= 1) {
+                  props.onChangeMaxTurns?.(value);
+                }
+              }}
               style={{ width: "100%" }}
             />
           </label>
@@ -1204,7 +1221,7 @@ function LegacyEventsList({ events }) {
 }
 
 function eventsToBubbleItems(events) {
-  return events.flatMap((entry) => {
+  const items = events.flatMap((entry) => {
     if (!entry) return [];
     const meta = [entry.time, entry.type === "history" ? "history" : ""].filter(Boolean).join(" · ");
 
@@ -1239,6 +1256,8 @@ function eventsToBubbleItems(events) {
 
     return [createToolActivity(entry.id, activityLabel(entry.type, entry.data), activityText(entry.type, entry.data), activityTone(entry.type))];
   });
+
+  return mergeToolResultsIntoToolUse(items);
 }
 
 function resultToItems(entry) {
@@ -1247,6 +1266,31 @@ function resultToItems(entry) {
     return [createActivity(entry.id, "Run error", activityText(entry.type, data), "error")];
   }
   return [];
+}
+
+function mergeToolResultsIntoToolUse(items) {
+  const toolUseById = new Map();
+
+  for (const item of items) {
+    if (item.role === ACTIVITY_ROLE && item.toolUseId && item.label && item.label.startsWith("Tool use")) {
+      toolUseById.set(item.toolUseId, item);
+    }
+  }
+
+  const merged = [];
+
+  for (const item of items) {
+    if (item.role === ACTIVITY_ROLE && item.toolUseId && item.label === "Tool result") {
+      const parent = toolUseById.get(item.toolUseId);
+      if (parent) {
+        parent.toolResult = item.details || item.content || "";
+        continue;
+      }
+    }
+    merged.push(item);
+  }
+
+  return merged;
 }
 
 const LEGACY_GENERIC_TITLES = new Set(["AI chat panel", "Untitled chat", "New chat"]);
@@ -1433,12 +1477,12 @@ function toProtocolItems(value, meta, keyBase) {
     }
     if (block.type === "tool_use") {
       flushText(index);
-      items.push(createToolActivity(`${keyBase}:tool_use:${index}`, "Tool use" + (block.name ? ": " + block.name : ""), formatToolUseBlock(block), "tool"));
+      items.push(createToolActivity(`${keyBase}:tool_use:${index}`, "Tool use" + (block.name ? ": " + block.name : ""), formatToolUseBlock(block), "tool", block.id));
       return;
     }
     if (block.type === "tool_result") {
       flushText(index);
-      items.push(createToolActivity(`${keyBase}:tool_result:${index}`, "Tool result", formatToolResultBlock(block), "tool"));
+      items.push(createToolActivity(`${keyBase}:tool_result:${index}`, "Tool result", formatToolResultBlock(block), "tool", block.tool_use_id));
       return;
     }
     if (block.type === "thinking") {
@@ -1476,14 +1520,16 @@ function createActivity(key, label, text, tone = "muted") {
   };
 }
 
-function createToolActivity(key, label, details, tone = "tool") {
+function createToolActivity(key, label, details, tone = "tool", toolUseId) {
   return {
     key,
     role: ACTIVITY_ROLE,
     tone,
     collapsible: true,
     label,
-    details: details || ""
+    details: details || "",
+    toolUseId: toolUseId || null,
+    toolResult: null
   };
 }
 
@@ -1508,7 +1554,7 @@ function normalizeRole(value) {
 
 function formatToolResultBlock(block) {
   const body = extractTextContent(block.content) || (typeof block.content === "string" ? block.content : JSON.stringify(redactImageData(block.content), null, 2));
-  return [block.tool_use_id ? "Tool use id: `" + block.tool_use_id + "`" : "", body].filter(Boolean).join("\n\n");
+  return body;
 }
 
 function formatToolUseBlock(block) {

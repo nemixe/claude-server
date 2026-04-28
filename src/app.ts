@@ -6,6 +6,7 @@ import { AgentService, ConcurrencyLimitError } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { SessionStore } from "./session-store.js";
+import { SettingsStore } from "./settings-store.js";
 import { renderTestClient } from "./test-client.js";
 import { CLAUDE_MODES, type PromptImage, type PublicSession, type SessionMetadata } from "./types.js";
 
@@ -17,6 +18,7 @@ export type AppDependencies = {
   config: AppConfig;
   sessionStore?: SessionStore;
   agentService?: AgentService;
+  settingsStore?: SettingsStore;
 };
 
 const createSessionSchema = z.object({
@@ -89,10 +91,16 @@ const workspaceSearchSchema = z.object({
   limit: z.coerce.number().int().positive().max(200).default(50)
 });
 
-export function createApp(dependencies: AppDependencies): Hono {
+export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   const app = new Hono();
   const sessionStore = dependencies.sessionStore ?? new SessionStore(dependencies.config);
   const agentService = dependencies.agentService ?? new AgentService(dependencies.config);
+  const settingsStore = dependencies.settingsStore ?? new SettingsStore(dependencies.config);
+
+  // Load persisted settings into the agent service on startup
+  const persisted = await settingsStore.load();
+  agentService.setMaxConcurrentRuns(persisted.maxConcurrentRuns);
+  agentService.setMaxTurns(persisted.maxTurns);
 
   app.use("*", createHostnameGate(dependencies.config));
   app.use("/client/assets/*", serveStatic({ root: "./dist" }));
@@ -102,15 +110,36 @@ export function createApp(dependencies: AppDependencies): Hono {
   });
 
   app.get("/v1/settings", (c) => {
-    return c.json({ maxConcurrentRuns: agentService.getMaxConcurrentRuns() });
+    return c.json({
+      maxConcurrentRuns: agentService.getMaxConcurrentRuns(),
+      maxTurns: agentService.getMaxTurns()
+    });
   });
 
   app.patch("/v1/settings", async (c) => {
     const body = z
-      .object({ maxConcurrentRuns: z.number().int().min(1).max(64) })
+      .object({
+        maxConcurrentRuns: z.number().int().min(1).max(64).optional(),
+        maxTurns: z.number().int().min(1).max(200).optional()
+      })
       .parse(await c.req.json().catch(() => ({})));
-    agentService.setMaxConcurrentRuns(body.maxConcurrentRuns);
-    return c.json({ maxConcurrentRuns: agentService.getMaxConcurrentRuns() });
+
+    if (body.maxConcurrentRuns !== undefined) {
+      agentService.setMaxConcurrentRuns(body.maxConcurrentRuns);
+    }
+    if (body.maxTurns !== undefined) {
+      agentService.setMaxTurns(body.maxTurns);
+    }
+
+    const settings = await settingsStore.save({
+      maxConcurrentRuns: agentService.getMaxConcurrentRuns(),
+      maxTurns: agentService.getMaxTurns()
+    });
+
+    return c.json({
+      maxConcurrentRuns: settings.maxConcurrentRuns,
+      maxTurns: settings.maxTurns
+    });
   });
 
   app.get("/client", (c) => {

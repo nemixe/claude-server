@@ -842,6 +842,50 @@ body {
   padding: 6px 0 0;
 }
 
+/* Nested tool result collapse inside tool use */
+.ai-chat-activity-timeline .ai-chat-timeline-result-collapse.ant-collapse-ghost > .ant-collapse-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+.ai-chat-activity-timeline .ai-chat-timeline-result-collapse.ant-collapse-ghost > .ant-collapse-item > .ant-collapse-header {
+  padding: 4px 8px !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  color: #64748b;
+  line-height: 1.45 !important;
+  background: #f8fafc;
+  border-radius: 6px;
+}
+
+.ai-chat-activity-timeline .ai-chat-timeline-result-collapse.ant-collapse-ghost > .ant-collapse-item > .ant-collapse-header .ant-collapse-title {
+  flex: 0 0 auto !important;
+  margin-inline-end: 0 !important;
+}
+
+.ai-chat-activity-timeline .ai-chat-timeline-result-collapse.ant-collapse-ghost > .ant-collapse-item > .ant-collapse-header .ant-collapse-expand-icon {
+  display: inline-flex !important;
+  align-items: center !important;
+  align-self: center !important;
+  height: 1.45em !important;
+  line-height: 1 !important;
+  margin: 0 0 0 4px !important;
+  padding: 0 !important;
+  color: #94a3b8;
+}
+
+.ai-chat-activity-timeline .ai-chat-timeline-result-collapse .ai-chat-timeline-collapse-label {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.ai-chat-activity-timeline .ai-chat-timeline-result-collapse .ant-collapse-content-box {
+  padding: 4px 0 0;
+  background: #f8fafc;
+  border-radius: 0 0 6px 6px;
+}
+
 /* Attachments */
 
 .ai-chat-attachment-body {

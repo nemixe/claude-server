@@ -41,12 +41,14 @@ export class ConcurrencyLimitError extends Error {
 export class AgentService {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private maxConcurrentRuns: number;
+  private maxTurns: number;
 
   constructor(
     private readonly config: AppConfig,
     private readonly adapter: AgentSdkAdapter = defaultAgentSdkAdapter
   ) {
     this.maxConcurrentRuns = config.maxConcurrentRuns;
+    this.maxTurns = config.maxTurns;
   }
 
   getMaxConcurrentRuns(): number {
@@ -60,6 +62,17 @@ export class AgentService {
     this.maxConcurrentRuns = value;
   }
 
+  getMaxTurns(): number {
+    return this.maxTurns;
+  }
+
+  setMaxTurns(value: number): void {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error("maxTurns must be a positive integer");
+    }
+    this.maxTurns = value;
+  }
+
   async *stream(input: AgentRunInput): AsyncGenerator<NormalizedAgentEvent> {
     if (this.activeRuns.has(input.session.id) || this.activeRuns.size >= this.maxConcurrentRuns) {
       throw new ConcurrencyLimitError();
@@ -67,7 +80,7 @@ export class AgentService {
 
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), this.config.runTimeoutMs);
-    const options = buildAgentOptions(this.config, input.session, input.request, abortController);
+    const options = buildAgentOptions(this.config, input.session, input.request, abortController, this.maxTurns);
     const agentQuery = this.adapter.query({ prompt: buildAgentPrompt(input.request), options });
     const activeRun: ActiveRun = { query: agentQuery, abortController, observers: new Set() };
     this.activeRuns.set(input.session.id, activeRun);
@@ -213,7 +226,8 @@ export function buildAgentOptions(
   config: AppConfig,
   session: SessionMetadata,
   request: StreamMessageRequest,
-  abortController: AbortController
+  abortController: AbortController,
+  runtimeMaxTurns: number
 ): Record<string, unknown> {
   const mode = request.mode ?? session.mode;
 
@@ -228,7 +242,7 @@ export function buildAgentOptions(
     permissionMode: permissionModeFor(mode),
     allowDangerouslySkipPermissions: mode === "bypass",
     enableFileCheckpointing: mode !== "plan",
-    maxTurns: Math.min(request.maxTurns ?? config.maxTurns, config.maxTurns),
+    maxTurns: Math.min(request.maxTurns ?? runtimeMaxTurns, runtimeMaxTurns),
     maxBudgetUsd: config.maxBudgetUsd,
     model: request.model,
     env: buildSafeAgentEnv(),

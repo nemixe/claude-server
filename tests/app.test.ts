@@ -4,12 +4,13 @@ import { describe, expect, it } from "vitest";
 import { AgentService, type AgentSdkAdapter } from "../src/agent-service.js";
 import { createApp } from "../src/app.js";
 import { SessionStore } from "../src/session-store.js";
+import { SettingsStore } from "../src/settings-store.js";
 import { createTempConfig } from "./helpers.js";
 
 describe("Hono API", () => {
   it("serves the browser test client behind the hostname gate", async () => {
     const config = await createTempConfig();
-    const app = createApp({ config });
+    const app = await createApp({ config });
 
     const response = await app.request("http://localhost/client", {
       headers: { host: "localhost" }
@@ -36,7 +37,7 @@ describe("Hono API", () => {
         })(),
       getSessionMessages: async () => [{ type: "user", message: "hi" }]
     };
-    const app = createApp({
+    const app = await createApp({
       config,
       sessionStore: new SessionStore(config),
       agentService: new AgentService(config, adapter)
@@ -101,7 +102,7 @@ describe("Hono API", () => {
       },
       getSessionMessages: async () => []
     };
-    const app = createApp({
+    const app = await createApp({
       config,
       sessionStore: new SessionStore(config),
       agentService: new AgentService(config, adapter)
@@ -155,7 +156,7 @@ describe("Hono API", () => {
 
   it("rejects invalid image prompt requests", async () => {
     const config = await createTempConfig();
-    const app = createApp({ config });
+    const app = await createApp({ config });
     const createResponse = await app.request("http://localhost/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
@@ -206,7 +207,7 @@ describe("Hono API", () => {
 
   it("manages per-session Claude command files inside .claude/commands", async () => {
     const config = await createTempConfig();
-    const app = createApp({ config });
+    const app = await createApp({ config });
     const createResponse = await app.request("http://localhost/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
@@ -258,7 +259,7 @@ describe("Hono API", () => {
 
   it("rejects Claude command paths outside .claude/commands and non-markdown files", async () => {
     const config = await createTempConfig();
-    const app = createApp({ config });
+    const app = await createApp({ config });
     const createResponse = await app.request("http://localhost/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
@@ -285,7 +286,7 @@ describe("Hono API", () => {
     const config = await createTempConfig();
     await fs.mkdir(path.join(config.claudeCommandsDir, "nested"), { recursive: true });
     await fs.writeFile(path.join(config.claudeCommandsDir, "nested/test.md"), "From repo root", "utf8");
-    const app = createApp({ config });
+    const app = await createApp({ config });
 
     const createResponse = await app.request("http://localhost/v1/sessions", {
       method: "POST",
@@ -317,7 +318,7 @@ describe("Hono API", () => {
       fs.writeFile(path.join(config.projectRoot, "docs/agent-guide.md"), "# Agent guide", "utf8"),
       fs.writeFile(path.join(config.projectRoot, "node_modules/temp/agent-chat/ignored.js"), "ignored", "utf8")
     ]);
-    const app = createApp({ config });
+    const app = await createApp({ config });
     const createResponse = await app.request("http://localhost/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
@@ -368,5 +369,44 @@ describe("Hono API", () => {
       path: "docs",
       score: 0
     });
+  });
+
+  it("persists settings to disk via PATCH /v1/settings and reads them back", async () => {
+    const config = await createTempConfig();
+    const app = await createApp({ config });
+
+    const getResponse = await app.request("http://localhost/v1/settings", {
+      headers: { host: "localhost" }
+    });
+    expect(getResponse.status).toBe(200);
+    const initial = (await getResponse.json()) as { maxConcurrentRuns: number; maxTurns: number };
+    expect(initial.maxConcurrentRuns).toBe(2);
+    expect(initial.maxTurns).toBe(5);
+
+    const patchResponse = await app.request("http://localhost/v1/settings", {
+      method: "PATCH",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ maxConcurrentRuns: 8, maxTurns: 50 })
+    });
+    expect(patchResponse.status).toBe(200);
+    const patched = (await patchResponse.json()) as { maxConcurrentRuns: number; maxTurns: number };
+    expect(patched.maxConcurrentRuns).toBe(8);
+    expect(patched.maxTurns).toBe(50);
+
+    // Verify persisted to file
+    const settingsPath = path.join(config.sessionDir, "settings.json");
+    const raw = await fs.readFile(settingsPath, "utf8");
+    const persisted = JSON.parse(raw);
+    expect(persisted.maxConcurrentRuns).toBe(8);
+    expect(persisted.maxTurns).toBe(50);
+
+    // Verify a fresh app instance loads persisted values
+    const freshApp = await createApp({ config });
+    const freshGet = await freshApp.request("http://localhost/v1/settings", {
+      headers: { host: "localhost" }
+    });
+    const freshSettings = (await freshGet.json()) as { maxConcurrentRuns: number; maxTurns: number };
+    expect(freshSettings.maxConcurrentRuns).toBe(8);
+    expect(freshSettings.maxTurns).toBe(50);
   });
 });
