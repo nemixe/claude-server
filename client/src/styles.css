@@ -639,7 +639,6 @@ body {
   color: #475569;
   font-size: var(--ai-chat-font-size-sm);
   font-weight: 600;
-  text-align: right;
 }
 
 .ai-chat-card .ant-bubble-end .ant-bubble-avatar {
@@ -673,8 +672,8 @@ body {
 }
 
 .ant-bubble-end .ai-chat-bubble-header-inline {
-  justify-content: flex-end;
   min-width: 0;
+  flex-direction: row-reverse;
 }
 
 .ant-bubble-end .ai-chat-bubble-header-inline small {

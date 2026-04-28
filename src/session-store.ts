@@ -99,8 +99,7 @@ export class SessionStore {
     return true;
   }
 
-  async listClaudeCommands(session: SessionMetadata): Promise<ClaudeCommand[]> {
-    await this.syncSharedClaudeCommandsToWorkspace(session.workspacePath);
+  async listSharedClaudeCommands(): Promise<ClaudeCommand[]> {
     const commandsPath = this.config.claudeCommandsDir;
     const files = await listMarkdownFiles(commandsPath);
     const commands = await Promise.all(
@@ -112,43 +111,64 @@ export class SessionStore {
       .sort((left, right) => left.path.localeCompare(right.path));
   }
 
-  async readClaudeCommand(session: SessionMetadata, commandPath: string): Promise<ClaudeCommand | undefined> {
+  async readSharedClaudeCommand(commandPath: string): Promise<ClaudeCommand | undefined> {
     const relativePath = sanitizeClaudeCommandPath(commandPath);
-    await this.syncSharedClaudeCommandsToWorkspace(session.workspacePath);
     return this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
   }
 
-  async saveClaudeCommand(session: SessionMetadata, command: ClaudeCommandInput): Promise<ClaudeCommand> {
+  async saveSharedClaudeCommand(command: ClaudeCommandInput): Promise<ClaudeCommand> {
     const relativePath = sanitizeClaudeCommandPath(command.path);
     const targetPath = path.join(this.config.claudeCommandsDir, relativePath);
 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, command.content, "utf8");
-    await this.syncSharedClaudeCommandsToWorkspace(session.workspacePath, relativePath);
+    await this.syncSharedClaudeCommandsToAllWorkspaces(relativePath);
 
     const saved = await this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
     if (!saved) throw new Error(`Could not save Claude command: ${relativePath}`);
     return saved;
   }
 
-  async deleteClaudeCommand(session: SessionMetadata, commandPath: string): Promise<boolean> {
+  async deleteSharedClaudeCommand(commandPath: string): Promise<boolean> {
     const relativePath = sanitizeClaudeCommandPath(commandPath);
     const targetPath = path.join(this.config.claudeCommandsDir, relativePath);
-    const workspaceTargetPath = path.join(session.workspacePath, CLAUDE_COMMANDS_DIR, relativePath);
 
+    let deleted = false;
     try {
       const stat = await fs.stat(targetPath);
       if (!stat.isFile()) return false;
       await fs.rm(targetPath, { force: true });
-      await fs.rm(workspaceTargetPath, { force: true });
       await pruneEmptyParents(path.dirname(targetPath), this.config.claudeCommandsDir);
-      await pruneEmptyParents(path.dirname(workspaceTargetPath), path.join(session.workspacePath, CLAUDE_COMMANDS_DIR));
-      return true;
+      deleted = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return false;
-      throw error;
+      if (code !== "ENOENT") throw error;
     }
+
+    if (!deleted) return false;
+
+    const sessions = await this.list();
+    await Promise.all(
+      sessions.map(async (session) => {
+        const workspaceTargetPath = path.join(session.workspacePath, CLAUDE_COMMANDS_DIR, relativePath);
+        try {
+          await fs.rm(workspaceTargetPath, { force: true });
+          await pruneEmptyParents(path.dirname(workspaceTargetPath), path.join(session.workspacePath, CLAUDE_COMMANDS_DIR));
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT") throw error;
+        }
+      })
+    );
+
+    return true;
+  }
+
+  private async syncSharedClaudeCommandsToAllWorkspaces(relativePath: string): Promise<void> {
+    const sessions = await this.list();
+    await Promise.all(
+      sessions.map((session) => this.syncSharedClaudeCommandsToWorkspace(session.workspacePath, relativePath))
+    );
   }
 
   async searchProjectFiles(query: string, limit = DEFAULT_WORKSPACE_SEARCH_LIMIT): Promise<WorkspaceSearchResult[]> {

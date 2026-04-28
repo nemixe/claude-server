@@ -101,6 +101,18 @@ export function createApp(dependencies: AppDependencies): Hono {
     return c.json({ ok: true, service: "claude-server", timestamp: new Date().toISOString() });
   });
 
+  app.get("/v1/settings", (c) => {
+    return c.json({ maxConcurrentRuns: agentService.getMaxConcurrentRuns() });
+  });
+
+  app.patch("/v1/settings", async (c) => {
+    const body = z
+      .object({ maxConcurrentRuns: z.number().int().min(1).max(64) })
+      .parse(await c.req.json().catch(() => ({})));
+    agentService.setMaxConcurrentRuns(body.maxConcurrentRuns);
+    return c.json({ maxConcurrentRuns: agentService.getMaxConcurrentRuns() });
+  });
+
   app.get("/client", (c) => {
     return c.html(renderTestClient());
   });
@@ -126,19 +138,28 @@ export function createApp(dependencies: AppDependencies): Hono {
     return c.json({ messages });
   });
 
-  app.get("/v1/sessions/:sessionId/claude-commands", async (c) => {
-    const session = await sessionStore.get(c.req.param("sessionId"));
-    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
-
+  app.get("/v1/claude-commands", async (c) => {
     const commandPath = c.req.query("path");
     if (commandPath) {
-      const command = await sessionStore.readClaudeCommand(session, commandPath);
+      const command = await sessionStore.readSharedClaudeCommand(commandPath);
       if (!command) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
       return c.json({ command });
     }
-
-    const commands = await sessionStore.listClaudeCommands(session);
+    const commands = await sessionStore.listSharedClaudeCommands();
     return c.json({ commands });
+  });
+
+  app.post("/v1/claude-commands", async (c) => {
+    const body = claudeCommandSchema.parse(await c.req.json());
+    const command = await sessionStore.saveSharedClaudeCommand(body);
+    return c.json({ command }, 201);
+  });
+
+  app.delete("/v1/claude-commands", async (c) => {
+    const body = deleteClaudeCommandSchema.parse(await c.req.json());
+    const deleted = await sessionStore.deleteSharedClaudeCommand(body.path);
+    if (!deleted) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
+    return c.json({ deleted: true });
   });
 
   app.get("/v1/sessions/:sessionId/files:search", async (c) => {
@@ -151,25 +172,6 @@ export function createApp(dependencies: AppDependencies): Hono {
     });
     const results = await sessionStore.searchProjectFiles(query.q, query.limit);
     return c.json({ results });
-  });
-
-  app.post("/v1/sessions/:sessionId/claude-commands", async (c) => {
-    const session = await sessionStore.get(c.req.param("sessionId"));
-    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
-
-    const body = claudeCommandSchema.parse(await c.req.json());
-    const command = await sessionStore.saveClaudeCommand(session, body);
-    return c.json({ command }, 201);
-  });
-
-  app.delete("/v1/sessions/:sessionId/claude-commands", async (c) => {
-    const session = await sessionStore.get(c.req.param("sessionId"));
-    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
-
-    const body = deleteClaudeCommandSchema.parse(await c.req.json());
-    const deleted = await sessionStore.deleteClaudeCommand(session, body.path);
-    if (!deleted) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
-    return c.json({ deleted: true });
   });
 
   app.get("/v1/sessions/:sessionId/events:stream", async (c) => {

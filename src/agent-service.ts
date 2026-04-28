@@ -40,14 +40,28 @@ export class ConcurrencyLimitError extends Error {
 
 export class AgentService {
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private maxConcurrentRuns: number;
 
   constructor(
     private readonly config: AppConfig,
     private readonly adapter: AgentSdkAdapter = defaultAgentSdkAdapter
-  ) {}
+  ) {
+    this.maxConcurrentRuns = config.maxConcurrentRuns;
+  }
+
+  getMaxConcurrentRuns(): number {
+    return this.maxConcurrentRuns;
+  }
+
+  setMaxConcurrentRuns(value: number): void {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error("maxConcurrentRuns must be a positive integer");
+    }
+    this.maxConcurrentRuns = value;
+  }
 
   async *stream(input: AgentRunInput): AsyncGenerator<NormalizedAgentEvent> {
-    if (this.activeRuns.has(input.session.id) || this.activeRuns.size >= this.config.maxConcurrentRuns) {
+    if (this.activeRuns.has(input.session.id) || this.activeRuns.size >= this.maxConcurrentRuns) {
       throw new ConcurrencyLimitError();
     }
 

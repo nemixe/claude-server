@@ -60,6 +60,7 @@ function App() {
   const [isMinimized, setIsMinimized] = useState(false);
   const [mode, setMode] = useState("bypass");
   const [maxTurns, setMaxTurns] = useState(30);
+  const [maxConcurrentRuns, setMaxConcurrentRuns] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [selectedImages, setSelectedImages] = useState([]);
   const [events, setEvents] = useState([]);
@@ -111,6 +112,12 @@ function App() {
 
   useEffect(() => {
     loadSessions({ restoreSaved: true });
+    loadClaudeCommands();
+    getJson("/v1/settings")
+      .then((result) => {
+        if (Number.isInteger(result?.maxConcurrentRuns)) setMaxConcurrentRuns(result.maxConcurrentRuns);
+      })
+      .catch(() => {});
     return () => {
       stopObserving();
       if (historyCopyTimeoutRef.current) window.clearTimeout(historyCopyTimeoutRef.current);
@@ -146,17 +153,11 @@ function App() {
   );
 
   const slashCommands = useMemo(() => {
-    const known = commands.map((command) => ({
+    return commands.map((command) => ({
       id: command.path,
       name: command.path.replace(/^\.?claude\/commands\//, "").replace(/\.md$/, ""),
       description: command.content ? firstLine(command.content) : command.path
     }));
-    if (known.length > 0) return known;
-    return [
-      { id: "plan", name: "plan", description: "Break the task into small next steps." },
-      { id: "fix", name: "fix", description: "Suggest a concrete fix." },
-      { id: "review", name: "review", description: "Review the current implementation." }
-    ];
   }, [commands]);
 
   const bubbleItems = useMemo(() => eventsToBubbleItems(events), [events]);
@@ -279,7 +280,6 @@ function App() {
     setFileMentionStatus("idle");
 
     if (session) appendEntry(eventName, session);
-    await loadClaudeCommands(id);
 
     try {
       const result = await getJson("/v1/sessions/" + encodeURIComponent(id) + "/messages");
@@ -331,7 +331,6 @@ function App() {
         setSessionId(activeSessionId);
         rememberSession({ sessionId: activeSessionId });
         await loadSessions({ restoreSaved: false });
-        await loadClaudeCommands(activeSessionId);
       } else {
         const existing = sessions.find((session) => getSessionId(session) === activeSessionId);
         if (isGenericSessionTitle(existing?.title)) shouldPatchTitle = true;
@@ -394,36 +393,27 @@ function App() {
     appendEntry("client", { interrupted: true });
   }
 
-  async function loadClaudeCommands(id) {
-    const activeSessionId = id || sessionIdRef.current;
-    setCommands([]);
+  async function loadClaudeCommands() {
     setSelectedCommandPath("");
-
-    if (!activeSessionId) {
-      clearCommandEditor();
-      setCommandsHint("Pick a session to manage slash commands");
-      return;
-    }
-
     setCommandsHint("Loading commands from .claude/commands");
     try {
-      const result = await getJson("/v1/sessions/" + encodeURIComponent(activeSessionId) + "/claude-commands");
+      const result = await getJson("/v1/claude-commands");
       const nextCommands = Array.isArray(result.commands) ? result.commands : [];
       setCommands(nextCommands);
       setCommandsHint(
         nextCommands.length > 0
-          ? "Commands live in this session workspace under .claude/commands"
-          : "No commands saved yet for this session"
+          ? "Commands live in .claude/commands"
+          : "No commands saved in .claude/commands"
       );
     } catch (error) {
+      setCommands([]);
       setCommandsHint("Could not load commands");
       appendEntry("client_error", "Could not load Claude commands: " + errorMessage(error));
     }
   }
 
   async function loadClaudeCommand(path) {
-    const id = sessionIdRef.current;
-    if (!id || !path) return;
+    if (!path) return;
 
     const existing = commandsRef.current.find((command) => command.path === path);
     if (existing) {
@@ -432,7 +422,7 @@ function App() {
     }
 
     try {
-      const result = await getJson("/v1/sessions/" + encodeURIComponent(id) + "/claude-commands?path=" + encodeURIComponent(path));
+      const result = await getJson("/v1/claude-commands?path=" + encodeURIComponent(path));
       if (result && result.command) {
         mergeCommand(result.command);
         showCommand(result.command);
@@ -443,12 +433,6 @@ function App() {
   }
 
   async function saveCommand() {
-    const id = sessionIdRef.current;
-    if (!id) {
-      appendEntry("client_error", "Select or create a session before saving commands");
-      return;
-    }
-
     const path = String(commandPath || "").trim();
     if (!path) {
       appendEntry("client_error", "Command path is required");
@@ -456,7 +440,7 @@ function App() {
     }
 
     try {
-      const result = await postJson("/v1/sessions/" + encodeURIComponent(id) + "/claude-commands", {
+      const result = await postJson("/v1/claude-commands", {
         path,
         content: String(commandContent || "")
       });
@@ -471,12 +455,6 @@ function App() {
   }
 
   async function deleteCommand() {
-    const id = sessionIdRef.current;
-    if (!id) {
-      appendEntry("client_error", "Select or create a session before deleting commands");
-      return;
-    }
-
     const path = String(commandPath || selectedCommandPath || "").trim();
     if (!path) {
       appendEntry("client_error", "Choose a command to delete");
@@ -484,7 +462,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(id) + "/claude-commands"), {
+      const response = await fetch(apiPath("/v1/claude-commands"), {
         method: "DELETE",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ path })
@@ -494,7 +472,7 @@ function App() {
       setCommands(nextCommands);
       clearCommandEditor();
       appendEntry("command_deleted", { path });
-      setCommandsHint(nextCommands.length > 0 ? "Commands live in this session workspace under .claude/commands" : "No commands saved yet for this session");
+      setCommandsHint(nextCommands.length > 0 ? "Commands live in .claude/commands" : "No commands saved in .claude/commands");
     } catch (error) {
       appendEntry("client_error", "Could not delete Claude command: " + errorMessage(error));
     }
@@ -650,6 +628,17 @@ function App() {
       .catch(() => {});
   }
 
+  function changeMaxConcurrentRuns(value) {
+    setMaxConcurrentRuns(value);
+    patchJson("/v1/settings", { maxConcurrentRuns: value })
+      .then((result) => {
+        if (Number.isInteger(result?.maxConcurrentRuns)) setMaxConcurrentRuns(result.maxConcurrentRuns);
+      })
+      .catch((error) => {
+        appendEntry("client_error", "Could not update parallel cap: " + errorMessage(error));
+      });
+  }
+
   function onSessionSelect(id) {
     const selected = sessions.find((session) => getSessionId(session) === id);
     if (!selected) {
@@ -665,13 +654,11 @@ function App() {
     setIsObservedRunning(false);
     setSessionId("");
     sessionIdRef.current = "";
-    setCommands([]);
     setFileMentionSuggestions([]);
     setFileMentionStatus("idle");
     localStorage.removeItem(storageKey);
     setEvents([]);
     clearCommandEditor();
-    setCommandsHint("Pick a session to manage slash commands");
   }
 
   function rememberSession(session) {
@@ -924,9 +911,10 @@ function App() {
                       onRefreshSessions={() => loadSessions({ restoreSaved: false })}
                     />
                     <DeveloperTools
-                      sessionId={sessionId}
                       maxTurns={maxTurns}
                       setMaxTurns={setMaxTurns}
+                      maxConcurrentRuns={maxConcurrentRuns}
+                      onChangeMaxConcurrentRuns={changeMaxConcurrentRuns}
                       commandsHint={commandsHint}
                       commandOptions={commandOptions}
                       selectedCommandPath={selectedCommandPath}
@@ -940,8 +928,6 @@ function App() {
                       saveCommand={saveCommand}
                       deleteCommand={deleteCommand}
                       clearCommandEditor={clearCommandEditor}
-                      clearEvents={() => setEvents([])}
-                      openHistory={() => setIsHistoryOpen(true)}
                     />
                     <button
                       type="button"
@@ -1086,7 +1072,7 @@ function DeveloperTools(props) {
       key: "settings",
       label: (
         <span className="ai-chat-tool-label">
-          <SettingOutlined /> Prompt Controls
+          <SettingOutlined /> Settings
         </span>
       ),
       children: (
@@ -1101,14 +1087,21 @@ function DeveloperTools(props) {
               style={{ width: "100%" }}
             />
           </label>
-          <Space size={6} wrap>
-            <Button size="small" onClick={props.openHistory}>
-              Raw History
-            </Button>
-            <Button size="small" onClick={props.clearEvents}>
-              Clear Events
-            </Button>
-          </Space>
+          <label className="ai-chat-field" title="Maximum sessions running in parallel on the server">
+            <span>Concurrent runs</span>
+            <InputNumber
+              size="small"
+              min={1}
+              max={64}
+              value={props.maxConcurrentRuns ?? null}
+              onChange={(value) => {
+                if (typeof value === "number" && Number.isInteger(value) && value >= 1) {
+                  props.onChangeMaxConcurrentRuns?.(value);
+                }
+              }}
+              style={{ width: "100%" }}
+            />
+          </label>
         </div>
       )
     },
@@ -1127,7 +1120,6 @@ function DeveloperTools(props) {
             <Select
               size="small"
               value={props.selectedCommandPath}
-              disabled={!props.sessionId}
               options={props.commandOptions}
               onChange={(value) => {
                 props.setSelectedCommandPath(value);
@@ -1139,7 +1131,6 @@ function DeveloperTools(props) {
             <span>Command path</span>
             <Input
               size="small"
-              disabled={!props.sessionId}
               value={props.commandPath}
               placeholder="review/fix.md"
               onChange={(event) => props.setCommandPath(event.target.value)}
@@ -1148,7 +1139,6 @@ function DeveloperTools(props) {
           <label className="ai-chat-field">
             <span>Command content</span>
             <TextArea
-              disabled={!props.sessionId}
               rows={5}
               value={props.commandContent}
               placeholder="Write the Claude slash command markdown here."
@@ -1156,16 +1146,15 @@ function DeveloperTools(props) {
             />
           </label>
           <Space size={6} wrap>
-            <Button size="small" type="primary" disabled={!props.sessionId} onClick={props.saveCommand}>
+            <Button size="small" type="primary" onClick={props.saveCommand}>
               Save
             </Button>
-            <Button size="small" disabled={!props.sessionId} onClick={props.clearCommandEditor}>
+            <Button size="small" onClick={props.clearCommandEditor}>
               New
             </Button>
             <Button
               size="small"
               danger
-              disabled={!props.sessionId}
               icon={<DeleteOutlined />}
               onClick={props.deleteCommand}
             >
@@ -1173,7 +1162,6 @@ function DeveloperTools(props) {
             </Button>
             <Button
               size="small"
-              disabled={!props.sessionId}
               icon={<ReloadOutlined />}
               onClick={() => props.loadClaudeCommands()}
             >
