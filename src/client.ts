@@ -16,6 +16,7 @@ export type ClaudeClientOptions = {
 export type CreateClientSessionRequest = {
   mode: ClaudeMode;
   title?: string;
+  userName?: string;
   files?: UploadedFile[];
 };
 

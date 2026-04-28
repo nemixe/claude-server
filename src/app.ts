@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AgentService, ConcurrencyLimitError } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
+import { createSessionFactory, MissingClaudeSessionIdError } from "./session-adapter.js";
 import { SessionStore } from "./session-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { renderTestClient } from "./test-client.js";
@@ -24,6 +25,7 @@ export type AppDependencies = {
 const createSessionSchema = z.object({
   mode: z.enum(CLAUDE_MODES).default("bypass"),
   title: z.string().min(1).max(200).optional(),
+  userName: z.string().trim().min(1).max(40).optional(),
   files: z
     .array(
       z.object({
@@ -94,7 +96,13 @@ const workspaceSearchSchema = z.object({
 export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   const app = new Hono();
   const sessionStore = dependencies.sessionStore ?? new SessionStore(dependencies.config);
-  const agentService = dependencies.agentService ?? new AgentService(dependencies.config);
+  const agentService =
+    dependencies.agentService ??
+    new AgentService(
+      dependencies.config,
+      undefined,
+      dependencies.config.useSessionApi ? createSessionFactory() : undefined
+    );
   const settingsStore = dependencies.settingsStore ?? new SettingsStore(dependencies.config);
 
   // Load persisted settings into the agent service on startup
@@ -237,9 +245,19 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
 
     return streamSSE(c, async (stream) => {
       let sessionMarkedAsRun = false;
+      let persistedClaudeSessionId = session.claudeSessionId;
       let waitingForUserQuestion = false;
       try {
-        for await (const event of agentService.stream({ session, request })) {
+        for await (const event of agentService.stream({
+          session,
+          request,
+          onClaudeSessionId: async (claudeSessionId) => {
+            if (persistedClaudeSessionId === claudeSessionId) return;
+            await sessionStore.setClaudeSessionId(session.id, claudeSessionId);
+            session.claudeSessionId = claudeSessionId;
+            persistedClaudeSessionId = claudeSessionId;
+          }
+        })) {
           if (!sessionMarkedAsRun) {
             await sessionStore.markRun(session.id);
             sessionMarkedAsRun = true;
@@ -248,7 +266,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
           if (event.type === "result" && event.data && typeof event.data === "object") {
             const cost = (event.data as { total_cost_usd?: unknown }).total_cost_usd;
             if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
-              await sessionStore.addCost(session.id, cost);
+              await sessionStore.setCost(session.id, cost);
             }
           }
 
@@ -260,7 +278,12 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
 
         await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true, waitingForUserQuestion }) });
       } catch (error) {
-        const status = error instanceof ConcurrencyLimitError ? "concurrency_limit" : "agent_error";
+        const status =
+          error instanceof ConcurrencyLimitError
+            ? "concurrency_limit"
+            : error instanceof MissingClaudeSessionIdError
+              ? error.code
+              : "agent_error";
         await stream.writeSSE({
           event: "error",
           data: JSON.stringify({ error: { code: status, message: errorMessage(error) } })
@@ -285,7 +308,9 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   });
 
   app.delete("/v1/sessions/:sessionId", async (c) => {
-    const deleted = await sessionStore.delete(c.req.param("sessionId"));
+    const sessionId = c.req.param("sessionId");
+    agentService.closeSession(sessionId);
+    const deleted = await sessionStore.delete(sessionId);
     if (!deleted) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
     return c.json({ deleted: true });
   });
@@ -320,6 +345,7 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     id: session.id,
     sessionId: session.id,
     title: session.title,
+    userName: session.userName,
     mode: session.mode,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,

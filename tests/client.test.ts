@@ -28,11 +28,12 @@ describe("browser client", () => {
     });
     const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
 
-    await expect(client.createSession({ mode: "plan" })).resolves.toMatchObject({ sessionId: "s1" });
+    await expect(client.createSession({ mode: "plan", userName: "Ada" })).resolves.toMatchObject({ sessionId: "s1" });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v1/sessions",
       expect.objectContaining({
-        method: "POST"
+        method: "POST",
+        body: JSON.stringify({ mode: "plan", userName: "Ada" })
       })
     );
   });

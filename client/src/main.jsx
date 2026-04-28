@@ -8,7 +8,8 @@ import {
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
-  ToolOutlined
+  ToolOutlined,
+  UserOutlined
 } from "@ant-design/icons";
 import {
   Alert,
@@ -25,11 +26,19 @@ import ChatFooter from "./agent-chat/chat-footer.jsx";
 import ChatHeader from "./agent-chat/chat-header.jsx";
 import MarkdownText from "./agent-chat/markdown-text.jsx";
 import SessionSidebar from "./agent-chat/session-sidebar.jsx";
-import { derivePromptTitle } from "./agent-chat/chat-ui-utils.js";
+import {
+  derivePromptTitle,
+  formatMessageTimestamp,
+  getMessageTimestamp,
+  getAvatarThemeFromLabel,
+  getDisplayLabel,
+  normalizeUserLabel
+} from "./agent-chat/chat-ui-utils.js";
 
 const { TextArea } = Input;
 
 const storageKey = "claude-test-client:last-session";
+const identityStorageKey = "claude-test-client:user-identity";
 const imageMediaTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const maxImages = 5;
 const maxImageBytes = 5 * 1024 * 1024;
@@ -43,6 +52,8 @@ const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 420;
 const MIN_MAIN_COLUMN_WIDTH = 340;
 const VIEWPORT_PADDING = 12;
+const USER_LABEL_MAX_LENGTH = 40;
+const GUEST_USER_NAME = "Guest";
 
 const modeLabel = {
   plan: "Plan",
@@ -51,10 +62,12 @@ const modeLabel = {
 
 function App() {
   const [status, setStatus] = useState("Idle");
+  const [userName, setUserName] = useState(() => readSavedIdentity());
+  const [identityInput, setIdentityInput] = useState(() => readSavedIdentity());
   const [sessionId, setSessionId] = useState("");
   const [sessions, setSessions] = useState([]);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
-  const [hideEmptySessions, setHideEmptySessions] = useState(false);
+  const [creatorFilter, setCreatorFilter] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isClosed, setIsClosed] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -144,17 +157,36 @@ function App() {
     (isSending && streamingSessionIdRef.current === sessionId) ||
     (isObservedRunning && observingSessionIdRef.current === sessionId);
   const activeSession = sessions.find((session) => getSessionId(session) === sessionId);
+  const creatorFilterOptions = useMemo(() => {
+    const creators = new Map();
+    sessions.forEach((session) => {
+      const label = getDisplayLabel(session.userName || GUEST_USER_NAME);
+      const key = normalizeUserLabel(label).toLowerCase();
+      if (key && !creators.has(key)) creators.set(key, label);
+    });
+    return Array.from(creators.values())
+      .sort((left, right) => left.localeCompare(right))
+      .map((label) => ({ value: label, label }));
+  }, [sessions]);
   const filteredSessions = useMemo(() => {
     const query = sessionSearchQuery.trim().toLowerCase();
+    const normalizedCreatorFilter = normalizeUserLabel(creatorFilter).toLowerCase();
     return sessions
       .filter((session) => {
-        if (hideEmptySessions && !session.hasRun) return false;
+        if (normalizedCreatorFilter) {
+          const sessionUserName = normalizeUserLabel(session.userName || GUEST_USER_NAME).toLowerCase();
+          if (sessionUserName !== normalizedCreatorFilter) return false;
+        }
         if (!query) return true;
         const id = getSessionId(session);
-        return [session.title, id, session.mode].filter(Boolean).join(" ").toLowerCase().includes(query);
+        return [session.title, session.userName || GUEST_USER_NAME, id, session.mode]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(query);
       })
       .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
-  }, [hideEmptySessions, sessionSearchQuery, sessions]);
+  }, [creatorFilter, sessionSearchQuery, sessions]);
 
   const commandOptions = [{ value: "", label: commands.length > 0 ? "Choose a command" : "No command selected" }].concat(
     commands.map((command) => ({ value: command.path, label: command.path }))
@@ -168,7 +200,10 @@ function App() {
     }));
   }, [commands]);
 
-  const bubbleItems = useMemo(() => eventsToBubbleItems(events), [events]);
+  const displayUserName = activeSession
+    ? getSessionUserName(activeSession)
+    : getDisplayLabel(userName || GUEST_USER_NAME);
+  const bubbleItems = useMemo(() => eventsToBubbleItems(events, displayUserName), [displayUserName, events]);
   const bubbleRoles = useMemo(
     () => ({
       user: { placement: "end" },
@@ -223,9 +258,12 @@ function App() {
     return String(baseUrlRef.current || "").replace(/\/$/, "") + path;
   }
 
-  function appendEntry(type, data) {
+  function appendEntry(type, data, options = {}) {
+    const timestamp = getMessageTimestamp({ timestamp: options.timestamp }) || getMessageTimestamp(data);
+    const time = formatMessageTimestamp(timestamp);
+
     setEvents((current) =>
-      current.concat([{ id: Date.now() + ":" + Math.random(), time: new Date().toLocaleTimeString(), type, data }])
+      current.concat([{ id: Date.now() + ":" + Math.random(), time, timestamp: timestamp || undefined, type, data }])
     );
   }
 
@@ -322,6 +360,7 @@ function App() {
     const nextPrompt = String(value ?? prompt).trim();
     if (!nextPrompt) return;
 
+    const promptTimestamp = new Date().toISOString();
     setIsSending(true);
     setStatus("Generating");
     const controller = new AbortController();
@@ -334,9 +373,11 @@ function App() {
 
     try {
       if (!activeSessionId) {
+        const normalizedUserName = normalizeUserLabel(userName);
         const created = await postJson("/v1/sessions", {
           mode,
-          title: derivedTitle
+          title: derivedTitle,
+          ...(normalizedUserName ? { userName: normalizedUserName } : {})
         });
         activeSessionId = created.sessionId || created.id;
         setSessionId(activeSessionId);
@@ -359,7 +400,7 @@ function App() {
         mediaType: image.mediaType,
         dataBase64: image.dataBase64
       }));
-      appendEntry("prompt", { prompt: nextPrompt, mode, images, toolResult: options.toolResult });
+      appendEntry("prompt", { prompt: nextPrompt, mode, images, toolResult: options.toolResult }, { timestamp: promptTimestamp });
       setPrompt("");
 
       const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(activeSessionId) + "/messages:stream"), {
@@ -700,6 +741,22 @@ function App() {
     clearCommandEditor();
   }
 
+  function saveIdentity(value) {
+    const normalized = normalizeUserLabel(value).slice(0, USER_LABEL_MAX_LENGTH);
+    if (!normalized) return;
+    setUserName(normalized);
+    setIdentityInput(normalized);
+    localStorage.setItem(identityStorageKey, normalized);
+  }
+
+  function logoutIdentity() {
+    localStorage.removeItem(identityStorageKey);
+    setUserName("");
+    setIdentityInput("");
+    forgetSession();
+    setStatus("Idle");
+  }
+
   function rememberSession(session) {
     localStorage.setItem(
       storageKey,
@@ -739,6 +796,7 @@ function App() {
   async function copySessionHistoryJson() {
     const payload = events.map((entry) => ({
       time: entry.time,
+      timestamp: entry.timestamp || "",
       type: entry.type,
       data: entry.data
     }));
@@ -882,8 +940,8 @@ function App() {
       isSidebarOpen={isSidebarOpen}
       onToggleSidebar={() => setIsSidebarOpen((value) => !value)}
       hasStreamingSessions={busy}
-      hasCurrentUserIdentity={Boolean(activeSession)}
-      onLogout={forgetSession}
+      hasCurrentUserIdentity={Boolean(userName)}
+      onLogout={logoutIdentity}
       onClose={() => setIsClosed(true)}
       onMinimize={() => setIsMinimized((value) => !value)}
       onExportSession={copySessionHistoryJson}
@@ -928,6 +986,15 @@ function App() {
         <div className="ai-chat-card">
           {isMinimized ? (
             chatHeader
+          ) : !userName ? (
+            <main className="ai-chat-main-column">
+              {chatHeader}
+              <ChatIdentityOnboarding
+                value={identityInput}
+                onChange={setIdentityInput}
+                onSubmit={() => saveIdentity(identityInput)}
+              />
+            </main>
           ) : (
             <div className={["ai-chat-two-columns", "is-narrow", isSidebarOpen ? "sidebar-open" : ""].join(" ")}>
               <aside
@@ -943,8 +1010,9 @@ function App() {
                       activeSessionKey={sessionId}
                       sessionSearchQuery={sessionSearchQuery}
                       setSessionSearchQuery={setSessionSearchQuery}
-                      hideEmptySessions={hideEmptySessions}
-                      setHideEmptySessions={setHideEmptySessions}
+                      creatorFilter={creatorFilter}
+                      setCreatorFilter={setCreatorFilter}
+                      creatorFilterOptions={creatorFilterOptions}
                       onCreateNewSession={createSession}
                       onSessionSelect={onSessionSelect}
                       onRefreshSessions={() => loadSessions({ restoreSaved: false })}
@@ -1083,6 +1151,40 @@ function MessageContent({ text, images }) {
     <div className="ai-chat-message-content">
       {text ? <MarkdownText text={text} /> : null}
       <ImageAttachmentGrid images={images} />
+    </div>
+  );
+}
+
+function ChatIdentityOnboarding({ value, onChange, onSubmit }) {
+  const normalized = normalizeUserLabel(value);
+  return (
+    <div className="ai-chat-identity-gate">
+      <form
+        className="ai-chat-identity-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div className="ai-chat-identity-icon" aria-hidden="true">
+          <UserOutlined />
+        </div>
+        <h1>Welcome</h1>
+        <p>Enter your name to start chatting.</p>
+        <Input
+          size="large"
+          autoFocus
+          maxLength={USER_LABEL_MAX_LENGTH}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Your name"
+          prefix={<UserOutlined />}
+          aria-label="Your name"
+        />
+        <Button type="primary" htmlType="submit" size="large" block disabled={!normalized}>
+          Continue
+        </Button>
+      </form>
     </div>
   );
 }
@@ -1235,9 +1337,10 @@ function LegacyEventsList({ events }) {
     <div className="legacy-events-list">
       {events.map((entry) => {
         const images = extractImageBlocks(entry.data);
+        const title = [entry.time ? `[${entry.time}]` : "", entry.type].filter(Boolean).join(" ");
         return (
           <article key={entry.id} className="legacy-event-entry">
-            <div className="legacy-event-title">[{entry.time}] {entry.type}</div>
+            <div className="legacy-event-title">{title}</div>
             <pre>{JSON.stringify(redactImageData(entry.data), null, 2)}</pre>
             <ImageAttachmentGrid images={images} />
           </article>
@@ -1247,17 +1350,20 @@ function LegacyEventsList({ events }) {
   );
 }
 
-function eventsToBubbleItems(events) {
+function eventsToBubbleItems(events, userName = GUEST_USER_NAME) {
+  const userLabel = getDisplayLabel(userName || GUEST_USER_NAME);
   const items = events.flatMap((entry) => {
     if (!entry) return [];
-    const meta = [entry.time, entry.type === "history" ? "history" : ""].filter(Boolean).join(" · ");
+    const timestamp = formatMessageTimestamp(entry.timestamp);
+    const meta = [timestamp, entry.type === "history" ? "history" : ""].filter(Boolean).join(" · ");
 
     if (entry.type === "prompt") {
       const images = Array.isArray(entry.data?.images) ? entry.data.images : [];
       const text = entry.data?.prompt ? String(entry.data.prompt) : "";
       return [
         createBubbleItem(entry.id, "user", {
-          header: <BubbleHeader label="You" meta={[entry.time, modeLabel[entry.data?.mode]].filter(Boolean).join(" · ")} />,
+          header: <BubbleHeader label={userLabel} meta={[timestamp, modeLabel[entry.data?.mode]].filter(Boolean).join(" · ")} />,
+          avatar: <UserAvatar label={userLabel} />,
           content: <MessageContent text={text} images={images} />,
           copyText: text
         })
@@ -1266,11 +1372,11 @@ function eventsToBubbleItems(events) {
 
     if (entry.type === "history") {
       if (entry.data && entry.data.empty) return [createActivity(entry.id, "History", "No saved messages yet for this session.")];
-      return toProtocolItems(entry.data, meta, entry.id);
+      return toProtocolItems(entry.data, meta, entry.id, userLabel);
     }
 
     if (entry.type === "message") {
-      return toProtocolItems(entry.data, entry.time, entry.id);
+      return toProtocolItems(entry.data, timestamp, entry.id, userLabel);
     }
 
     if (entry.type === "result") {
@@ -1417,7 +1523,7 @@ function findAskUserQuestionTool(value) {
   );
 }
 
-function toProtocolItems(value, meta, keyBase) {
+function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
   if (!value || typeof value !== "object") return [];
   const record = value;
   const messageRecord = record.message && typeof record.message === "object" ? record.message : record;
@@ -1443,8 +1549,8 @@ function toProtocolItems(value, meta, keyBase) {
     if (!text && images.length === 0) return [];
     items.push(
       createBubbleItem(keyBase, role === "user" ? "user" : "assistant", {
-        header: <BubbleHeader label={role === "user" ? "You" : "Claude"} meta={meta} />,
-        avatar: role === "assistant" ? <AssistantAvatar /> : undefined,
+        header: <BubbleHeader label={role === "user" ? userName : "Claude"} meta={meta} />,
+        avatar: role === "assistant" ? <AssistantAvatar /> : <UserAvatar label={userName} />,
         content: <MessageContent text={text} images={images} />,
         copyText: text
       })
@@ -1460,7 +1566,8 @@ function toProtocolItems(value, meta, keyBase) {
     if (text || images.length > 0) {
       items.push(
         createBubbleItem(keyBase, "user", {
-          header: <BubbleHeader label="You" meta={meta} />,
+          header: <BubbleHeader label={userName} meta={meta} />,
+          avatar: <UserAvatar label={userName} />,
           content: <MessageContent text={text} images={images} />,
           copyText: text
         })
@@ -1571,6 +1678,16 @@ function BubbleHeader({ label, meta }) {
 
 function AssistantAvatar() {
   return <div className="ai-chat-avatar">AI</div>;
+}
+
+function UserAvatar({ label }) {
+  const display = getDisplayLabel(label || GUEST_USER_NAME);
+  const theme = getAvatarThemeFromLabel(display);
+  return (
+    <div className="ai-chat-avatar ai-chat-avatar-user" style={{ background: theme.bg, color: theme.fg }}>
+      {initialsFromName(display)}
+    </div>
+  );
 }
 
 function normalizeRole(value) {
@@ -1749,6 +1866,30 @@ function imageSrc(image) {
 
 function getSessionId(session) {
   return session.sessionId || session.id || "";
+}
+
+function getSessionUserName(session) {
+  return getDisplayLabel(session?.userName || GUEST_USER_NAME);
+}
+
+function initialsFromName(value) {
+  const words = getDisplayLabel(value)
+    .split(/\s+/)
+    .filter(Boolean);
+  const letters = words.length > 1 ? [words[0], words[words.length - 1]] : [words[0] || GUEST_USER_NAME];
+  return letters
+    .map((word) => word[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function readSavedIdentity() {
+  try {
+    return normalizeUserLabel(localStorage.getItem(identityStorageKey) || "").slice(0, USER_LABEL_MAX_LENGTH);
+  } catch {
+    return "";
+  }
 }
 
 function firstLine(value) {

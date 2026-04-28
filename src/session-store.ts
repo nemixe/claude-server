@@ -12,6 +12,7 @@ const PROJECT_SEARCH_IGNORED_DIRS = new Set([".data", ".git", "dist", "node_modu
 export type CreateSessionInput = {
   mode: ClaudeMode;
   title?: string;
+  userName?: string;
   files?: UploadedFile[];
 };
 
@@ -29,6 +30,7 @@ export class SessionStore {
     const metadata: SessionMetadata = {
       id,
       title: input.title,
+      ...(input.userName ? { userName: input.userName } : {}),
       mode: input.mode,
       workspacePath,
       createdAt: now,
@@ -75,12 +77,17 @@ export class SessionStore {
     await this.save({ ...metadata, hasRun: true });
   }
 
-  async addCost(id: string, costUsd: number): Promise<void> {
+  async setClaudeSessionId(id: string, claudeSessionId: string): Promise<void> {
+    const metadata = await this.get(id);
+    if (!metadata || metadata.claudeSessionId === claudeSessionId) return;
+    await this.save({ ...metadata, claudeSessionId });
+  }
+
+  async setCost(id: string, costUsd: number): Promise<void> {
     if (!Number.isFinite(costUsd) || costUsd <= 0) return;
     const metadata = await this.get(id);
     if (!metadata) return;
-    const next = (metadata.costUsd ?? 0) + costUsd;
-    await this.save({ ...metadata, costUsd: next });
+    await this.save({ ...metadata, costUsd });
   }
 
   async update(id: string, patch: { title?: string; mode?: ClaudeMode }): Promise<SessionMetadata | undefined> {

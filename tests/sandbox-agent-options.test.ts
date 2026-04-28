@@ -38,6 +38,9 @@ describe("sandbox and agent options", () => {
     expect(planOptions.permissionMode).toBe("plan");
     expect(planOptions.enableFileCheckpointing).toBe(false);
     expect(planOptions.disallowedTools).toContain("Bash");
+    expect(planOptions.disallowedTools).not.toContain("Write");
+    expect(planOptions.disallowedTools).not.toContain("Edit");
+    expect(planOptions.disallowedTools).not.toContain("MultiEdit");
     expect(editOptions.permissionMode).toBe("acceptEdits");
     expect(editOptions.enableFileCheckpointing).toBe(true);
     expect(bypassOptions.permissionMode).toBe("bypassPermissions");
@@ -76,7 +79,7 @@ describe("sandbox and agent options", () => {
     ]);
   });
 
-  it("maps AskUserQuestion answers to Agent SDK tool_result prompts", async () => {
+  it("maps AskUserQuestion answers to a normal user prompt", async () => {
     const prompt = buildAgentPrompt({
       prompt: "Subject: SaaS product\ncontinue",
       toolResult: {
@@ -88,30 +91,10 @@ describe("sandbox and agent options", () => {
       }
     });
 
-    const messages = [];
-    for await (const message of prompt as AsyncIterable<Record<string, unknown>>) {
-      messages.push(message);
-    }
-
-    expect(messages).toEqual([
-      {
-        type: "user",
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "toolu_question",
-              content: JSON.stringify({
-                questions: [{ question: "What is the landing page for?" }],
-                answers: { "What is the landing page for?": "SaaS product" }
-              })
-            }
-          ]
-        },
-        parent_tool_use_id: null
-      }
-    ]);
+    expect(prompt).toContain("The user answered the AskUserQuestion form");
+    expect(prompt).toContain("Do not ask the same questions again");
+    expect(prompt).toContain("- What is the landing page for?: SaaS product");
+    expect(prompt).toContain("Subject: SaaS product\ncontinue");
   });
 
   it("detects only AskUserQuestion tool_use messages that stopped for tool use", () => {

@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentService, type AgentSdkAdapter } from "../src/agent-service.js";
 import { createApp } from "../src/app.js";
+import type { SessionFactory, SessionLike } from "../src/session-adapter.js";
 import { SessionStore } from "../src/session-store.js";
 import { SettingsStore } from "../src/settings-store.js";
 import { createTempConfig } from "./helpers.js";
@@ -88,6 +89,127 @@ describe("Hono API", () => {
     const observeText = await observeResponse.text();
     expect(observeText).toContain("event: status");
     expect(observeText).toContain('"running":false');
+  });
+
+  it("persists and exposes optional session user names", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const app = await createApp({ config, sessionStore });
+
+    const namedResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "bypass", title: "Named", userName: "  Ada Lovelace  " })
+    });
+    expect(namedResponse.status).toBe(201);
+    const named = (await namedResponse.json()) as { sessionId: string; userName?: string };
+    expect(named.userName).toBe("Ada Lovelace");
+
+    const guestResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "bypass", title: "Legacy-like" })
+    });
+    expect(guestResponse.status).toBe(201);
+    const guest = (await guestResponse.json()) as { sessionId: string };
+
+    await expect(sessionStore.get(named.sessionId)).resolves.toMatchObject({ userName: "Ada Lovelace" });
+
+    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+      headers: { host: "localhost" }
+    });
+    const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
+    const namedSession = sessionsBody.sessions.find((session) => session.sessionId === named.sessionId);
+    const guestSession = sessionsBody.sessions.find((session) => session.sessionId === guest.sessionId);
+
+    expect(namedSession).toMatchObject({ userName: "Ada Lovelace" });
+    expect(guestSession).not.toHaveProperty("userName");
+    expect(namedSession).not.toHaveProperty("workspacePath");
+  });
+
+  it("stores the latest cumulative session cost from result events", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const adapter: AgentSdkAdapter = {
+      query: () =>
+        (async function* () {
+          yield { type: "result", result: "first", total_cost_usd: 0.1537 };
+          yield { type: "result", result: "second", total_cost_usd: 0.1682 };
+        })(),
+      getSessionMessages: async () => []
+    };
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, adapter)
+    });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Cost" })
+    });
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "hello" })
+    });
+    expect(streamResponse.status).toBe(200);
+    await streamResponse.text();
+
+    await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({ costUsd: 0.1682 });
+
+    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+      headers: { host: "localhost" }
+    });
+    const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
+    expect(sessionsBody.sessions[0]).toMatchObject({ costUsd: 0.1682 });
+  });
+
+  it("persists Claude SDK session IDs from V2 stream events", async () => {
+    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const sdkSession = createMockSdkSession("claude-app-1", async function* () {
+      yield { type: "result", session_id: "claude-app-1", is_error: false };
+    });
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => sdkSession),
+      resumeSession: vi.fn(() => createMockSdkSession("unused", async function* () {}))
+    };
+    const sessionStore = new SessionStore(config);
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, undefined, factory)
+    });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "bypass", title: "V2" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "hello" })
+    });
+
+    expect(streamResponse.status).toBe(200);
+    expect(await streamResponse.text()).toContain("event: result");
+    await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({
+      hasRun: true,
+      claudeSessionId: "claude-app-1"
+    });
+
+    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+      headers: { host: "localhost" }
+    });
+    const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
+    expect(sessionsBody.sessions[0]).not.toHaveProperty("claudeSessionId");
   });
 
   it("accepts validated base64 image prompt requests", async () => {
@@ -205,109 +327,6 @@ describe("Hono API", () => {
     expect(oversizedResponse.status).toBe(400);
   });
 
-  it("manages per-session Claude command files inside .claude/commands", async () => {
-    const config = await createTempConfig();
-    const app = await createApp({ config });
-    const createResponse = await app.request("http://localhost/v1/sessions", {
-      method: "POST",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ mode: "plan", title: "Commands" })
-    });
-    const created = (await createResponse.json()) as { sessionId: string };
-
-    const saveResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
-      method: "POST",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ path: "review/fix.md", content: "Review and fix this code." })
-    });
-    expect(saveResponse.status).toBe(201);
-    await expect(fs.readFile(path.join(config.claudeCommandsDir, "review/fix.md"), "utf8")).resolves.toBe("Review and fix this code.");
-    await expect(
-      fs.readFile(path.join(config.workspaceDir, created.sessionId, ".claude/commands/review/fix.md"), "utf8")
-    ).resolves.toBe("Review and fix this code.");
-
-    const listResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
-      headers: { host: "localhost" }
-    });
-    expect(listResponse.status).toBe(200);
-    expect(await listResponse.json()).toMatchObject({
-      commands: [{ path: "review/fix.md", content: "Review and fix this code." }]
-    });
-
-    const readResponse = await app.request(
-      `http://localhost/v1/sessions/${created.sessionId}/claude-commands?path=${encodeURIComponent(".claude/commands/review/fix.md")}`,
-      { headers: { host: "localhost" } }
-    );
-    expect(readResponse.status).toBe(200);
-    expect(await readResponse.json()).toMatchObject({
-      command: { path: "review/fix.md", content: "Review and fix this code." }
-    });
-
-    const deleteResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
-      method: "DELETE",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ path: "review/fix.md" })
-    });
-    expect(deleteResponse.status).toBe(200);
-    await expect(fs.stat(path.join(config.workspaceDir, created.sessionId, ".claude/commands/review/fix.md"))).rejects.toMatchObject({
-      code: "ENOENT"
-    });
-    await expect(fs.stat(path.join(config.claudeCommandsDir, "review/fix.md"))).rejects.toMatchObject({
-      code: "ENOENT"
-    });
-  });
-
-  it("rejects Claude command paths outside .claude/commands and non-markdown files", async () => {
-    const config = await createTempConfig();
-    const app = await createApp({ config });
-    const createResponse = await app.request("http://localhost/v1/sessions", {
-      method: "POST",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ mode: "plan", title: "Commands" })
-    });
-    const created = (await createResponse.json()) as { sessionId: string };
-
-    const traversalResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
-      method: "POST",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ path: "../secret.md", content: "bad" })
-    });
-    expect(traversalResponse.status).toBe(400);
-
-    const nonMarkdownResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
-      method: "POST",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ path: "review.txt", content: "bad" })
-    });
-    expect(nonMarkdownResponse.status).toBe(400);
-  });
-
-  it("lists repo Claude commands and mirrors them into the selected session workspace", async () => {
-    const config = await createTempConfig();
-    await fs.mkdir(path.join(config.claudeCommandsDir, "nested"), { recursive: true });
-    await fs.writeFile(path.join(config.claudeCommandsDir, "nested/test.md"), "From repo root", "utf8");
-    const app = await createApp({ config });
-
-    const createResponse = await app.request("http://localhost/v1/sessions", {
-      method: "POST",
-      headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ mode: "plan", title: "Commands" })
-    });
-    const created = (await createResponse.json()) as { sessionId: string };
-
-    const listResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/claude-commands`, {
-      headers: { host: "localhost" }
-    });
-
-    expect(listResponse.status).toBe(200);
-    expect(await listResponse.json()).toMatchObject({
-      commands: [{ path: "nested/test.md", content: "From repo root" }]
-    });
-    await expect(
-      fs.readFile(path.join(config.workspaceDir, created.sessionId, ".claude/commands/nested/test.md"), "utf8")
-    ).resolves.toBe("From repo root");
-  });
-
   it("searches project root files and folders with fuzzy path matching", async () => {
     const config = await createTempConfig();
     await fs.mkdir(path.join(config.projectRoot, "src/components"), { recursive: true });
@@ -410,3 +429,15 @@ describe("Hono API", () => {
     expect(freshSettings.maxTurns).toBe(50);
   });
 });
+
+function createMockSdkSession(id: string, stream: () => AsyncGenerator<unknown>): SessionLike {
+  return {
+    get sessionId() {
+      return id;
+    },
+    send: vi.fn(),
+    stream: vi.fn().mockImplementation(stream),
+    close: vi.fn(),
+    [Symbol.asyncDispose]: vi.fn()
+  } as unknown as SessionLike;
+}

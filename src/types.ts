@@ -37,11 +37,13 @@ export type PromptImage = {
 export type SessionMetadata = {
   id: string;
   title?: string;
+  userName?: string;
   mode: ClaudeMode;
   workspacePath: string;
   createdAt: string;
   updatedAt: string;
   hasRun: boolean;
+  claudeSessionId?: string;
   costUsd?: number;
 };
 
@@ -49,6 +51,7 @@ export type PublicSession = {
   id: string;
   sessionId: string;
   title?: string;
+  userName?: string;
   mode: ClaudeMode;
   createdAt: string;
   updatedAt: string;

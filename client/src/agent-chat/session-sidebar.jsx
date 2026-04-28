@@ -1,14 +1,23 @@
-import { Button, Input } from "antd";
-import { FilterOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import { formatSessionCost, formatSessionTimestamp, normalizeSessionTitle } from "./chat-ui-utils.js";
+import { Button, Input, Select } from "antd";
+import { PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import {
+  formatSessionCost,
+  formatSessionTimestamp,
+  getAvatarThemeFromLabel,
+  getDisplayLabel,
+  normalizeSessionTitle
+} from "./chat-ui-utils.js";
+
+const GUEST_USER_NAME = "Guest";
 
 export default function SessionSidebar({
   filteredSessions,
   activeSessionKey,
   sessionSearchQuery,
   setSessionSearchQuery,
-  hideEmptySessions,
-  setHideEmptySessions,
+  creatorFilter,
+  setCreatorFilter,
+  creatorFilterOptions,
   onCreateNewSession,
   onSessionSelect,
   onRefreshSessions
@@ -16,9 +25,23 @@ export default function SessionSidebar({
   return (
     <>
       <div className="ai-chat-sessions-controls">
+        <div className="ai-chat-sessions-header-row">
+          <span className="ai-chat-sessions-heading">Sessions</span>
+          <Select
+            size="small"
+            variant="borderless"
+            className="ai-chat-session-creator-filter"
+            value={creatorFilter || ""}
+          onChange={(value) => setCreatorFilter(value || "")}
+          options={[{ value: "", label: "All creators" }].concat(creatorFilterOptions || [])}
+          optionFilterProp="label"
+          popupMatchSelectWidth={false}
+          aria-label="Filter sessions by creator"
+        />
+        </div>
         <Input
           size="small"
-          placeholder="Search..."
+          placeholder="Search sessions"
           prefix={<SearchOutlined />}
           value={sessionSearchQuery}
           onChange={(event) => setSessionSearchQuery(event.target.value)}
@@ -32,16 +55,6 @@ export default function SessionSidebar({
           onClick={onRefreshSessions}
           aria-label="Refresh sessions"
           title="Refresh sessions"
-        />
-        <Button
-          size="small"
-          type="text"
-          icon={<FilterOutlined />}
-          className={hideEmptySessions ? "ai-chat-filter-active" : ""}
-          onClick={() => setHideEmptySessions((value) => !value)}
-          aria-pressed={hideEmptySessions}
-          aria-label={hideEmptySessions ? "Show empty sessions" : "Hide empty sessions"}
-          title={hideEmptySessions ? "Show empty sessions" : "Hide empty sessions"}
         />
       </div>
       <div className="ai-chat-sessions-list" role="list" aria-label="Chat sessions">
@@ -64,6 +77,10 @@ export default function SessionSidebar({
         {filteredSessions.map((session) => {
           const id = session.sessionId || session.id || "";
           const isActive = id === activeSessionKey;
+          const userName = getDisplayLabel(session.userName || GUEST_USER_NAME);
+          const avatarTheme = getAvatarThemeFromLabel(userName);
+          const timestamp = formatSessionTimestamp(session.updatedAt ?? session.createdAt);
+          const cost = formatSessionCost(session.costUsd);
           return (
             <button
               key={id}
@@ -73,17 +90,27 @@ export default function SessionSidebar({
               role="listitem"
               aria-current={isActive ? "true" : undefined}
             >
-              <span className="ai-chat-session-title">
-                {normalizeSessionTitle(session.title, id ? `Session ${id.slice(0, 8)}` : "New chat")}
+              <span
+                className="ai-chat-session-avatar"
+                style={{ background: avatarTheme.bg, color: avatarTheme.fg }}
+                aria-hidden="true"
+              >
+                {initialsFromName(userName)}
               </span>
-              <span className="ai-chat-session-meta">
-                {[
-                  formatSessionTimestamp(session.updatedAt ?? session.createdAt),
-                  session.mode,
-                  formatSessionCost(session.costUsd)
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
+              <span className="ai-chat-session-body">
+                <span className="ai-chat-session-title">
+                  {normalizeSessionTitle(session.title, id ? `Session ${id.slice(0, 8)}` : "New chat")}
+                </span>
+                <span className="ai-chat-session-meta">
+                  <span className="ai-chat-session-user" title={userName}>
+                    {userName}
+                  </span>
+                  <span className="ai-chat-session-details">
+                    {[timestamp, session.mode, cost]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </span>
               </span>
             </button>
           );
@@ -91,4 +118,16 @@ export default function SessionSidebar({
       </div>
     </>
   );
+}
+
+function initialsFromName(value) {
+  const words = getDisplayLabel(value)
+    .split(/\s+/)
+    .filter(Boolean);
+  const letters = words.length > 1 ? [words[0], words[words.length - 1]] : [words[0] || GUEST_USER_NAME];
+  return letters
+    .map((word) => word[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 }

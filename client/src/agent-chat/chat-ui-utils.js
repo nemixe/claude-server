@@ -1,10 +1,20 @@
 const AVATAR_THEMES = [
-  { bg: "#2563eb", fg: "#ffffff" },
-  { bg: "#0891b2", fg: "#ffffff" },
-  { bg: "#059669", fg: "#ffffff" },
-  { bg: "#ca8a04", fg: "#111827" },
-  { bg: "#dc2626", fg: "#ffffff" },
-  { bg: "#9333ea", fg: "#ffffff" }
+  { bg: "#dbeafe", fg: "#1e3a8a" },
+  { bg: "#cffafe", fg: "#155e75" },
+  { bg: "#d1fae5", fg: "#065f46" },
+  { bg: "#fef3c7", fg: "#92400e" },
+  { bg: "#fee2e2", fg: "#991b1b" },
+  { bg: "#ede9fe", fg: "#5b21b6" },
+  { bg: "#fce7f3", fg: "#9d174d" },
+  { bg: "#e0e7ff", fg: "#3730a3" },
+  { bg: "#ccfbf1", fg: "#0f766e" },
+  { bg: "#ffedd5", fg: "#9a3412" },
+  { bg: "#f3e8ff", fg: "#6b21a8" },
+  { bg: "#ecfccb", fg: "#3f6212" },
+  { bg: "#e0f2fe", fg: "#075985" },
+  { bg: "#fae8ff", fg: "#86198f" },
+  { bg: "#dcfce7", fg: "#166534" },
+  { bg: "#fef9c3", fg: "#854d0e" }
 ];
 
 export function normalizeUserLabel(value) {
@@ -73,6 +83,63 @@ export function formatSessionTimestamp(value) {
     month: "short",
     day: "numeric"
   });
+}
+
+const MESSAGE_TIMESTAMP_KEYS = ["timestamp", "createdAt", "created_at"];
+
+export function getMessageTimestamp(value) {
+  if (!value || typeof value !== "object") return "";
+
+  return readTimestampFromRecord(value) || readTimestampFromRecord(value.message);
+}
+
+export function formatMessageTimestamp(value) {
+  const date = toValidDate(value);
+  if (!date) return "";
+
+  const now = new Date();
+  const time = date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+  const isSameDay =
+    now.getFullYear() === date.getFullYear() &&
+    now.getMonth() === date.getMonth() &&
+    now.getDate() === date.getDate();
+
+  if (isSameDay) return time;
+
+  return [
+    date.toLocaleDateString([], {
+      month: "short",
+      day: "numeric"
+    }),
+    time
+  ].join(", ");
+}
+
+function readTimestampFromRecord(value) {
+  if (!value || typeof value !== "object") return "";
+
+  for (const key of MESSAGE_TIMESTAMP_KEYS) {
+    const timestamp = normalizeTimestamp(value[key]);
+    if (timestamp) return timestamp;
+  }
+
+  return "";
+}
+
+function normalizeTimestamp(value) {
+  const date = toValidDate(value);
+  return date ? date.toISOString() : "";
+}
+
+function toValidDate(value) {
+  if (!value) return null;
+
+  const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return null;
+  return date;
 }
 
 export function resolveAskUserQuestionData(input = {}) {
