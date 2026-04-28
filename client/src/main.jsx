@@ -83,6 +83,8 @@ function App() {
   const [hasChipAnswer, setHasChipAnswer] = useState(false);
   const controllerRef = useRef();
   const observeControllerRef = useRef();
+  const streamingSessionIdRef = useRef();
+  const observingSessionIdRef = useRef();
   const askQuestionFooterRef = useRef(null);
   const sessionIdRef = useRef("");
   const baseUrlRef = useRef(window.location.origin);
@@ -136,6 +138,11 @@ function App() {
   }, []);
 
   const busy = isSending || isObservedRunning;
+  // Show pause/send based on whether the currently-viewed session is the one streaming,
+  // not whether any session is streaming globally.
+  const isStreamingActiveSession =
+    (isSending && streamingSessionIdRef.current === sessionId) ||
+    (isObservedRunning && observingSessionIdRef.current === sessionId);
   const activeSession = sessions.find((session) => getSessionId(session) === sessionId);
   const filteredSessions = useMemo(() => {
     const query = sessionSearchQuery.trim().toLowerCase();
@@ -276,6 +283,8 @@ function App() {
 
   async function loadSessionView(id, eventName, session) {
     stopObserving();
+    setIsObservedRunning(false);
+    observingSessionIdRef.current = null;
     setEvents([]);
     setFileMentionSuggestions([]);
     setFileMentionStatus("idle");
@@ -318,6 +327,7 @@ function App() {
     const controller = new AbortController();
     controllerRef.current = controller;
     let activeSessionId = sessionIdRef.current;
+    streamingSessionIdRef.current = activeSessionId || undefined;
 
     const derivedTitle = derivePromptTitle(nextPrompt);
     let shouldPatchTitle = false;
@@ -330,6 +340,7 @@ function App() {
         });
         activeSessionId = created.sessionId || created.id;
         setSessionId(activeSessionId);
+        streamingSessionIdRef.current = activeSessionId;
         rememberSession({ sessionId: activeSessionId });
         await loadSessions({ restoreSaved: false });
       } else {
@@ -384,13 +395,22 @@ function App() {
     } finally {
       setIsSending(false);
       controllerRef.current = undefined;
+      streamingSessionIdRef.current = undefined;
     }
   }
 
   async function interrupt() {
-    const id = sessionIdRef.current;
+    // If messages:stream is running, abort it for immediate UI feedback.
+    // Use the streaming session ID (not the currently selected session)
+    // so the interrupt hits the correct session after a session switch.
+    const streamingController = controllerRef.current;
+    if (streamingController) streamingController.abort();
+
+    const id = streamingSessionIdRef.current || sessionIdRef.current;
     if (!id) return;
-    await fetch(apiPath("/v1/sessions/" + encodeURIComponent(id) + "/interrupt"), { method: "POST" });
+    try {
+      await fetch(apiPath("/v1/sessions/" + encodeURIComponent(id) + "/interrupt"), { method: "POST" });
+    } catch {}
     appendEntry("client", { interrupted: true });
   }
 
@@ -481,8 +501,12 @@ function App() {
 
   async function observeSession(id) {
     stopObserving();
+    // Don't start events:stream if messages:stream is still running for this session.
+    // runPrompt will call observeSession when the stream completes.
+    if (controllerRef.current) return;
     const controller = new AbortController();
     observeControllerRef.current = controller;
+    observingSessionIdRef.current = id;
 
     try {
       const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(id) + "/events:stream"), {
@@ -496,6 +520,7 @@ function App() {
     } finally {
       if (observeControllerRef.current === controller) {
         observeControllerRef.current = undefined;
+        observingSessionIdRef.current = null;
         setIsObservedRunning(false);
       }
     }
@@ -505,6 +530,7 @@ function App() {
     if (observeControllerRef.current) {
       observeControllerRef.current.abort();
       observeControllerRef.current = undefined;
+      observingSessionIdRef.current = null;
     }
   }
 
@@ -664,6 +690,7 @@ function App() {
   function forgetSession() {
     stopObserving();
     setIsObservedRunning(false);
+    observingSessionIdRef.current = null;
     setSessionId("");
     sessionIdRef.current = "";
     setFileMentionSuggestions([]);
@@ -975,7 +1002,7 @@ function App() {
                   hasGrabContext={hasGrabContext}
                   isAnnotating={isAnnotating}
                   latestAnnotation={latestAnnotation}
-                  isStreamingActiveSession={isSending}
+                  isStreamingActiveSession={isStreamingActiveSession}
                   isSessionOwner={true}
                   hasChipAnswer={hasChipAnswer}
                   setHasChipAnswer={setHasChipAnswer}
