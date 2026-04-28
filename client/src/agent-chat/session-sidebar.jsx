@@ -1,6 +1,6 @@
 import { Button, Input } from "antd";
 import { FilterOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import { formatSessionTimestamp, normalizeSessionTitle } from "./chat-ui-utils.js";
+import { formatSessionCost, formatSessionTimestamp, normalizeSessionTitle } from "./chat-ui-utils.js";
 
 export default function SessionSidebar({
   filteredSessions,
@@ -77,7 +77,11 @@ export default function SessionSidebar({
                 {normalizeSessionTitle(session.title, id ? `Session ${id.slice(0, 8)}` : "New chat")}
               </span>
               <span className="ai-chat-session-meta">
-                {[formatSessionTimestamp(session.updatedAt ?? session.createdAt), session.mode, session.hasRun ? "run" : "empty"]
+                {[
+                  formatSessionTimestamp(session.updatedAt ?? session.createdAt),
+                  session.mode,
+                  formatSessionCost(session.costUsd)
+                ]
                   .filter(Boolean)
                   .join(" · ")}
               </span>

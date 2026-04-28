@@ -42,6 +42,7 @@ export type SessionMetadata = {
   createdAt: string;
   updatedAt: string;
   hasRun: boolean;
+  costUsd?: number;
 };
 
 export type PublicSession = {
@@ -52,6 +53,7 @@ export type PublicSession = {
   createdAt: string;
   updatedAt: string;
   hasRun: boolean;
+  costUsd?: number;
 };
 
 export type NormalizedAgentEvent = {

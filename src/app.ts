@@ -216,6 +216,12 @@ export function createApp(dependencies: AppDependencies): Hono {
             sessionMarkedAsRun = true;
           }
           if (event.type === "question_pending") waitingForUserQuestion = true;
+          if (event.type === "result" && event.data && typeof event.data === "object") {
+            const cost = (event.data as { total_cost_usd?: unknown }).total_cost_usd;
+            if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
+              await sessionStore.addCost(session.id, cost);
+            }
+          }
 
           await stream.writeSSE({
             event: event.type,
@@ -288,7 +294,8 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     mode: session.mode,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
-    hasRun: session.hasRun
+    hasRun: session.hasRun,
+    costUsd: session.costUsd
   };
 }
 

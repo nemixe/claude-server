@@ -44,6 +44,12 @@ export function derivePromptTitle(value, max = PROMPT_TITLE_MAX_CHARS) {
   return (sliced || normalized.slice(0, max).trim()) + "…";
 }
 
+export function formatSessionCost(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "";
+  if (value < 0.01) return "<$0.01";
+  return "$" + value.toFixed(value < 1 ? 3 : 2);
+}
+
 export function formatSessionTimestamp(value) {
   if (!value) return "Recently";
 

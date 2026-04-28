@@ -75,6 +75,14 @@ export class SessionStore {
     await this.save({ ...metadata, hasRun: true });
   }
 
+  async addCost(id: string, costUsd: number): Promise<void> {
+    if (!Number.isFinite(costUsd) || costUsd <= 0) return;
+    const metadata = await this.get(id);
+    if (!metadata) return;
+    const next = (metadata.costUsd ?? 0) + costUsd;
+    await this.save({ ...metadata, costUsd: next });
+  }
+
   async update(id: string, patch: { title?: string; mode?: ClaudeMode }): Promise<SessionMetadata | undefined> {
     const metadata = await this.get(id);
     if (!metadata) return undefined;
