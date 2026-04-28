@@ -38,6 +38,25 @@ describe("browser client", () => {
     );
   });
 
+  it("adds pagination parameters when listing sessions", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ sessions: [], offset: 30, hasMore: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await client.listSessions({ limit: 30, offset: 30 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/sessions?limit=30&offset=30",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+  });
+
   it("serializes image prompts for streaming requests", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response("event: done\ndata: {\"ok\":true}\n\n", {

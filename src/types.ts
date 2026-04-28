@@ -59,6 +59,14 @@ export type PublicSession = {
   costUsd?: number;
 };
 
+export type ListSessionsResponse = {
+  sessions: PublicSession[];
+  limit?: number;
+  offset: number;
+  nextOffset?: number;
+  hasMore: boolean;
+};
+
 export type NormalizedAgentEvent = {
   type: string;
   data: unknown;

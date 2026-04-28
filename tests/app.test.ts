@@ -127,6 +127,32 @@ describe("Hono API", () => {
     expect(namedSession).not.toHaveProperty("workspacePath");
   });
 
+  it("paginates the session list", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const app = await createApp({ config, sessionStore });
+
+    await sessionStore.create({ mode: "bypass", title: "First" });
+    await sessionStore.create({ mode: "bypass", title: "Second" });
+    await sessionStore.create({ mode: "plan", title: "Third" });
+
+    const firstPageResponse = await app.request("http://localhost/v1/sessions?limit=2&offset=0", {
+      headers: { host: "localhost" }
+    });
+    expect(firstPageResponse.status).toBe(200);
+    const firstPage = (await firstPageResponse.json()) as { sessions: Array<Record<string, unknown>>; nextOffset?: number; hasMore: boolean };
+    expect(firstPage.sessions).toHaveLength(2);
+    expect(firstPage.nextOffset).toBe(2);
+    expect(firstPage.hasMore).toBe(true);
+
+    const secondPageResponse = await app.request("http://localhost/v1/sessions?limit=2&offset=2", {
+      headers: { host: "localhost" }
+    });
+    const secondPage = (await secondPageResponse.json()) as { sessions: Array<Record<string, unknown>>; hasMore: boolean };
+    expect(secondPage.sessions).toHaveLength(1);
+    expect(secondPage.hasMore).toBe(false);
+  });
+
   it("stores the latest cumulative session cost from result events", async () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);

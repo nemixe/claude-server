@@ -2,6 +2,7 @@ import type {
   ClaudeCommand,
   ClaudeCommandInput,
   ClaudeMode,
+  ListSessionsResponse,
   PublicSession,
   StreamMessageRequest,
   UploadedFile,
@@ -21,6 +22,11 @@ export type CreateClientSessionRequest = {
 };
 
 export type CreatedSession = PublicSession;
+
+export type ListSessionsOptions = {
+  limit?: number;
+  offset?: number;
+};
 
 export type ClientSseEvent = {
   event: string;
@@ -88,8 +94,12 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       await readSseStream(response.body, handlers);
     },
 
-    listSessions(): Promise<{ sessions: PublicSession[] }> {
-      return requestJson<{ sessions: PublicSession[] }>("/v1/sessions");
+    listSessions(options: ListSessionsOptions = {}): Promise<ListSessionsResponse> {
+      const params = new URLSearchParams();
+      if (options.limit !== undefined) params.set("limit", String(options.limit));
+      if (options.offset !== undefined) params.set("offset", String(options.offset));
+      const query = params.toString();
+      return requestJson<ListSessionsResponse>(`/v1/sessions${query ? `?${query}` : ""}`);
     },
 
     getMessages(sessionId: string): Promise<{ messages: unknown[] }> {

@@ -54,6 +54,7 @@ const MIN_MAIN_COLUMN_WIDTH = 340;
 const VIEWPORT_PADDING = 12;
 const USER_LABEL_MAX_LENGTH = 40;
 const GUEST_USER_NAME = "Guest";
+const SESSION_PAGE_SIZE = 30;
 
 const modeLabel = {
   plan: "Plan",
@@ -66,6 +67,8 @@ function App() {
   const [identityInput, setIdentityInput] = useState(() => readSavedIdentity());
   const [sessionId, setSessionId] = useState("");
   const [sessions, setSessions] = useState([]);
+  const [sessionsHasMore, setSessionsHasMore] = useState(false);
+  const [isSessionsLoading, setIsSessionsLoading] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [creatorFilter, setCreatorFilter] = useState("");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -108,6 +111,8 @@ function App() {
   const chatFrameRef = useRef(chatFrame);
   const sidebarRef = useRef(null);
   const sidebarWidthRef = useRef(sidebarWidth);
+  const sessionsNextOffsetRef = useRef(0);
+  const sessionsLoadingRef = useRef(false);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -293,15 +298,43 @@ function App() {
     return response.json();
   }
 
+  async function fetchSessionsPage(offset) {
+    return getJson("/v1/sessions?limit=" + SESSION_PAGE_SIZE + "&offset=" + Math.max(offset || 0, 0));
+  }
+
   async function loadSessions(options = {}) {
     const saved = readSavedSession();
+    const append = Boolean(options.append);
+    if (sessionsLoadingRef.current) return;
+    sessionsLoadingRef.current = true;
+    setIsSessionsLoading(true);
     try {
-      const result = await getJson("/v1/sessions");
+      const initialOffset = append ? sessionsNextOffsetRef.current : 0;
+      const result = await fetchSessionsPage(initialOffset);
       const nextSessions = Array.isArray(result.sessions) ? result.sessions : [];
-      setSessions(nextSessions);
+      let accumulated = append ? mergeSessionsById(sessions, nextSessions) : nextSessions;
+      setSessions(accumulated);
+      sessionsNextOffsetRef.current = Number.isInteger(result.nextOffset)
+        ? result.nextOffset
+        : initialOffset + nextSessions.length;
+      setSessionsHasMore(Boolean(result.hasMore));
+
       if (!options.restoreSaved || !saved) return;
 
-      const restored = nextSessions.find((session) => getSessionId(session) === saved.sessionId);
+      let restored = accumulated.find((session) => getSessionId(session) === saved.sessionId);
+      let hasMore = Boolean(result.hasMore);
+      while (!restored && hasMore) {
+        const page = await fetchSessionsPage(sessionsNextOffsetRef.current);
+        const pageSessions = Array.isArray(page.sessions) ? page.sessions : [];
+        accumulated = mergeSessionsById(accumulated, pageSessions);
+        setSessions(accumulated);
+        sessionsNextOffsetRef.current = Number.isInteger(page.nextOffset)
+          ? page.nextOffset
+          : sessionsNextOffsetRef.current + pageSessions.length;
+        hasMore = Boolean(page.hasMore);
+        setSessionsHasMore(hasMore);
+        restored = accumulated.find((session) => getSessionId(session) === saved.sessionId);
+      }
       if (!restored) {
         forgetSession();
         appendEntry("client", { restored: false, reason: "Last session was not found on the server" });
@@ -311,7 +344,15 @@ function App() {
       selectSession(restored, "session_restored");
     } catch (error) {
       appendEntry("client_error", "Could not load sessions: " + errorMessage(error));
+    } finally {
+      sessionsLoadingRef.current = false;
+      setIsSessionsLoading(false);
     }
+  }
+
+  function loadMoreSessions() {
+    if (!sessionsHasMore || sessionsLoadingRef.current) return;
+    loadSessions({ append: true, restoreSaved: false });
   }
 
   function createSession() {
@@ -1016,6 +1057,9 @@ function App() {
                       onCreateNewSession={createSession}
                       onSessionSelect={onSessionSelect}
                       onRefreshSessions={() => loadSessions({ restoreSaved: false })}
+                      onLoadMoreSessions={loadMoreSessions}
+                      hasMoreSessions={sessionsHasMore}
+                      isLoadingSessions={isSessionsLoading}
                     />
                     <DeveloperTools
                       maxTurns={maxTurns}
@@ -1054,8 +1098,9 @@ function App() {
                 <AgentChatMessageList
                   bubbleItems={bubbleItems}
                   bubbleRoles={bubbleRoles}
-                  isStreaming={busy}
+                  isStreaming={isStreamingActiveSession}
                   open={!isClosed && !isMinimized}
+                  scrollResetKey={sessionId || "new"}
                   writeClipboard={writeClipboard}
                 />
                 <ChatFooter
@@ -1866,6 +1911,18 @@ function imageSrc(image) {
 
 function getSessionId(session) {
   return session.sessionId || session.id || "";
+}
+
+function mergeSessionsById(existing, incoming) {
+  const byId = new Map();
+  existing.concat(incoming).forEach((session) => {
+    const id = getSessionId(session);
+    if (!id) return;
+    byId.set(id, { ...byId.get(id), ...session });
+  });
+  return Array.from(byId.values()).sort((left, right) =>
+    String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
+  );
 }
 
 function getSessionUserName(session) {

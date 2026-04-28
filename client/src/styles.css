@@ -15,6 +15,7 @@
   --ai-chat-color-bubble-user-bg: #1677ff;
   --ai-chat-color-bubble-user-text: #ffffff;
   --ai-chat-color-bubble-assistant-bg: #ffffff;
+  --ai-chat-color-bubble-assistant-border: #e2e8f0;
   --ai-chat-color-bubble-assistant-text: #1f2937;
   --ai-chat-bubble-max-width: 80%;
   --ai-chat-bubble-min-width: min(280px, var(--ai-chat-bubble-max-width));
@@ -147,7 +148,7 @@ body {
   flex: 1 1 0;
   flex-direction: column;
   min-width: 0;
-  background: #fbfcfe;
+  background: #eef2f7;
 }
 
 .ai-chat-sidebar-resize-handle {
@@ -538,6 +539,25 @@ body {
   line-height: 1.35;
 }
 
+.ai-chat-sessions-load-more {
+  width: calc(100% - 8px);
+  margin: 6px 4px 10px;
+  border: none;
+  border-radius: var(--ai-chat-radius-sm);
+  padding: 7px 8px;
+  background: var(--ai-chat-color-bg-secondary);
+  color: #475569;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.ai-chat-sessions-load-more:hover {
+  background: rgba(22, 119, 255, 0.1);
+  color: #0958d9;
+}
+
 .ai-chat-sessions-list::-webkit-scrollbar,
 .ai-chat-messages::-webkit-scrollbar,
 .ai-chat-tools::-webkit-scrollbar {
@@ -820,10 +840,12 @@ body {
 
 .ai-chat-card .ant-bubble-start .ant-bubble-content {
   border-radius: 4px 16px 16px 16px;
+  border: 1px solid var(--ai-chat-color-bubble-assistant-border);
   background: var(--ai-chat-color-bubble-assistant-bg);
   color: var(--ai-chat-color-bubble-assistant-text);
   font-size: var(--ai-chat-font-size-base);
   line-height: 1.55;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .ai-chat-bubble-header-inline {
@@ -881,10 +903,12 @@ body {
 
 .ai-chat-card .ant-bubble-start .ai-chat-stream-content {
   border-radius: 4px 16px 16px 16px;
+  border: 1px solid var(--ai-chat-color-bubble-assistant-border);
   background: var(--ai-chat-color-bubble-assistant-bg);
   color: var(--ai-chat-color-bubble-assistant-text);
   font-size: var(--ai-chat-font-size-base);
   line-height: 1.55;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .ai-chat-stream-content .ai-chat-markdown > *:last-child::after {

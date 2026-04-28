@@ -9,7 +9,7 @@ import { createSessionFactory, MissingClaudeSessionIdError } from "./session-ada
 import { SessionStore } from "./session-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { renderTestClient } from "./test-client.js";
-import { CLAUDE_MODES, type PromptImage, type PublicSession, type SessionMetadata } from "./types.js";
+import { CLAUDE_MODES, type ListSessionsResponse, type PromptImage, type PublicSession, type SessionMetadata } from "./types.js";
 
 const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
 const MAX_PROMPT_IMAGES = 5;
@@ -93,6 +93,11 @@ const workspaceSearchSchema = z.object({
   limit: z.coerce.number().int().positive().max(200).default(50)
 });
 
+const listSessionsSchema = z.object({
+  limit: z.coerce.number().int().positive().max(200).optional(),
+  offset: z.coerce.number().int().min(0).default(0)
+});
+
 export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   const app = new Hono();
   const sessionStore = dependencies.sessionStore ?? new SessionStore(dependencies.config);
@@ -161,8 +166,19 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   });
 
   app.get("/v1/sessions", async (c) => {
-    const sessions = await sessionStore.list();
-    return c.json({ sessions: sessions.map(toPublicSession) });
+    const query = listSessionsSchema.parse({
+      limit: c.req.query("limit"),
+      offset: c.req.query("offset")
+    });
+    const result = await sessionStore.listPage(query);
+    const body: ListSessionsResponse = {
+      sessions: result.sessions.map(toPublicSession),
+      limit: result.limit,
+      offset: result.offset,
+      nextOffset: result.nextOffset,
+      hasMore: result.hasMore
+    };
+    return c.json(body);
   });
 
   app.get("/v1/sessions/:sessionId/messages", async (c) => {

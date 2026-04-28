@@ -16,6 +16,20 @@ export type CreateSessionInput = {
   files?: UploadedFile[];
 };
 
+export type ListSessionsOptions = {
+  limit?: number;
+  offset?: number;
+};
+
+export type ListSessionsResult = {
+  sessions: SessionMetadata[];
+  total: number;
+  offset: number;
+  limit?: number;
+  nextOffset?: number;
+  hasMore: boolean;
+};
+
 export class SessionStore {
   constructor(private readonly config: AppConfig) {}
 
@@ -56,6 +70,32 @@ export class SessionStore {
     return sessions
       .filter((session): session is SessionMetadata => Boolean(session))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async listPage(options: ListSessionsOptions = {}): Promise<ListSessionsResult> {
+    const offset = Math.max(options.offset ?? 0, 0);
+    const sessions = await this.list();
+    if (options.limit === undefined) {
+      return {
+        sessions: sessions.slice(offset),
+        total: sessions.length,
+        offset,
+        hasMore: false
+      };
+    }
+
+    const limit = Math.max(options.limit, 1);
+    const page = sessions.slice(offset, offset + limit);
+    const nextOffset = offset + page.length;
+    const hasMore = nextOffset < sessions.length;
+    return {
+      sessions: page,
+      total: sessions.length,
+      offset,
+      limit,
+      nextOffset: hasMore ? nextOffset : undefined,
+      hasMore
+    };
   }
 
   async get(id: string): Promise<SessionMetadata | undefined> {

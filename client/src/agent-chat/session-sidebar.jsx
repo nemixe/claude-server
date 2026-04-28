@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { Button, Input, Select } from "antd";
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import {
@@ -20,8 +21,21 @@ export default function SessionSidebar({
   creatorFilterOptions,
   onCreateNewSession,
   onSessionSelect,
-  onRefreshSessions
+  onRefreshSessions,
+  onLoadMoreSessions,
+  hasMoreSessions,
+  isLoadingSessions
 }) {
+  const handleListScroll = useCallback(
+    (event) => {
+      if (!hasMoreSessions || isLoadingSessions || !onLoadMoreSessions) return;
+      const list = event.currentTarget;
+      const remaining = list.scrollHeight - list.scrollTop - list.clientHeight;
+      if (remaining <= 56) onLoadMoreSessions();
+    },
+    [hasMoreSessions, isLoadingSessions, onLoadMoreSessions]
+  );
+
   return (
     <>
       <div className="ai-chat-sessions-controls">
@@ -57,7 +71,7 @@ export default function SessionSidebar({
           title="Refresh sessions"
         />
       </div>
-      <div className="ai-chat-sessions-list" role="list" aria-label="Chat sessions">
+      <div className="ai-chat-sessions-list" role="list" aria-label="Chat sessions" onScroll={handleListScroll}>
         <button
           type="button"
           className="ai-chat-session-item ai-chat-session-item-create"
@@ -115,6 +129,13 @@ export default function SessionSidebar({
             </button>
           );
         })}
+        {isLoadingSessions ? (
+          <p className="ai-chat-sessions-empty">Loading sessions...</p>
+        ) : hasMoreSessions ? (
+          <button type="button" className="ai-chat-sessions-load-more" onClick={onLoadMoreSessions}>
+            Load more sessions
+          </button>
+        ) : null}
       </div>
     </>
   );

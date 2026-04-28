@@ -17,6 +17,10 @@ const BUBBLE_GAP = 4;
 const ACTIVITY_ROLE = "assistant_activity";
 const GROUP_ROLE = "assistant_activity_group";
 
+function isScrolledNearBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD_PX;
+}
+
 function groupBubbleItems(items) {
   const result = [];
   let i = 0;
@@ -40,9 +44,12 @@ function groupBubbleItems(items) {
 }
 
 const AgentChatMessageList = forwardRef(
-  ({ bubbleItems, bubbleRoles, isStreaming, open, writeClipboard }, ref) => {
+  ({ bubbleItems, bubbleRoles, isStreaming, open, scrollResetKey, writeClipboard }, ref) => {
     const scrollElementRef = useRef(null);
     const isPinnedToBottomRef = useRef(true);
+    const pendingInitialScrollRef = useRef(true);
+    const previousScrollResetKeyRef = useRef(scrollResetKey);
+    const scrollFrameRef = useRef(null);
     const processedItems = useMemo(() => groupBubbleItems(bubbleItems), [bubbleItems]);
 
     const virtualizer = useVirtualizer({
@@ -52,24 +59,64 @@ const AgentChatMessageList = forwardRef(
       overscan: OVERSCAN
     });
 
-    useEffect(() => {
-      if (!open || !isStreaming || processedItems.length === 0) return;
-      const el = scrollElementRef.current;
-      if (!el) return;
+    const scrollToBottom = useCallback(
+      ({ force = false } = {}) => {
+        if (processedItems.length === 0) return;
+        if (scrollFrameRef.current !== null) {
+          window.cancelAnimationFrame(scrollFrameRef.current);
+        }
 
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (distanceFromBottom > MESSAGE_LIST_BOTTOM_THRESHOLD_PX) {
-        isPinnedToBottomRef.current = false;
+        scrollFrameRef.current = window.requestAnimationFrame(() => {
+          scrollFrameRef.current = null;
+          if (!force && !isPinnedToBottomRef.current) return;
+
+          virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
+          isPinnedToBottomRef.current = true;
+          pendingInitialScrollRef.current = false;
+        });
+      },
+      [processedItems.length, virtualizer]
+    );
+
+    useEffect(() => {
+      return () => {
+        if (scrollFrameRef.current !== null) {
+          window.cancelAnimationFrame(scrollFrameRef.current);
+        }
+      };
+    }, []);
+
+    useEffect(() => {
+      if (previousScrollResetKeyRef.current === scrollResetKey) return;
+      previousScrollResetKeyRef.current = scrollResetKey;
+      isPinnedToBottomRef.current = true;
+      pendingInitialScrollRef.current = true;
+    }, [scrollResetKey]);
+
+    useEffect(() => {
+      if (processedItems.length !== 0) return;
+      isPinnedToBottomRef.current = true;
+      pendingInitialScrollRef.current = true;
+    }, [processedItems.length]);
+
+    useEffect(() => {
+      if (!open || processedItems.length === 0) return;
+
+      if (pendingInitialScrollRef.current) {
+        scrollToBottom({ force: true });
         return;
       }
 
-      virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
-    }, [open, isStreaming, processedItems, virtualizer]);
+      if (isPinnedToBottomRef.current) {
+        scrollToBottom();
+      }
+    }, [open, processedItems.length, scrollToBottom]);
 
     useEffect(() => {
-      if (!open || processedItems.length === 0 || !isPinnedToBottomRef.current) return;
-      virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
-    }, [open, processedItems.length, virtualizer]);
+      if (!open || !isStreaming || processedItems.length === 0) return;
+      if (!isPinnedToBottomRef.current) return;
+      scrollToBottom();
+    }, [open, isStreaming, processedItems, scrollToBottom]);
 
     useImperativeHandle(
       ref,
@@ -86,18 +133,16 @@ const AgentChatMessageList = forwardRef(
           return true;
         },
         scrollToBottom: () => {
-          if (processedItems.length === 0) return;
-          virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
+          scrollToBottom({ force: true });
         }
       }),
-      [processedItems, virtualizer]
+      [processedItems, scrollToBottom, virtualizer]
     );
 
     const handleScroll = useCallback(() => {
       const el = scrollElementRef.current;
       if (!el) return;
-      isPinnedToBottomRef.current =
-        el.scrollHeight - el.scrollTop - el.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD_PX;
+      isPinnedToBottomRef.current = isScrolledNearBottom(el);
     }, []);
 
     const virtualItems = virtualizer.getVirtualItems();
