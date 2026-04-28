@@ -673,13 +673,13 @@ body {
 }
 
 .ai-chat-session-item-create:hover {
-  border-color: var(--ai-chat-create-accent-border);
-  background: var(--ai-chat-create-accent-bg-hover);
-  color: var(--ai-chat-create-accent-fg);
+  border-color: var(--ai-chat-color-border);
+  background: var(--ai-chat-color-bg-secondary);
+  color: var(--ai-chat-color-text-primary);
 }
 
 .ai-chat-session-item-create .ai-chat-session-create-label {
-  color: var(--ai-chat-create-accent-fg, #202124);
+  color: var(--ai-chat-color-text-secondary, #202124);
 }
 
 .ai-chat-session-create-label {

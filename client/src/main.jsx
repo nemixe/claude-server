@@ -33,7 +33,6 @@ import {
   getAvatarThemeFromLabel,
   getDisplayLabel,
   getUserAccentStyle,
-  getCreateButtonAccentStyle,
   normalizeUserLabel
 } from "./agent-chat/chat-ui-utils.js";
 
@@ -211,7 +210,6 @@ function App() {
     ? getSessionUserName(activeSession)
     : getDisplayLabel(userName || GUEST_USER_NAME);
   const accentStyle = useMemo(() => getUserAccentStyle(getDisplayLabel(userName || GUEST_USER_NAME)), [userName]);
-  const loggedInUserAccentStyle = useMemo(() => getCreateButtonAccentStyle(getDisplayLabel(userName || GUEST_USER_NAME)), [userName]);
   const bubbleItems = useMemo(() => eventsToBubbleItems(events, displayUserName), [displayUserName, events]);
   const bubbleRoles = useMemo(
     () => ({
@@ -1075,7 +1073,6 @@ function App() {
                       onLoadMoreSessions={loadMoreSessions}
                       hasMoreSessions={sessionsHasMore}
                       isLoadingSessions={isSessionsLoading}
-                      loggedInUserAccentStyle={loggedInUserAccentStyle}
                     />
                     <DeveloperTools
                       maxTurns={maxTurns}
