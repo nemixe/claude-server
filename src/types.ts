@@ -67,6 +67,17 @@ export type ListSessionsResponse = {
   hasMore: boolean;
 };
 
+export type ListMessagesResponse = {
+  messages: unknown[];
+  offset: number;
+  limit?: number;
+  total: number;
+  previousOffset?: number;
+  nextOffset?: number;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+};
+
 export type NormalizedAgentEvent = {
   type: string;
   data: unknown;

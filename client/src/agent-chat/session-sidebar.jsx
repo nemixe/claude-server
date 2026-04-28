@@ -1,6 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { Button, Input, Select } from "antd";
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   formatSessionCost,
   formatSessionTimestamp,
@@ -26,6 +27,28 @@ export default function SessionSidebar({
   hasMoreSessions,
   isLoadingSessions
 }) {
+  const listRef = useRef(null);
+  const rows = useMemo(() => {
+    const nextRows = [{ type: "create", key: "create" }];
+    if (filteredSessions.length === 0) {
+      nextRows.push({ type: "empty", key: "empty" });
+    } else {
+      filteredSessions.forEach((session) => {
+        nextRows.push({ type: "session", key: getSessionId(session), session });
+      });
+    }
+    if (isLoadingSessions) nextRows.push({ type: "loading", key: "loading" });
+    else if (hasMoreSessions) nextRows.push({ type: "load-more", key: "load-more" });
+    return nextRows;
+  }, [filteredSessions, hasMoreSessions, isLoadingSessions]);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 62,
+    overscan: 8
+  });
+
   const handleListScroll = useCallback(
     (event) => {
       if (!hasMoreSessions || isLoadingSessions || !onLoadMoreSessions) return;
@@ -46,12 +69,12 @@ export default function SessionSidebar({
             variant="borderless"
             className="ai-chat-session-creator-filter"
             value={creatorFilter || ""}
-          onChange={(value) => setCreatorFilter(value || "")}
-          options={[{ value: "", label: "All creators" }].concat(creatorFilterOptions || [])}
-          optionFilterProp="label"
-          popupMatchSelectWidth={false}
-          aria-label="Filter sessions by creator"
-        />
+            onChange={(value) => setCreatorFilter(value || "")}
+            options={[{ value: "", label: "All creators" }].concat(creatorFilterOptions || [])}
+            optionFilterProp="label"
+            popupMatchSelectWidth={false}
+            aria-label="Filter sessions by creator"
+          />
         </div>
         <Input
           size="small"
@@ -71,74 +94,110 @@ export default function SessionSidebar({
           title="Refresh sessions"
         />
       </div>
-      <div className="ai-chat-sessions-list" role="list" aria-label="Chat sessions" onScroll={handleListScroll}>
-        <button
-          type="button"
-          className="ai-chat-session-item ai-chat-session-item-create"
-          onClick={onCreateNewSession}
-          aria-label="New session"
-          title="New Session"
-          role="listitem"
-        >
-          <span className="ai-chat-session-create-label">
-            <PlusOutlined />
-            <span>New Session</span>
-          </span>
-        </button>
-        {filteredSessions.length === 0 ? (
-          <p className="ai-chat-sessions-empty">No sessions found.</p>
-        ) : null}
-        {filteredSessions.map((session) => {
-          const id = session.sessionId || session.id || "";
-          const isActive = id === activeSessionKey;
-          const userName = getDisplayLabel(session.userName || GUEST_USER_NAME);
-          const avatarTheme = getAvatarThemeFromLabel(userName);
-          const timestamp = formatSessionTimestamp(session.updatedAt ?? session.createdAt);
-          const cost = formatSessionCost(session.costUsd);
-          return (
-            <button
-              key={id}
-              type="button"
-              className={`ai-chat-session-item${isActive ? " active" : ""}`}
-              onClick={() => onSessionSelect(id)}
-              role="listitem"
-              aria-current={isActive ? "true" : undefined}
-            >
-              <span
-                className="ai-chat-session-avatar"
-                style={{ background: avatarTheme.bg, color: avatarTheme.fg }}
-                aria-hidden="true"
+      <div
+        ref={listRef}
+        className="ai-chat-sessions-list"
+        role="list"
+        aria-label="Chat sessions"
+        onScroll={handleListScroll}
+      >
+        <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            return (
+              <div
+                key={row.key}
+                data-index={virtualRow.index}
+                ref={virtualizer.measureElement}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${virtualRow.start}px)`,
+                  paddingBottom: 4
+                }}
               >
-                {initialsFromName(userName)}
-              </span>
-              <span className="ai-chat-session-body">
-                <span className="ai-chat-session-title">
-                  {normalizeSessionTitle(session.title, id ? `Session ${id.slice(0, 8)}` : "New chat")}
-                </span>
-                <span className="ai-chat-session-meta">
-                  <span className="ai-chat-session-user" title={userName}>
-                    {userName}
-                  </span>
-                  <span className="ai-chat-session-details">
-                    {[timestamp, session.mode, cost]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                </span>
-              </span>
-            </button>
-          );
-        })}
-        {isLoadingSessions ? (
-          <p className="ai-chat-sessions-empty">Loading sessions...</p>
-        ) : hasMoreSessions ? (
-          <button type="button" className="ai-chat-sessions-load-more" onClick={onLoadMoreSessions}>
-            Load more sessions
-          </button>
-        ) : null}
+                {row.type === "create" ? (
+                  <button
+                    type="button"
+                    className="ai-chat-session-item ai-chat-session-item-create"
+                    onClick={onCreateNewSession}
+                    aria-label="New session"
+                    title="New Session"
+                    role="listitem"
+                  >
+                    <span className="ai-chat-session-create-label">
+                      <PlusOutlined />
+                      <span>New Session</span>
+                    </span>
+                  </button>
+                ) : row.type === "empty" ? (
+                  <p className="ai-chat-sessions-empty">No sessions found.</p>
+                ) : row.type === "loading" ? (
+                  <p className="ai-chat-sessions-empty">Loading sessions...</p>
+                ) : row.type === "load-more" ? (
+                  <button type="button" className="ai-chat-sessions-load-more" onClick={onLoadMoreSessions}>
+                    Load more sessions
+                  </button>
+                ) : (
+                  <SessionRow
+                    session={row.session}
+                    activeSessionKey={activeSessionKey}
+                    onSessionSelect={onSessionSelect}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </>
   );
+}
+
+function SessionRow({ session, activeSessionKey, onSessionSelect }) {
+  const id = getSessionId(session);
+  const isActive = id === activeSessionKey;
+  const userName = getDisplayLabel(session.userName || GUEST_USER_NAME);
+  const avatarTheme = getAvatarThemeFromLabel(userName);
+  const timestamp = formatSessionTimestamp(session.updatedAt ?? session.createdAt);
+  const cost = formatSessionCost(session.costUsd);
+
+  return (
+    <button
+      type="button"
+      className={`ai-chat-session-item${isActive ? " active" : ""}`}
+      onClick={() => onSessionSelect(id)}
+      role="listitem"
+      aria-current={isActive ? "true" : undefined}
+    >
+      <span
+        className="ai-chat-session-avatar"
+        style={{ background: avatarTheme.bg, color: avatarTheme.fg }}
+        aria-hidden="true"
+      >
+        {initialsFromName(userName)}
+      </span>
+      <span className="ai-chat-session-body">
+        <span className="ai-chat-session-title">
+          {normalizeSessionTitle(session.title, id ? `Session ${id.slice(0, 8)}` : "New chat")}
+        </span>
+        <span className="ai-chat-session-meta">
+          <span className="ai-chat-session-user" title={userName}>
+            {userName}
+          </span>
+          <span className="ai-chat-session-details">
+            {[timestamp, session.mode, cost].filter(Boolean).join(" · ")}
+          </span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function getSessionId(session) {
+  return session.sessionId || session.id || "";
 }
 
 function initialsFromName(value) {

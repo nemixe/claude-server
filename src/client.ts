@@ -2,6 +2,7 @@ import type {
   ClaudeCommand,
   ClaudeCommandInput,
   ClaudeMode,
+  ListMessagesResponse,
   ListSessionsResponse,
   PublicSession,
   StreamMessageRequest,
@@ -26,6 +27,12 @@ export type CreatedSession = PublicSession;
 export type ListSessionsOptions = {
   limit?: number;
   offset?: number;
+};
+
+export type ListMessagesOptions = {
+  limit?: number;
+  offset?: number;
+  tail?: boolean;
 };
 
 export type ClientSseEvent = {
@@ -102,8 +109,19 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       return requestJson<ListSessionsResponse>(`/v1/sessions${query ? `?${query}` : ""}`);
     },
 
-    getMessages(sessionId: string): Promise<{ messages: unknown[] }> {
-      return requestJson<{ messages: unknown[] }>(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`);
+    getSession(sessionId: string): Promise<PublicSession> {
+      return requestJson<PublicSession>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+    },
+
+    getMessages(sessionId: string, options: ListMessagesOptions = {}): Promise<ListMessagesResponse> {
+      const params = new URLSearchParams();
+      if (options.limit !== undefined) params.set("limit", String(options.limit));
+      if (options.offset !== undefined) params.set("offset", String(options.offset));
+      if (options.tail !== undefined) params.set("tail", String(options.tail));
+      const query = params.toString();
+      return requestJson<ListMessagesResponse>(
+        `/v1/sessions/${encodeURIComponent(sessionId)}/messages${query ? `?${query}` : ""}`
+      );
     },
 
     searchFiles(sessionId: string, query: string, options: { limit?: number } = {}): Promise<{ results: WorkspaceSearchResult[] }> {

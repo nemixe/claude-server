@@ -80,7 +80,7 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     expect(messagesResponse.status).toBe(200);
-    expect(await messagesResponse.json()).toEqual({ messages: [{ type: "user", message: "hi" }] });
+    expect(await messagesResponse.json()).toMatchObject({ messages: [{ type: "user", message: "hi" }] });
 
     const observeResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/events:stream`, {
       headers: { host: "localhost" }
@@ -151,6 +151,79 @@ describe("Hono API", () => {
     const secondPage = (await secondPageResponse.json()) as { sessions: Array<Record<string, unknown>>; hasMore: boolean };
     expect(secondPage.sessions).toHaveLength(1);
     expect(secondPage.hasMore).toBe(false);
+  });
+
+  it("loads a single public session without scanning session pages", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const app = await createApp({ config, sessionStore });
+    const session = await sessionStore.create({ mode: "bypass", title: "Lookup", userName: "Ada" });
+
+    const response = await app.request(`http://localhost/v1/sessions/${session.id}`, {
+      headers: { host: "localhost" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: session.id,
+      sessionId: session.id,
+      title: "Lookup",
+      userName: "Ada"
+    });
+  });
+
+  it("returns paginated session messages with metadata", async () => {
+    const config = await createTempConfig();
+    const messages = Array.from({ length: 5 }, (_, index) => ({ type: "user", message: "m" + index }));
+    const adapter: AgentSdkAdapter = {
+      query: () => (async function* () {})(),
+      getSessionMessages: async () => messages
+    };
+    const sessionStore = new SessionStore(config);
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, adapter)
+    });
+    const session = await sessionStore.create({ mode: "bypass", title: "History" });
+
+    const fullResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages`, {
+      headers: { host: "localhost" }
+    });
+    await expect(fullResponse.json()).resolves.toMatchObject({
+      messages,
+      offset: 0,
+      total: 5,
+      hasMoreBefore: false,
+      hasMoreAfter: false
+    });
+
+    const pageResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages?limit=2&offset=1`, {
+      headers: { host: "localhost" }
+    });
+    await expect(pageResponse.json()).resolves.toMatchObject({
+      messages: messages.slice(1, 3),
+      offset: 1,
+      limit: 2,
+      total: 5,
+      previousOffset: 0,
+      nextOffset: 3,
+      hasMoreBefore: true,
+      hasMoreAfter: true
+    });
+
+    const tailResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages?limit=2&tail=true`, {
+      headers: { host: "localhost" }
+    });
+    await expect(tailResponse.json()).resolves.toMatchObject({
+      messages: messages.slice(3),
+      offset: 3,
+      limit: 2,
+      total: 5,
+      previousOffset: 1,
+      hasMoreBefore: true,
+      hasMoreAfter: false
+    });
   });
 
   it("stores the latest cumulative session cost from result events", async () => {

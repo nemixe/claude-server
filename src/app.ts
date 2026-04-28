@@ -9,7 +9,14 @@ import { createSessionFactory, MissingClaudeSessionIdError } from "./session-ada
 import { SessionStore } from "./session-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { renderTestClient } from "./test-client.js";
-import { CLAUDE_MODES, type ListSessionsResponse, type PromptImage, type PublicSession, type SessionMetadata } from "./types.js";
+import {
+  CLAUDE_MODES,
+  type ListMessagesResponse,
+  type ListSessionsResponse,
+  type PromptImage,
+  type PublicSession,
+  type SessionMetadata
+} from "./types.js";
 
 const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
 const MAX_PROMPT_IMAGES = 5;
@@ -98,6 +105,12 @@ const listSessionsSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0)
 });
 
+const listMessagesSchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  offset: z.coerce.number().int().min(0).default(0),
+  tail: z.enum(["true", "false"]).optional().transform((value) => value === "true")
+});
+
 export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   const app = new Hono();
   const sessionStore = dependencies.sessionStore ?? new SessionStore(dependencies.config);
@@ -181,14 +194,23 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json(body);
   });
 
+  app.get("/v1/sessions/:sessionId", async (c) => {
+    const session = await sessionStore.get(c.req.param("sessionId"));
+    if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+    return c.json(toPublicSession(session));
+  });
+
   app.get("/v1/sessions/:sessionId/messages", async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
-    const limit = parseOptionalInteger(c.req.query("limit"));
-    const offset = parseOptionalInteger(c.req.query("offset"));
-    const messages = await agentService.getMessages(session, limit, offset);
-    return c.json({ messages });
+    const query = listMessagesSchema.parse({
+      limit: c.req.query("limit"),
+      offset: c.req.query("offset"),
+      tail: c.req.query("tail")
+    });
+    const messages = await agentService.getMessages(session);
+    return c.json(pageMessages(messages, query));
   });
 
   app.get("/v1/claude-commands", async (c) => {
@@ -346,14 +368,45 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   return app;
 }
 
-function parseOptionalInteger(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function pageMessages(
+  messages: unknown[],
+  options: { limit?: number; offset: number; tail: boolean }
+): ListMessagesResponse {
+  const total = messages.length;
+
+  if (options.limit === undefined) {
+    const offset = Math.min(options.offset, total);
+    return {
+      messages: messages.slice(offset),
+      offset,
+      total,
+      previousOffset: offset > 0 ? 0 : undefined,
+      hasMoreBefore: offset > 0,
+      hasMoreAfter: false
+    };
+  }
+
+  const limit = options.limit;
+  const offset = options.tail ? Math.max(total - limit, 0) : Math.min(options.offset, total);
+  const page = messages.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  const hasMoreBefore = offset > 0;
+  const hasMoreAfter = nextOffset < total;
+
+  return {
+    messages: page,
+    offset,
+    limit,
+    total,
+    previousOffset: hasMoreBefore ? Math.max(offset - limit, 0) : undefined,
+    nextOffset: hasMoreAfter ? nextOffset : undefined,
+    hasMoreBefore,
+    hasMoreAfter
+  };
 }
 
 function toPublicSession(session: SessionMetadata): PublicSession {

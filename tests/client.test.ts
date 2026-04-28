@@ -57,6 +57,44 @@ describe("browser client", () => {
     );
   });
 
+  it("loads a single session by id", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ id: "s1", sessionId: "s1", mode: "bypass", createdAt: "now", updatedAt: "now", hasRun: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await expect(client.getSession("s1")).resolves.toMatchObject({ sessionId: "s1" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/sessions/s1",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+  });
+
+  it("adds pagination parameters when loading session messages", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ messages: [], offset: 800, limit: 200, total: 1000, hasMoreBefore: true, hasMoreAfter: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await client.getMessages("s1", { limit: 200, offset: 800, tail: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/sessions/s1/messages?limit=200&offset=800&tail=true",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+  });
+
   it("serializes image prompts for streaming requests", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response("event: done\ndata: {\"ok\":true}\n\n", {

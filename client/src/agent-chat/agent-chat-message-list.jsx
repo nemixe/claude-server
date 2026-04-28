@@ -4,16 +4,20 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef
 } from "react";
 import ActivityTimeline from "./activity-timeline.jsx";
 import MessageBubble from "./message-bubble.jsx";
+import { groupActivityItemsForVirtualRows } from "./event-state-utils.js";
 
 const MESSAGE_LIST_BOTTOM_THRESHOLD_PX = 24;
+const MESSAGE_LIST_TOP_THRESHOLD_PX = 80;
 const ESTIMATE_SIZE = 86;
 const OVERSCAN = 10;
 const BUBBLE_GAP = 4;
+const ACTIVITY_GROUP_SIZE = 25;
 const ACTIVITY_ROLE = "assistant_activity";
 const GROUP_ROLE = "assistant_activity_group";
 
@@ -21,36 +25,36 @@ function isScrolledNearBottom(el) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD_PX;
 }
 
-function groupBubbleItems(items) {
-  const result = [];
-  let i = 0;
-
-  while (i < items.length) {
-    if (items[i].role === ACTIVITY_ROLE) {
-      const children = [];
-      const groupKey = items[i].key;
-      while (i < items.length && items[i].role === ACTIVITY_ROLE) {
-        children.push(items[i]);
-        i += 1;
-      }
-      result.push({ key: groupKey, role: GROUP_ROLE, items: children });
-    } else {
-      result.push(items[i]);
-      i += 1;
-    }
-  }
-
-  return result;
-}
-
 const AgentChatMessageList = forwardRef(
-  ({ bubbleItems, bubbleRoles, isStreaming, open, scrollResetKey, writeClipboard }, ref) => {
+  (
+    {
+      bubbleItems,
+      bubbleRoles,
+      hasMoreBefore = false,
+      isLoadingBefore = false,
+      isStreaming,
+      onLoadBefore,
+      open,
+      scrollResetKey,
+      writeClipboard
+    },
+    ref
+  ) => {
     const scrollElementRef = useRef(null);
     const isPinnedToBottomRef = useRef(true);
     const pendingInitialScrollRef = useRef(true);
     const previousScrollResetKeyRef = useRef(scrollResetKey);
     const scrollFrameRef = useRef(null);
-    const processedItems = useMemo(() => groupBubbleItems(bubbleItems), [bubbleItems]);
+    const prependAnchorRef = useRef(null);
+    const processedItems = useMemo(
+      () =>
+        groupActivityItemsForVirtualRows(bubbleItems, {
+          activityRole: ACTIVITY_ROLE,
+          groupRole: GROUP_ROLE,
+          groupSize: ACTIVITY_GROUP_SIZE
+        }),
+      [bubbleItems]
+    );
 
     const virtualizer = useVirtualizer({
       count: processedItems.length,
@@ -118,6 +122,16 @@ const AgentChatMessageList = forwardRef(
       scrollToBottom();
     }, [open, isStreaming, processedItems, scrollToBottom]);
 
+    useLayoutEffect(() => {
+      const anchor = prependAnchorRef.current;
+      const el = scrollElementRef.current;
+      if (!anchor || !el || isLoadingBefore) return;
+
+      const delta = el.scrollHeight - anchor.scrollHeight;
+      el.scrollTop = anchor.scrollTop + delta;
+      prependAnchorRef.current = null;
+    }, [isLoadingBefore, processedItems.length]);
+
     useImperativeHandle(
       ref,
       () => ({
@@ -143,7 +157,14 @@ const AgentChatMessageList = forwardRef(
       const el = scrollElementRef.current;
       if (!el) return;
       isPinnedToBottomRef.current = isScrolledNearBottom(el);
-    }, []);
+      if (!hasMoreBefore || isLoadingBefore || typeof onLoadBefore !== "function") return;
+      if (el.scrollTop > MESSAGE_LIST_TOP_THRESHOLD_PX) return;
+      prependAnchorRef.current = {
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop
+      };
+      onLoadBefore();
+    }, [hasMoreBefore, isLoadingBefore, onLoadBefore]);
 
     const virtualItems = virtualizer.getVirtualItems();
 
@@ -170,9 +191,10 @@ const AgentChatMessageList = forwardRef(
         role="log"
         aria-label="Chat messages"
         aria-live="polite"
-        aria-busy={isStreaming}
+        aria-busy={isStreaming || isLoadingBefore}
         onScroll={handleScroll}
       >
+        {isLoadingBefore ? <div className="ai-chat-history-loading">Loading earlier messages...</div> : null}
         <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
           {virtualItems.map((virtualRow) => {
             const item = processedItems[virtualRow.index];

@@ -1,7 +1,8 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-export default function MarkdownText({ text, className = "" }) {
+const MarkdownText = memo(function MarkdownText({ text, className = "" }) {
   return (
     <div className={["ai-chat-markdown", className].filter(Boolean).join(" ")}>
       <ReactMarkdown
@@ -17,4 +18,6 @@ export default function MarkdownText({ text, className = "" }) {
       </ReactMarkdown>
     </div>
   );
-}
+});
+
+export default MarkdownText;

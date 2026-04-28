@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "antd/dist/reset.css";
 import "./styles.css";
@@ -21,6 +21,7 @@ import {
   Select,
   Space
 } from "antd";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import AgentChatMessageList from "./agent-chat/agent-chat-message-list.jsx";
 import ChatFooter from "./agent-chat/chat-footer.jsx";
 import ChatHeader from "./agent-chat/chat-header.jsx";
@@ -29,12 +30,16 @@ import SessionSidebar from "./agent-chat/session-sidebar.jsx";
 import {
   derivePromptTitle,
   formatMessageTimestamp,
-  getMessageTimestamp,
   getAvatarThemeFromLabel,
   getDisplayLabel,
   getUserAccentStyle,
   normalizeUserLabel
 } from "./agent-chat/chat-ui-utils.js";
+import {
+  createEventEntry,
+  createHistoryEntries,
+  mergeEventEntries
+} from "./agent-chat/event-state-utils.js";
 
 const { TextArea } = Input;
 
@@ -56,6 +61,7 @@ const VIEWPORT_PADDING = 12;
 const USER_LABEL_MAX_LENGTH = 40;
 const GUEST_USER_NAME = "Guest";
 const SESSION_PAGE_SIZE = 30;
+const MESSAGE_PAGE_SIZE = 200;
 
 const modeLabel = {
   plan: "Plan",
@@ -81,6 +87,8 @@ function App() {
   const [prompt, setPrompt] = useState("");
   const [selectedImages, setSelectedImages] = useState([]);
   const [events, setEvents] = useState([]);
+  const [historyPageInfo, setHistoryPageInfo] = useState(() => createEmptyHistoryPageInfo());
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [commands, setCommands] = useState([]);
   const [selectedCommandPath, setSelectedCommandPath] = useState("");
   const [commandPath, setCommandPath] = useState("");
@@ -114,6 +122,10 @@ function App() {
   const sidebarWidthRef = useRef(sidebarWidth);
   const sessionsNextOffsetRef = useRef(0);
   const sessionsLoadingRef = useRef(false);
+  const historyLoadingRef = useRef(false);
+  const streamQueueRef = useRef([]);
+  const streamFrameRef = useRef(null);
+  const streamTimeoutRef = useRef(null);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -143,6 +155,7 @@ function App() {
     return () => {
       stopObserving();
       if (historyCopyTimeoutRef.current) window.clearTimeout(historyCopyTimeoutRef.current);
+      cancelQueuedStreamFlush();
       if (controllerRef.current) controllerRef.current.abort();
     };
   }, []);
@@ -163,6 +176,8 @@ function App() {
     (isSending && streamingSessionIdRef.current === sessionId) ||
     (isObservedRunning && observingSessionIdRef.current === sessionId);
   const activeSession = sessions.find((session) => getSessionId(session) === sessionId);
+  const deferredSessionSearchQuery = useDeferredValue(sessionSearchQuery);
+  const deferredCreatorFilter = useDeferredValue(creatorFilter);
   const creatorFilterOptions = useMemo(() => {
     const creators = new Map();
     sessions.forEach((session) => {
@@ -175,8 +190,8 @@ function App() {
       .map((label) => ({ value: label, label }));
   }, [sessions]);
   const filteredSessions = useMemo(() => {
-    const query = sessionSearchQuery.trim().toLowerCase();
-    const normalizedCreatorFilter = normalizeUserLabel(creatorFilter).toLowerCase();
+    const query = deferredSessionSearchQuery.trim().toLowerCase();
+    const normalizedCreatorFilter = normalizeUserLabel(deferredCreatorFilter).toLowerCase();
     return sessions
       .filter((session) => {
         if (normalizedCreatorFilter) {
@@ -190,9 +205,8 @@ function App() {
           .join(" ")
           .toLowerCase()
           .includes(query);
-      })
-      .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
-  }, [creatorFilter, sessionSearchQuery, sessions]);
+      });
+  }, [deferredCreatorFilter, deferredSessionSearchQuery, sessions]);
 
   const commandOptions = [{ value: "", label: commands.length > 0 ? "Choose a command" : "No command selected" }].concat(
     commands.map((command) => ({ value: command.path, label: command.path }))
@@ -275,13 +289,77 @@ function App() {
     return String(baseUrlRef.current || "").replace(/\/$/, "") + path;
   }
 
-  function appendEntry(type, data, options = {}) {
-    const timestamp = getMessageTimestamp({ timestamp: options.timestamp }) || getMessageTimestamp(data);
-    const time = formatMessageTimestamp(timestamp);
+  function setMergedEvents(updater) {
+    setEvents((current) => {
+      const next = updater(current);
+      return next;
+    });
+  }
 
-    setEvents((current) =>
-      current.concat([{ id: Date.now() + ":" + Math.random(), time, timestamp: timestamp || undefined, type, data }])
-    );
+  function replaceEvents(nextEvents) {
+    setEvents(nextEvents);
+  }
+
+  function appendEntry(type, data, options = {}) {
+    appendEntries([createEventEntry(type, data, options)], options);
+  }
+
+  function appendEntries(entries, options = {}) {
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    setMergedEvents((current) => mergeEventEntries(current, entries, { prepend: options.prepend }));
+  }
+
+  function queueStreamEntry(type, data) {
+    streamQueueRef.current.push(createEventEntry(type, data));
+    scheduleQueuedStreamFlush();
+  }
+
+  function scheduleQueuedStreamFlush() {
+    if (streamFrameRef.current === null) {
+      streamFrameRef.current = window.requestAnimationFrame(() => {
+        streamFrameRef.current = null;
+        flushQueuedStreamEvents();
+      });
+    }
+    if (streamTimeoutRef.current === null) {
+      streamTimeoutRef.current = window.setTimeout(() => {
+        streamTimeoutRef.current = null;
+        flushQueuedStreamEvents();
+      }, 50);
+    }
+  }
+
+  function flushQueuedStreamEvents() {
+    if (streamFrameRef.current !== null) {
+      window.cancelAnimationFrame(streamFrameRef.current);
+      streamFrameRef.current = null;
+    }
+    if (streamTimeoutRef.current !== null) {
+      window.clearTimeout(streamTimeoutRef.current);
+      streamTimeoutRef.current = null;
+    }
+    const queued = streamQueueRef.current;
+    if (queued.length === 0) return;
+    streamQueueRef.current = [];
+    appendEntries(queued);
+  }
+
+  function cancelQueuedStreamFlush() {
+    if (streamFrameRef.current !== null) {
+      window.cancelAnimationFrame(streamFrameRef.current);
+      streamFrameRef.current = null;
+    }
+    if (streamTimeoutRef.current !== null) {
+      window.clearTimeout(streamTimeoutRef.current);
+      streamTimeoutRef.current = null;
+    }
+    streamQueueRef.current = [];
+  }
+
+  function resetSessionEvents() {
+    cancelQueuedStreamFlush();
+    replaceEvents([]);
+    setHistoryPageInfo(createEmptyHistoryPageInfo());
   }
 
   async function getJson(path) {
@@ -314,6 +392,15 @@ function App() {
     return getJson("/v1/sessions?limit=" + SESSION_PAGE_SIZE + "&offset=" + Math.max(offset || 0, 0));
   }
 
+  async function fetchSessionMessagesPage(id, options = {}) {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.offset !== undefined) params.set("offset", String(options.offset));
+    if (options.tail !== undefined) params.set("tail", String(options.tail));
+    const query = params.toString();
+    return getJson("/v1/sessions/" + encodeURIComponent(id) + "/messages" + (query ? "?" + query : ""));
+  }
+
   async function loadSessions(options = {}) {
     const saved = readSavedSession();
     const append = Boolean(options.append);
@@ -334,18 +421,14 @@ function App() {
       if (!options.restoreSaved || !saved) return;
 
       let restored = accumulated.find((session) => getSessionId(session) === saved.sessionId);
-      let hasMore = Boolean(result.hasMore);
-      while (!restored && hasMore) {
-        const page = await fetchSessionsPage(sessionsNextOffsetRef.current);
-        const pageSessions = Array.isArray(page.sessions) ? page.sessions : [];
-        accumulated = mergeSessionsById(accumulated, pageSessions);
-        setSessions(accumulated);
-        sessionsNextOffsetRef.current = Number.isInteger(page.nextOffset)
-          ? page.nextOffset
-          : sessionsNextOffsetRef.current + pageSessions.length;
-        hasMore = Boolean(page.hasMore);
-        setSessionsHasMore(hasMore);
-        restored = accumulated.find((session) => getSessionId(session) === saved.sessionId);
+      if (!restored) {
+        try {
+          restored = await getJson("/v1/sessions/" + encodeURIComponent(saved.sessionId));
+          accumulated = mergeSessionsById(accumulated, [restored]);
+          setSessions(accumulated);
+        } catch {
+          restored = null;
+        }
       }
       if (!restored) {
         forgetSession();
@@ -376,26 +459,47 @@ function App() {
     stopObserving();
     setIsObservedRunning(false);
     observingSessionIdRef.current = null;
-    setEvents([]);
+    resetSessionEvents();
     setFileMentionSuggestions([]);
     setFileMentionStatus("idle");
 
     if (session) appendEntry(eventName, session);
 
     try {
-      const result = await getJson("/v1/sessions/" + encodeURIComponent(id) + "/messages");
+      const result = await fetchSessionMessagesPage(id, { limit: MESSAGE_PAGE_SIZE, tail: true });
       const messages = Array.isArray(result.messages) ? result.messages : [];
       if (messages.length === 0) {
         appendEntry("history", { empty: true });
       } else {
-        messages.forEach((message) => appendEntry("history", message));
+        appendEntries(createHistoryEntries(messages, { sessionId: id, offset: result.offset || 0 }));
       }
+      setHistoryPageInfo(createHistoryPageInfo(result));
       await backfillSessionTitle(id, session, messages);
     } catch (error) {
       appendEntry("client_error", "Could not load session history: " + errorMessage(error));
     }
 
     observeSession(id);
+  }
+
+  async function loadOlderMessages() {
+    const id = sessionIdRef.current;
+    if (!id || historyLoadingRef.current || !historyPageInfo.hasMoreBefore) return;
+    const offset = historyPageInfo.previousOffset ?? 0;
+    historyLoadingRef.current = true;
+    setIsHistoryLoading(true);
+
+    try {
+      const result = await fetchSessionMessagesPage(id, { limit: MESSAGE_PAGE_SIZE, offset });
+      const messages = Array.isArray(result.messages) ? result.messages : [];
+      appendEntries(createHistoryEntries(messages, { sessionId: id, offset: result.offset || 0 }), { prepend: true });
+      setHistoryPageInfo(createHistoryPageInfo(result));
+    } catch (error) {
+      appendEntry("client_error", "Could not load older messages: " + errorMessage(error));
+    } finally {
+      historyLoadingRef.current = false;
+      setIsHistoryLoading(false);
+    }
   }
 
   async function backfillSessionTitle(id, session, messages) {
@@ -634,18 +738,22 @@ function App() {
     let buffer = "";
     const outcome = { ok: true, waitingForUserQuestion: false };
 
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const parts = buffer.split(/\r?\n\r?\n/);
-      buffer = parts.pop() || "";
-      parts.forEach((part) => updateStreamOutcome(outcome, emitSse(part, source), source));
-    }
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const parts = buffer.split(/\r?\n\r?\n/);
+        buffer = parts.pop() || "";
+        parts.forEach((part) => updateStreamOutcome(outcome, emitSse(part, source), source));
+      }
 
-    buffer += decoder.decode();
-    if (buffer.trim()) updateStreamOutcome(outcome, emitSse(buffer, source), source);
-    return outcome;
+      buffer += decoder.decode();
+      if (buffer.trim()) updateStreamOutcome(outcome, emitSse(buffer, source), source);
+      return outcome;
+    } finally {
+      flushQueuedStreamEvents();
+    }
   }
 
   function emitSse(raw, source) {
@@ -670,7 +778,7 @@ function App() {
       setIsObservedRunning(false);
       return { event, data: parsed, consumed: true };
     }
-    appendEntry(event, parsed);
+    queueStreamEntry(event, parsed);
     return { event, data: parsed, consumed: false };
   }
 
@@ -790,7 +898,7 @@ function App() {
     setFileMentionSuggestions([]);
     setFileMentionStatus("idle");
     localStorage.removeItem(storageKey);
-    setEvents([]);
+    resetSessionEvents();
     clearCommandEditor();
   }
 
@@ -1114,6 +1222,9 @@ function App() {
                   isStreaming={isStreamingActiveSession}
                   open={!isClosed && !isMinimized}
                   scrollResetKey={sessionId || "new"}
+                  hasMoreBefore={historyPageInfo.hasMoreBefore}
+                  isLoadingBefore={isHistoryLoading}
+                  onLoadBefore={loadOlderMessages}
                   writeClipboard={writeClipboard}
                 />
                 <ChatFooter
@@ -1130,11 +1241,11 @@ function App() {
                   latestAnnotation={latestAnnotation}
                   isStreamingActiveSession={isStreamingActiveSession}
                   isSessionOwner={true}
-          hasChipAnswer={hasChipAnswer}
-          setHasChipAnswer={setHasChipAnswer}
-          askQuestionFooterRef={askQuestionFooterRef}
-          accentStyle={accentStyle}
-          onActivateInspect={activateInspect}
+                  hasChipAnswer={hasChipAnswer}
+                  setHasChipAnswer={setHasChipAnswer}
+                  askQuestionFooterRef={askQuestionFooterRef}
+                  accentStyle={accentStyle}
+                  onActivateInspect={activateInspect}
                   onInspectPillClear={clearInspectContext}
                   onStartAnnotating={toggleAnnotating}
                   onClearAnnotation={clearAnnotation}
@@ -1193,7 +1304,7 @@ function App() {
             <Button size="small" disabled={events.length === 0} icon={<CopyOutlined />} onClick={copySessionHistoryJson}>
               {historyCopyLabel}
             </Button>
-            <Button size="small" onClick={() => setEvents([])}>
+            <Button size="small" onClick={() => replaceEvents([])}>
               Clear
             </Button>
           </Space>
@@ -1389,22 +1500,48 @@ function DeveloperTools(props) {
 }
 
 function LegacyEventsList({ events }) {
+  const parentRef = useRef(null);
+  const virtualizer = useVirtualizer({
+    count: events.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 180,
+    overscan: 4
+  });
+
   if (events.length === 0) {
     return <Alert type="info" message="Session history and streaming events will appear here." />;
   }
+
   return (
-    <div className="legacy-events-list">
-      {events.map((entry) => {
-        const images = extractImageBlocks(entry.data);
-        const title = [entry.time ? `[${entry.time}]` : "", entry.type].filter(Boolean).join(" ");
-        return (
-          <article key={entry.id} className="legacy-event-entry">
-            <div className="legacy-event-title">{title}</div>
-            <pre>{JSON.stringify(redactImageData(entry.data), null, 2)}</pre>
-            <ImageAttachmentGrid images={images} />
-          </article>
-        );
-      })}
+    <div ref={parentRef} className="legacy-events-list">
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const entry = events[virtualRow.index];
+          const images = extractImageBlocks(entry.data);
+          const title = [entry.time ? `[${entry.time}]` : "", entry.type].filter(Boolean).join(" ");
+          return (
+            <div
+              key={virtualRow.key}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+                paddingBottom: 12
+              }}
+            >
+              <article className="legacy-event-entry">
+                <div className="legacy-event-title">{title}</div>
+                <pre>{JSON.stringify(redactImageData(entry.data), null, 2)}</pre>
+                <ImageAttachmentGrid images={images} />
+              </article>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1953,6 +2090,27 @@ function mergeSessionsById(existing, incoming) {
   return Array.from(byId.values()).sort((left, right) =>
     String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
   );
+}
+
+function createEmptyHistoryPageInfo() {
+  return {
+    offset: 0,
+    total: 0,
+    previousOffset: undefined,
+    hasMoreBefore: false,
+    hasMoreAfter: false
+  };
+}
+
+function createHistoryPageInfo(result) {
+  if (!result || typeof result !== "object") return createEmptyHistoryPageInfo();
+  return {
+    offset: Number.isInteger(result.offset) ? result.offset : 0,
+    total: Number.isInteger(result.total) ? result.total : 0,
+    previousOffset: Number.isInteger(result.previousOffset) ? result.previousOffset : undefined,
+    hasMoreBefore: Boolean(result.hasMoreBefore),
+    hasMoreAfter: Boolean(result.hasMoreAfter)
+  };
 }
 
 function getSessionUserName(session) {
