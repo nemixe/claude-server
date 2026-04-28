@@ -34,6 +34,15 @@ const imageMediaTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/
 const maxImages = 5;
 const maxImageBytes = 5 * 1024 * 1024;
 const ACTIVITY_ROLE = "assistant_activity";
+const DEFAULT_CHAT_WIDTH = 920;
+const DEFAULT_CHAT_HEIGHT = 780;
+const MIN_CHAT_WIDTH = 640;
+const MIN_CHAT_HEIGHT = 420;
+const DEFAULT_SIDEBAR_WIDTH = 260;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 420;
+const MIN_MAIN_COLUMN_WIDTH = 340;
+const VIEWPORT_PADDING = 12;
 
 const modeLabel = {
   plan: "Plan",
@@ -65,7 +74,8 @@ function App() {
   const [isObservedRunning, setIsObservedRunning] = useState(false);
   const [historyCopyLabel, setHistoryCopyLabel] = useState("Copy JSON");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [position, setPosition] = useState(initialChatPosition);
+  const [chatFrame, setChatFrame] = useState(initialChatFrame);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [hasGrabContext, setHasGrabContext] = useState(false);
   const [isAnnotating, setIsAnnotating] = useState(false);
   const [latestAnnotation, setLatestAnnotation] = useState(null);
@@ -79,7 +89,9 @@ function App() {
   const commandsRef = useRef([]);
   const historyCopyTimeoutRef = useRef();
   const chatRef = useRef(null);
-  const positionRef = useRef(position);
+  const chatFrameRef = useRef(chatFrame);
+  const sidebarRef = useRef(null);
+  const sidebarWidthRef = useRef(sidebarWidth);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -90,8 +102,12 @@ function App() {
   }, [commands]);
 
   useEffect(() => {
-    positionRef.current = position;
-  }, [position]);
+    chatFrameRef.current = chatFrame;
+  }, [chatFrame]);
+
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
 
   useEffect(() => {
     loadSessions({ restoreSaved: true });
@@ -104,7 +120,8 @@ function App() {
 
   useEffect(() => {
     const onResize = () => {
-      setPosition((current) => clampPosition(current.x, current.y, chatRef.current));
+      setChatFrame((current) => clampChatFrame(current));
+      setSidebarWidth((current) => clampSidebarWidth(current, chatRef.current));
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -722,7 +739,7 @@ function App() {
   function startDrag(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (event.target.closest("button, input, textarea, select, a, .ant-dropdown, .ant-drawer")) return;
-    const origin = positionRef.current;
+    const origin = chatFrameRef.current;
     const dragStart = {
       pointerX: event.clientX,
       pointerY: event.clientY,
@@ -731,10 +748,79 @@ function App() {
     };
 
     function move(pointerEvent) {
-      setPosition(clampPosition(dragStart.originX + pointerEvent.clientX - dragStart.pointerX, dragStart.originY + pointerEvent.clientY - dragStart.pointerY, chatRef.current));
+      setChatFrame((current) =>
+        clampChatFrame({
+          ...current,
+          x: dragStart.originX + pointerEvent.clientX - dragStart.pointerX,
+          y: dragStart.originY + pointerEvent.clientY - dragStart.pointerY
+        })
+      );
     }
 
     function stop() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    }
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  }
+
+  function startWindowResize(event, direction) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const origin = chatFrameRef.current;
+    const resizeStart = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      width: origin.width,
+      height: origin.height
+    };
+    const cursor = direction === "south" ? "ns-resize" : direction === "east" ? "ew-resize" : "nwse-resize";
+    const restoreInteraction = beginResizeInteraction(cursor);
+
+    function move(pointerEvent) {
+      const deltaX = pointerEvent.clientX - resizeStart.pointerX;
+      const deltaY = pointerEvent.clientY - resizeStart.pointerY;
+      setChatFrame((current) =>
+        clampChatFrame({
+          ...current,
+          width: direction === "south" ? resizeStart.width : resizeStart.width + deltaX,
+          height: direction === "east" ? resizeStart.height : resizeStart.height + deltaY
+        })
+      );
+      setSidebarWidth((current) => clampSidebarWidth(current, chatRef.current));
+    }
+
+    function stop() {
+      restoreInteraction();
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    }
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  }
+
+  function startSidebarResize(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const resizeStart = {
+      pointerX: event.clientX,
+      width: sidebarWidthRef.current
+    };
+    const restoreInteraction = beginResizeInteraction("col-resize");
+
+    function move(pointerEvent) {
+      setSidebarWidth(clampSidebarWidth(resizeStart.width + pointerEvent.clientX - resizeStart.pointerX, chatRef.current));
+    }
+
+    function stop() {
+      restoreInteraction();
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
     }
@@ -766,7 +852,12 @@ function App() {
       <div
         ref={chatRef}
         className={["ai-chat-floating", isMinimized ? "is-minimized" : ""].filter(Boolean).join(" ")}
-        style={{ left: position.x, top: position.y }}
+        style={{
+          left: chatFrame.x,
+          top: chatFrame.y,
+          width: chatFrame.width,
+          ...(isMinimized ? {} : { height: chatFrame.height })
+        }}
       >
         <div className="ai-chat-card">
           <ChatHeader
@@ -790,8 +881,14 @@ function App() {
           />
           {!isMinimized ? (
             <div className={["ai-chat-two-columns", "is-narrow", isSidebarOpen ? "sidebar-open" : ""].join(" ")}>
-              {isSidebarOpen ? (
-                <aside className="ai-chat-sidebar-column is-open">
+              <aside
+                ref={sidebarRef}
+                className={["ai-chat-sidebar-column", isSidebarOpen ? "is-open" : ""].filter(Boolean).join(" ")}
+                style={{ "--ai-chat-sidebar-width": sidebarWidth + "px" }}
+                aria-hidden={isSidebarOpen ? undefined : "true"}
+              >
+                {isSidebarOpen ? (
+                  <>
                   <div className="ai-chat-sessions-header">
                     <span>Sessions</span>
                     <Tag color={sessionId ? "blue" : "default"}>{sessionId ? "Active" : "New"}</Tag>
@@ -827,8 +924,16 @@ function App() {
                     clearEvents={() => setEvents([])}
                     openHistory={() => setIsHistoryOpen(true)}
                   />
-                </aside>
-              ) : null}
+                    <button
+                      type="button"
+                      className="ai-chat-sidebar-resize-handle"
+                      aria-label="Resize sessions sidebar"
+                      title="Resize sidebar"
+                      onPointerDown={startSidebarResize}
+                    />
+                  </>
+                ) : null}
+              </aside>
               {isSidebarOpen ? (
                 <button className="ai-chat-sidebar-backdrop" type="button" aria-label="Hide sessions" onClick={() => setIsSidebarOpen(false)} />
               ) : null}
@@ -879,6 +984,31 @@ function App() {
             </div>
           ) : null}
         </div>
+        {!isMinimized ? (
+          <>
+            <button
+              type="button"
+              className="ai-chat-window-resize-handle ai-chat-window-resize-east"
+              aria-label="Resize chat width"
+              title="Resize width"
+              onPointerDown={(event) => startWindowResize(event, "east")}
+            />
+            <button
+              type="button"
+              className="ai-chat-window-resize-handle ai-chat-window-resize-south"
+              aria-label="Resize chat height"
+              title="Resize height"
+              onPointerDown={(event) => startWindowResize(event, "south")}
+            />
+            <button
+              type="button"
+              className="ai-chat-window-resize-handle ai-chat-window-resize-southeast"
+              aria-label="Resize chat window"
+              title="Resize window"
+              onPointerDown={(event) => startWindowResize(event, "southeast")}
+            />
+          </>
+        ) : null}
       </div>
       <Drawer
         title="Session History"
@@ -1100,7 +1230,7 @@ function eventsToBubbleItems(events) {
       return [createActivity(entry.id, "Error", activityText(entry.type, entry.data), "error")];
     }
 
-    return [createActivity(entry.id, activityLabel(entry.type, entry.data), activityText(entry.type, entry.data), activityTone(entry.type))];
+    return [createToolActivity(entry.id, activityLabel(entry.type, entry.data), activityText(entry.type, entry.data), activityTone(entry.type))];
   });
 }
 
@@ -1287,17 +1417,17 @@ function toProtocolItems(value, meta, keyBase) {
     }
     if (block.type === "tool_use") {
       flushText(index);
-      items.push(createActivity(`${keyBase}:tool_use:${index}`, "Tool use" + (block.name ? ": " + block.name : ""), formatToolUseBlock(block), "tool"));
+      items.push(createToolActivity(`${keyBase}:tool_use:${index}`, "Tool use" + (block.name ? ": " + block.name : ""), formatToolUseBlock(block), "tool"));
       return;
     }
     if (block.type === "tool_result") {
       flushText(index);
-      items.push(createActivity(`${keyBase}:tool_result:${index}`, "Tool result", formatToolResultBlock(block), "tool"));
+      items.push(createToolActivity(`${keyBase}:tool_result:${index}`, "Tool result", formatToolResultBlock(block), "tool"));
       return;
     }
     if (block.type === "thinking") {
       flushText(index);
-      items.push(createActivity(`${keyBase}:thinking:${index}`, "Assistant thinking", formatThinkingBlock(block), "muted"));
+      items.push(createToolActivity(`${keyBase}:thinking:${index}`, "Assistant thinking", formatThinkingBlock(block), "muted"));
       return;
     }
 
@@ -1330,6 +1460,17 @@ function createActivity(key, label, text, tone = "muted") {
   };
 }
 
+function createToolActivity(key, label, details, tone = "tool") {
+  return {
+    key,
+    role: ACTIVITY_ROLE,
+    tone,
+    collapsible: true,
+    label,
+    details: details || ""
+  };
+}
+
 function BubbleHeader({ label, meta }) {
   return (
     <div className="ai-chat-bubble-header-inline">
@@ -1356,7 +1497,6 @@ function formatToolResultBlock(block) {
 
 function formatToolUseBlock(block) {
   return [
-    block.name ? "Name: `" + block.name + "`" : "",
     block.id ? "Tool use id: `" + block.id + "`" : "",
     block.input ? "```json\n" + JSON.stringify(redactImageData(block.input), null, 2) + "\n```" : ""
   ]
@@ -1365,7 +1505,27 @@ function formatToolUseBlock(block) {
 }
 
 function formatThinkingBlock(block) {
-  return extractTextContent(block.thinking || block.text || block.content) || JSON.stringify(redactImageData(block), null, 2);
+  const value = block.thinking ?? block.text ?? block.content;
+  const text = extractTextContent(value);
+  if (text) return formatMaybeJsonMarkdown(text);
+  if (value && typeof value === "object") return formatJsonMarkdown(value);
+  return formatJsonMarkdown(block);
+}
+
+function formatMaybeJsonMarkdown(value) {
+  const text = String(value ?? "");
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.startsWith("```") || !/^[\[{]/.test(trimmed)) return text;
+
+  try {
+    return formatJsonMarkdown(JSON.parse(trimmed));
+  } catch {
+    return text;
+  }
+}
+
+function formatJsonMarkdown(value) {
+  return "```json\n" + JSON.stringify(redactImageData(value), null, 2) + "\n```";
 }
 
 function activityTone(type) {
@@ -1530,21 +1690,56 @@ async function writeClipboard(value) {
   if (!copied) throw new Error("Clipboard copy failed");
 }
 
-function initialChatPosition() {
-  const width = Math.min(920, Math.max(720, window.innerWidth - 48));
-  return {
+function initialChatFrame() {
+  const width = Math.min(DEFAULT_CHAT_WIDTH, Math.max(MIN_CHAT_WIDTH, window.innerWidth - 48));
+  const height = Math.min(DEFAULT_CHAT_HEIGHT, Math.max(MIN_CHAT_HEIGHT, window.innerHeight - 48));
+  return clampChatFrame({
     x: Math.max(16, window.innerWidth - width - 28),
-    y: 28
+    y: 28,
+    width,
+    height
+  });
+}
+
+function clampChatFrame(frame) {
+  const width = clampNumber(
+    frame.width,
+    Math.min(MIN_CHAT_WIDTH, Math.max(0, window.innerWidth - VIEWPORT_PADDING * 2)),
+    Math.max(MIN_CHAT_WIDTH, window.innerWidth - VIEWPORT_PADDING * 2)
+  );
+  const height = clampNumber(
+    frame.height,
+    Math.min(MIN_CHAT_HEIGHT, Math.max(0, window.innerHeight - VIEWPORT_PADDING * 2)),
+    Math.max(MIN_CHAT_HEIGHT, window.innerHeight - VIEWPORT_PADDING * 2)
+  );
+  return {
+    x: clampNumber(frame.x, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, window.innerWidth - width - VIEWPORT_PADDING)),
+    y: clampNumber(frame.y, VIEWPORT_PADDING, Math.max(VIEWPORT_PADDING, window.innerHeight - height - VIEWPORT_PADDING)),
+    width,
+    height
   };
 }
 
-function clampPosition(x, y, element) {
-  const width = element?.offsetWidth || Math.min(920, window.innerWidth - 32);
-  const height = element?.offsetHeight || Math.min(740, window.innerHeight - 32);
-  const padding = 12;
-  return {
-    x: Math.min(Math.max(padding, x), Math.max(padding, window.innerWidth - width - padding)),
-    y: Math.min(Math.max(padding, y), Math.max(padding, window.innerHeight - Math.min(height, window.innerHeight - padding) - padding))
+function clampSidebarWidth(width, container) {
+  const containerWidth = container?.getBoundingClientRect().width || DEFAULT_CHAT_WIDTH;
+  const maxWidth = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, containerWidth - MIN_MAIN_COLUMN_WIDTH));
+  return Math.round(clampNumber(width, MIN_SIDEBAR_WIDTH, maxWidth));
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function beginResizeInteraction(cursor) {
+  const previousCursor = document.body.style.cursor;
+  const previousUserSelect = document.body.style.userSelect;
+  document.body.classList.add("ai-chat-resizing");
+  document.body.style.cursor = cursor;
+  document.body.style.userSelect = "none";
+  return () => {
+    document.body.classList.remove("ai-chat-resizing");
+    document.body.style.cursor = previousCursor;
+    document.body.style.userSelect = previousUserSelect;
   };
 }
 
