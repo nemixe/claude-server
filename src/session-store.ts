@@ -75,6 +75,18 @@ export class SessionStore {
     await this.save({ ...metadata, hasRun: true });
   }
 
+  async update(id: string, patch: { title?: string; mode?: ClaudeMode }): Promise<SessionMetadata | undefined> {
+    const metadata = await this.get(id);
+    if (!metadata) return undefined;
+    const next: SessionMetadata = {
+      ...metadata,
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.mode !== undefined ? { mode: patch.mode } : {})
+    };
+    await this.save(next);
+    return next;
+  }
+
   async delete(id: string): Promise<boolean> {
     const metadata = await this.get(id);
     if (!metadata) return false;

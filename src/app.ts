@@ -66,6 +66,15 @@ const streamMessageSchema = z.object({
   maxTurns: z.number().int().positive().optional()
 });
 
+const updateSessionSchema = z
+  .object({
+    title: z.string().min(1).max(200).optional(),
+    mode: z.enum(CLAUDE_MODES).optional()
+  })
+  .refine((value) => value.title !== undefined || value.mode !== undefined, {
+    message: "Provide title or mode"
+  });
+
 const claudeCommandSchema = z.object({
   path: z.string().min(1).max(500),
   content: z.string().max(200_000)
@@ -229,6 +238,13 @@ export function createApp(dependencies: AppDependencies): Hono {
 
     const interrupted = await agentService.interrupt(session.id);
     return c.json({ interrupted });
+  });
+
+  app.patch("/v1/sessions/:sessionId", async (c) => {
+    const body = updateSessionSchema.parse(await c.req.json().catch(() => ({})));
+    const updated = await sessionStore.update(c.req.param("sessionId"), body);
+    if (!updated) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
+    return c.json(toPublicSession(updated));
   });
 
   app.delete("/v1/sessions/:sessionId", async (c) => {

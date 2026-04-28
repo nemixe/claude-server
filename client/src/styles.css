@@ -539,6 +539,7 @@ body {
   flex: 0 0 auto;
   max-height: 45%;
   overflow-y: auto;
+  border-top: 1px solid var(--ai-chat-color-border-light);
   padding: 4px 8px 10px;
 }
 

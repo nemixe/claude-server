@@ -25,6 +25,7 @@ import ChatFooter from "./agent-chat/chat-footer.jsx";
 import ChatHeader from "./agent-chat/chat-header.jsx";
 import MarkdownText from "./agent-chat/markdown-text.jsx";
 import SessionSidebar from "./agent-chat/session-sidebar.jsx";
+import { derivePromptTitle } from "./agent-chat/chat-ui-utils.js";
 
 const { TextArea } = Input;
 
@@ -235,6 +236,16 @@ function App() {
     return response.json();
   }
 
+  async function patchJson(path, body) {
+    const response = await fetch(apiPath(path), {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  }
+
   async function loadSessions(options = {}) {
     const saved = readSavedSession();
     try {
@@ -260,10 +271,7 @@ function App() {
     stopObserving();
     setStatus("Creating session");
     try {
-      const created = await postJson("/v1/sessions", {
-        mode,
-        title: "AI chat panel"
-      });
+      const created = await postJson("/v1/sessions", { mode });
       const id = created.sessionId || created.id;
       setSessionId(id);
       rememberSession({ sessionId: id });
@@ -298,11 +306,23 @@ function App() {
       } else {
         messages.forEach((message) => appendEntry("history", message));
       }
+      await backfillSessionTitle(id, session, messages);
     } catch (error) {
       appendEntry("client_error", "Could not load session history: " + errorMessage(error));
     }
 
     observeSession(id);
+  }
+
+  async function backfillSessionTitle(id, session, messages) {
+    if (!isGenericSessionTitle(session?.title)) return;
+    const firstPrompt = findFirstUserPrompt(messages);
+    const derived = derivePromptTitle(firstPrompt);
+    if (!derived) return;
+    try {
+      await patchJson("/v1/sessions/" + encodeURIComponent(id), { title: derived });
+      await loadSessions({ restoreSaved: false });
+    } catch {}
   }
 
   async function runPrompt(value, options = {}) {
@@ -315,20 +335,31 @@ function App() {
     controllerRef.current = controller;
     let activeSessionId = sessionIdRef.current;
 
+    const derivedTitle = derivePromptTitle(nextPrompt);
+    let shouldPatchTitle = false;
+
     try {
       if (!activeSessionId) {
         const created = await postJson("/v1/sessions", {
           mode,
-          title: "AI chat panel"
+          title: derivedTitle
         });
         activeSessionId = created.sessionId || created.id;
         setSessionId(activeSessionId);
         rememberSession({ sessionId: activeSessionId });
         await loadSessions({ restoreSaved: false });
         await loadClaudeCommands(activeSessionId);
+      } else {
+        const existing = sessions.find((session) => getSessionId(session) === activeSessionId);
+        if (isGenericSessionTitle(existing?.title)) shouldPatchTitle = true;
       }
 
       stopObserving();
+      if (shouldPatchTitle) {
+        try {
+          await patchJson("/v1/sessions/" + encodeURIComponent(activeSessionId), { title: derivedTitle });
+        } catch {}
+      }
       const images = options.toolResult ? [] : selectedImages.map((image) => ({
         name: image.name,
         mediaType: image.mediaType,
@@ -622,9 +653,18 @@ function App() {
   function selectSession(session, eventName) {
     const id = getSessionId(session);
     setSessionId(id);
-    setMode("bypass");
+    setMode(session?.mode === "plan" || session?.mode === "bypass" ? session.mode : "bypass");
     rememberSession({ sessionId: id });
     loadSessionView(id, eventName, session);
+  }
+
+  function changeMode(nextMode) {
+    setMode(nextMode);
+    const id = sessionIdRef.current;
+    if (!id) return;
+    patchJson("/v1/sessions/" + encodeURIComponent(id), { mode: nextMode })
+      .then(() => loadSessions({ restoreSaved: false }))
+      .catch(() => {});
   }
 
   function onSessionSelect(id) {
@@ -946,7 +986,7 @@ function App() {
                   senderValue={prompt}
                   setSenderValue={setPrompt}
                   permissionMode={mode}
-                  onPermissionChange={setMode}
+                  onPermissionChange={changeMode}
                   showQuestionFooter={Boolean(activeAskUserQuestion)}
                   activeAskUserQuestionData={activeAskUserQuestion?.data}
                   activeAskUserQuestionMessageId={activeAskUserQuestion?.id}
@@ -1168,7 +1208,6 @@ function DeveloperTools(props) {
       ghost
       className="ai-chat-tools"
       items={collapseItems}
-      defaultActiveKey={["settings"]}
     />
   );
 }
@@ -1270,6 +1309,36 @@ function isEmptySuccessResult(data) {
   );
 }
 
+const LEGACY_GENERIC_TITLES = new Set(["AI chat panel", "Untitled chat", "New chat"]);
+
+function isGenericSessionTitle(title) {
+  if (typeof title !== "string") return true;
+  const trimmed = title.trim();
+  if (!trimmed) return true;
+  return LEGACY_GENERIC_TITLES.has(trimmed);
+}
+
+function findFirstUserPrompt(messages) {
+  if (!Array.isArray(messages)) return "";
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    if (message.parent_tool_use_id) continue;
+    const inner = message.message && typeof message.message === "object" ? message.message : message;
+    const role = inner.role || message.type;
+    if (role !== "user") continue;
+    const content = inner.content !== undefined ? inner.content : message.content;
+    if (typeof content === "string" && content.trim()) return content;
+    if (!Array.isArray(content)) continue;
+    const text = content
+      .filter((block) => block && typeof block === "object" && block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join(" ")
+      .trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function getActiveAskUserQuestion(events) {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const entry = events[index];
@@ -1307,8 +1376,14 @@ function closesAskUserQuestion(entry) {
   const blocks = Array.isArray(content) ? content : [];
 
   if (role !== "user") return false;
+  if (record.parent_tool_use_id || message.parent_tool_use_id) return false;
   if (!Array.isArray(content)) return Boolean(extractTextContent(content));
-  if (blocks.some((block) => block && typeof block === "object" && block.type === "tool_result")) return true;
+  const toolResults = blocks.filter((block) => block && typeof block === "object" && block.type === "tool_result");
+  if (toolResults.length > 0) {
+    const allErrored = toolResults.every((block) => block.is_error === true);
+    if (allErrored) return false;
+    return true;
+  }
   return blocks.some((block) => block && typeof block === "object" && block.type === "text" && String(block.text || "").trim());
 }
 
@@ -1335,8 +1410,12 @@ function toProtocolItems(value, meta, keyBase) {
   if (!value || typeof value !== "object") return [];
   const record = value;
   const messageRecord = record.message && typeof record.message === "object" ? record.message : record;
-  const role = normalizeRole(messageRecord.role || record.type);
-  if (!role) return [];
+  const rawRole = normalizeRole(messageRecord.role || record.type);
+  if (!rawRole) return [];
+  const isAgentToolEcho =
+    rawRole === "user" &&
+    (record.parent_tool_use_id || messageRecord.parent_tool_use_id);
+  const role = isAgentToolEcho ? "assistant" : rawRole;
 
   const content = messageRecord.content !== undefined ? messageRecord.content : record.content !== undefined ? record.content : record.message;
   const blocks = Array.isArray(content) ? content : [];

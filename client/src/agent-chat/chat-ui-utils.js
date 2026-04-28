@@ -33,6 +33,17 @@ export function normalizeSessionTitle(title, fallback = "Untitled chat") {
   return normalized || fallback;
 }
 
+const PROMPT_TITLE_MAX_CHARS = 100;
+
+export function derivePromptTitle(value, max = PROMPT_TITLE_MAX_CHARS) {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length <= max) return normalized;
+  const sliced = normalized.slice(0, max).replace(/\s+\S*$/, "").trim();
+  return (sliced || normalized.slice(0, max).trim()) + "…";
+}
+
 export function formatSessionTimestamp(value) {
   if (!value) return "Recently";
 
