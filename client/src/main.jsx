@@ -267,26 +267,9 @@ function App() {
     }
   }
 
-  async function createSession() {
-    stopObserving();
-    setStatus("Creating session");
-    try {
-      const created = await postJson("/v1/sessions", { mode });
-      const id = created.sessionId || created.id;
-      setSessionId(id);
-      rememberSession({ sessionId: id });
-      setEvents([]);
-      appendEntry("session_created", created);
-      setFileMentionSuggestions([]);
-      setFileMentionStatus("idle");
-      await loadSessions({ restoreSaved: false });
-      await loadClaudeCommands(id);
-      observeSession(id);
-      setStatus("Idle");
-    } catch (error) {
-      setStatus("Error");
-      appendEntry("client_error", "Could not create session: " + errorMessage(error));
-    }
+  function createSession() {
+    forgetSession();
+    setStatus("Idle");
   }
 
   async function loadSessionView(id, eventName, session) {
@@ -1272,41 +1255,10 @@ function eventsToBubbleItems(events) {
 
 function resultToItems(entry) {
   const data = entry.data;
-  if (isEmptySuccessResult(data)) return [];
   if (data && typeof data === "object" && data.is_error === true) {
     return [createActivity(entry.id, "Run error", activityText(entry.type, data), "error")];
   }
-  const text = data && typeof data === "object" && data.result ? String(data.result) : "";
-  if (!text) return [createActivity(entry.id, "Run result", activityText(entry.type, data), "success")];
-  const meta = [
-    entry.time,
-    data.terminal_reason ? "terminal: " + data.terminal_reason : "",
-    Number.isFinite(data.duration_ms) ? formatDuration(data.duration_ms) : "",
-    Number.isFinite(data.total_cost_usd) ? "$" + data.total_cost_usd : ""
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return [
-    createBubbleItem(entry.id, "assistant", {
-      header: <BubbleHeader label="Claude" meta={meta} />,
-      avatar: <AssistantAvatar />,
-      content: <MarkdownText text={text} />,
-      copyText: text
-    })
-  ];
-}
-
-function isEmptySuccessResult(data) {
-  return (
-    data &&
-    typeof data === "object" &&
-    data.type === "result" &&
-    data.subtype === "success" &&
-    !data.result &&
-    !data.terminal_reason &&
-    !Number.isFinite(data.duration_ms) &&
-    !Number.isFinite(data.total_cost_usd)
-  );
+  return [];
 }
 
 const LEGACY_GENERIC_TITLES = new Set(["AI chat panel", "Untitled chat", "New chat"]);
