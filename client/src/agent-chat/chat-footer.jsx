@@ -87,6 +87,7 @@ export default function ChatFooter({
   hasChipAnswer,
   setHasChipAnswer,
   askQuestionFooterRef,
+  accentStyle,
   onActivateInspect,
   onInspectPillClear,
   onStartAnnotating,
@@ -344,7 +345,7 @@ export default function ChatFooter({
   }[mentionStatus] || "No files found";
 
   return (
-    <div className="ai-chat-footer">
+    <div className="ai-chat-footer" style={accentStyle}>
       <div className="ai-chat-footer-toolbar" role="toolbar" aria-label="Chat controls">
         <Button
           size="small"

@@ -6,6 +6,7 @@ import {
   formatSessionTimestamp,
   getAvatarThemeFromLabel,
   getDisplayLabel,
+  getUserAccentStyle,
   normalizeSessionTitle
 } from "./chat-ui-utils.js";
 
@@ -93,6 +94,7 @@ export default function SessionSidebar({
           const isActive = id === activeSessionKey;
           const userName = getDisplayLabel(session.userName || GUEST_USER_NAME);
           const avatarTheme = getAvatarThemeFromLabel(userName);
+          const accentStyle = getUserAccentStyle(userName);
           const timestamp = formatSessionTimestamp(session.updatedAt ?? session.createdAt);
           const cost = formatSessionCost(session.costUsd);
           return (
@@ -100,6 +102,7 @@ export default function SessionSidebar({
               key={id}
               type="button"
               className={`ai-chat-session-item${isActive ? " active" : ""}`}
+              style={accentStyle}
               onClick={() => onSessionSelect(id)}
               role="listitem"
               aria-current={isActive ? "true" : undefined}

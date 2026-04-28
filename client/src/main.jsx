@@ -32,6 +32,7 @@ import {
   getMessageTimestamp,
   getAvatarThemeFromLabel,
   getDisplayLabel,
+  getUserAccentStyle,
   normalizeUserLabel
 } from "./agent-chat/chat-ui-utils.js";
 
@@ -208,10 +209,21 @@ function App() {
   const displayUserName = activeSession
     ? getSessionUserName(activeSession)
     : getDisplayLabel(userName || GUEST_USER_NAME);
+  const activeUserAccentStyle = useMemo(() => getUserAccentStyle(displayUserName), [displayUserName]);
   const bubbleItems = useMemo(() => eventsToBubbleItems(events, displayUserName), [displayUserName, events]);
   const bubbleRoles = useMemo(
     () => ({
-      user: { placement: "end" },
+      user: {
+        placement: "end",
+        styles: {
+          content: {
+            background: "var(--ai-chat-color-bubble-user-bg)",
+            backgroundColor: "var(--ai-chat-color-bubble-user-bg)",
+            borderColor: "var(--ai-chat-user-accent-border)",
+            color: "var(--ai-chat-color-bubble-user-text)"
+          }
+        }
+      },
       assistant: { placement: "start" },
       assistant_stream: { placement: "start", classNames: { content: "ai-chat-stream-content" } }
     }),
@@ -1024,7 +1036,7 @@ function App() {
           ...(isMinimized ? {} : { height: chatFrame.height })
         }}
       >
-        <div className="ai-chat-card">
+        <div className="ai-chat-card" style={activeUserAccentStyle}>
           {isMinimized ? (
             chatHeader
           ) : !userName ? (
@@ -1117,10 +1129,11 @@ function App() {
                   latestAnnotation={latestAnnotation}
                   isStreamingActiveSession={isStreamingActiveSession}
                   isSessionOwner={true}
-                  hasChipAnswer={hasChipAnswer}
-                  setHasChipAnswer={setHasChipAnswer}
-                  askQuestionFooterRef={askQuestionFooterRef}
-                  onActivateInspect={activateInspect}
+          hasChipAnswer={hasChipAnswer}
+          setHasChipAnswer={setHasChipAnswer}
+          askQuestionFooterRef={askQuestionFooterRef}
+          accentStyle={activeUserAccentStyle}
+          onActivateInspect={activateInspect}
                   onInspectPillClear={clearInspectContext}
                   onStartAnnotating={toggleAnnotating}
                   onClearAnnotation={clearAnnotation}
@@ -1410,7 +1423,8 @@ function eventsToBubbleItems(events, userName = GUEST_USER_NAME) {
           header: <BubbleHeader label={userLabel} meta={[timestamp, modeLabel[entry.data?.mode]].filter(Boolean).join(" · ")} />,
           avatar: <UserAvatar label={userLabel} />,
           content: <MessageContent text={text} images={images} />,
-          copyText: text
+          copyText: text,
+          styles: getUserBubbleStyles(userLabel)
         })
       ];
     }
@@ -1597,7 +1611,8 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
         header: <BubbleHeader label={role === "user" ? userName : "Claude"} meta={meta} />,
         avatar: role === "assistant" ? <AssistantAvatar /> : <UserAvatar label={userName} />,
         content: <MessageContent text={text} images={images} />,
-        copyText: text
+        copyText: text,
+        styles: role === "user" ? getUserBubbleStyles(userName) : undefined
       })
     );
     return items;
@@ -1614,7 +1629,8 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
           header: <BubbleHeader label={userName} meta={meta} />,
           avatar: <UserAvatar label={userName} />,
           content: <MessageContent text={text} images={images} />,
-          copyText: text
+          copyText: text,
+          styles: getUserBubbleStyles(userName)
         })
       );
     }
@@ -1686,7 +1702,20 @@ function createBubbleItem(key, role, options) {
     avatar: options.avatar,
     content: options.content,
     copyText: options.copyText,
+    styles: options.styles,
     className: "ai-chat-bubble-item"
+  };
+}
+
+function getUserBubbleStyles(userName) {
+  const accentStyle = getUserAccentStyle(userName);
+  return {
+    content: {
+      background: accentStyle["--ai-chat-user-accent-bg"],
+      backgroundColor: accentStyle["--ai-chat-user-accent-bg"],
+      borderColor: accentStyle["--ai-chat-user-accent-border"],
+      color: accentStyle["--ai-chat-user-accent-fg"]
+    }
   };
 }
 

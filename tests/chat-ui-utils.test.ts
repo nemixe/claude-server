@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatMessageTimestamp, getMessageTimestamp } from "../client/src/agent-chat/chat-ui-utils.js";
+import {
+  formatMessageTimestamp,
+  getAvatarThemeFromLabel,
+  getMessageTimestamp,
+  getUserAccentStyle
+} from "../client/src/agent-chat/chat-ui-utils.js";
 
 describe("chat UI timestamp helpers", () => {
   afterEach(() => {
@@ -58,5 +63,17 @@ describe("chat UI timestamp helpers", () => {
     expect(getMessageTimestamp({ timestamp: "not a date", message: { timestamp: "also not a date" } })).toBe("");
     expect(formatMessageTimestamp("")).toBe("");
     expect(formatMessageTimestamp("not a date")).toBe("");
+  });
+});
+
+describe("chat UI user accent helpers", () => {
+  it("derives accent variables from the avatar theme", () => {
+    const avatarTheme = getAvatarThemeFromLabel("Jason");
+    const accentStyle = getUserAccentStyle("Jason");
+
+    expect(accentStyle["--ai-chat-user-accent-bg"]).toBe(avatarTheme.bg);
+    expect(accentStyle["--ai-chat-user-accent-fg"]).toBe(avatarTheme.fg);
+    expect(accentStyle["--ai-chat-user-accent-bg-hover"]).toMatch(/^rgba\(/);
+    expect(accentStyle["--ai-chat-user-accent-ring"]).toMatch(/^rgba\(/);
   });
 });

@@ -9,16 +9,29 @@ function extractTextFromReact(content) {
   return "";
 }
 
+function mergeBubbleStyles(baseStyles = {}, itemStyles = {}) {
+  return Object.fromEntries(
+    Array.from(new Set(Object.keys(baseStyles).concat(Object.keys(itemStyles)))).map((key) => [
+      key,
+      { ...(baseStyles[key] || {}), ...(itemStyles[key] || {}) }
+    ])
+  );
+}
+
 const MessageBubble = memo(({ roleConfig, item, writeClipboard }) => {
   const textContent = useMemo(
     () => (item.loading ? "" : item.copyText || extractTextFromReact(item.content)),
     [item.content, item.copyText, item.loading]
   );
+  const styles = useMemo(
+    () => mergeBubbleStyles(roleConfig.styles, item.styles),
+    [item.styles, roleConfig.styles]
+  );
 
   return (
     <Bubble
       placement={roleConfig.placement}
-      styles={roleConfig.styles}
+      styles={styles}
       classNames={roleConfig.classNames}
       messageRender={roleConfig.messageRender}
       content={item.content}

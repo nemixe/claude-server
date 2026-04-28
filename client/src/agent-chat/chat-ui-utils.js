@@ -37,6 +37,32 @@ export function getAvatarThemeFromLabel(value) {
   return AVATAR_THEMES[hash % AVATAR_THEMES.length];
 }
 
+export function getUserAccentStyle(value) {
+  const theme = getAvatarThemeFromLabel(value);
+
+  return {
+    "--ai-chat-user-accent-bg": theme.bg,
+    "--ai-chat-user-accent-bg-hover": hexToRgba(theme.bg, 0.68),
+    "--ai-chat-user-accent-bg-active": hexToRgba(theme.bg, 0.82),
+    "--ai-chat-user-accent-border": hexToRgba(theme.fg, 0.28),
+    "--ai-chat-user-accent-ring": hexToRgba(theme.fg, 0.18),
+    "--ai-chat-user-accent-fg": theme.fg,
+    "--ai-chat-user-accent-muted": hexToRgba(theme.fg, 0.68),
+    "--ai-chat-user-accent-strong": theme.bg,
+    "--ai-chat-user-accent-strong-text": theme.fg
+  };
+}
+
+function hexToRgba(value, alpha) {
+  const hex = typeof value === "string" ? value.replace("#", "") : "";
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return `rgba(22, 119, 255, ${alpha})`;
+
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 export function normalizeSessionTitle(title, fallback = "Untitled chat") {
   if (typeof title !== "string") return fallback;
   const normalized = title.replace(/\s+/g, " ").trim();
