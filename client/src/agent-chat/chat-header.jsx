@@ -9,12 +9,14 @@ import {
   MinusOutlined,
   MoreOutlined
 } from "@ant-design/icons";
+import { getAvatarThemeFromLabel } from "./chat-ui-utils.js";
 
 export default function ChatHeader({
   isSidebarOpen,
   onToggleSidebar,
   hasStreamingSessions,
   hasCurrentUserIdentity,
+  currentUserDisplayLabel,
   onLogout,
   onClose,
   onMinimize,
@@ -41,18 +43,6 @@ export default function ChatHeader({
     }
   ];
 
-  if (hasCurrentUserIdentity) {
-    menuItems.push(
-      { type: "divider" },
-      {
-        key: "logout",
-        label: "Logout",
-        icon: <LogoutOutlined />,
-        onClick: onLogout
-      }
-    );
-  }
-
   return (
     <div className="ai-chat-header" {...dragHandleProps}>
       <div className="ai-chat-title-shell">
@@ -74,6 +64,34 @@ export default function ChatHeader({
         />
         <div className="ai-chat-title-main">AI Assistant</div>
       </div>
+
+      {hasCurrentUserIdentity && currentUserDisplayLabel ? (
+        <Dropdown
+          menu={{
+            items: [{
+              key: "logout",
+              label: "Logout",
+              icon: <LogoutOutlined />,
+              onClick: onLogout
+            }]
+          }}
+          trigger={["click"]}
+        >
+          <button
+            type="button"
+            className="ai-chat-header-identity"
+            title="User menu"
+          >
+            <span
+              className="ai-chat-header-identity-avatar"
+              style={{ background: getAvatarThemeFromLabel(currentUserDisplayLabel).bg, color: getAvatarThemeFromLabel(currentUserDisplayLabel).fg }}
+            >
+              {currentUserDisplayLabel.charAt(0).toUpperCase()}
+            </span>
+            <span className="ai-chat-header-identity-name">{currentUserDisplayLabel}</span>
+          </button>
+        </Dropdown>
+      ) : null}
 
       <Space className="ai-chat-header-actions" size={2} onMouseDown={(event) => event.stopPropagation()}>
         <Dropdown menu={{ items: menuItems }} trigger={["click"]}>

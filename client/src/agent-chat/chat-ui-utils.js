@@ -53,6 +53,16 @@ export function getUserAccentStyle(value) {
   };
 }
 
+export function getCreateButtonAccentStyle(value) {
+  const theme = getAvatarThemeFromLabel(value);
+
+  return {
+    "--ai-chat-create-accent-border": hexToRgba(theme.fg, 0.28),
+    "--ai-chat-create-accent-bg-hover": hexToRgba(theme.bg, 0.68),
+    "--ai-chat-create-accent-fg": theme.fg
+  };
+}
+
 function hexToRgba(value, alpha) {
   const hex = typeof value === "string" ? value.replace("#", "") : "";
   if (!/^[0-9a-f]{6}$/i.test(hex)) return `rgba(22, 119, 255, ${alpha})`;

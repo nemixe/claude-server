@@ -33,6 +33,7 @@ import {
   getAvatarThemeFromLabel,
   getDisplayLabel,
   getUserAccentStyle,
+  getCreateButtonAccentStyle,
   normalizeUserLabel
 } from "./agent-chat/chat-ui-utils.js";
 
@@ -209,7 +210,8 @@ function App() {
   const displayUserName = activeSession
     ? getSessionUserName(activeSession)
     : getDisplayLabel(userName || GUEST_USER_NAME);
-  const activeUserAccentStyle = useMemo(() => getUserAccentStyle(displayUserName), [displayUserName]);
+  const accentStyle = useMemo(() => getUserAccentStyle(getDisplayLabel(userName || GUEST_USER_NAME)), [userName]);
+  const loggedInUserAccentStyle = useMemo(() => getCreateButtonAccentStyle(getDisplayLabel(userName || GUEST_USER_NAME)), [userName]);
   const bubbleItems = useMemo(() => eventsToBubbleItems(events, displayUserName), [displayUserName, events]);
   const bubbleRoles = useMemo(
     () => ({
@@ -994,6 +996,7 @@ function App() {
       onToggleSidebar={() => setIsSidebarOpen((value) => !value)}
       hasStreamingSessions={busy}
       hasCurrentUserIdentity={Boolean(userName)}
+      currentUserDisplayLabel={getDisplayLabel(userName || GUEST_USER_NAME)}
       onLogout={logoutIdentity}
       onClose={() => setIsClosed(true)}
       onMinimize={() => setIsMinimized((value) => !value)}
@@ -1036,7 +1039,7 @@ function App() {
           ...(isMinimized ? {} : { height: chatFrame.height })
         }}
       >
-        <div className="ai-chat-card" style={activeUserAccentStyle}>
+        <div className="ai-chat-card" style={accentStyle}>
           {isMinimized ? (
             chatHeader
           ) : !userName ? (
@@ -1072,6 +1075,7 @@ function App() {
                       onLoadMoreSessions={loadMoreSessions}
                       hasMoreSessions={sessionsHasMore}
                       isLoadingSessions={isSessionsLoading}
+                      loggedInUserAccentStyle={loggedInUserAccentStyle}
                     />
                     <DeveloperTools
                       maxTurns={maxTurns}
@@ -1132,7 +1136,7 @@ function App() {
           hasChipAnswer={hasChipAnswer}
           setHasChipAnswer={setHasChipAnswer}
           askQuestionFooterRef={askQuestionFooterRef}
-          accentStyle={activeUserAccentStyle}
+          accentStyle={accentStyle}
           onActivateInspect={activateInspect}
                   onInspectPillClear={clearInspectContext}
                   onStartAnnotating={toggleAnnotating}
@@ -1413,14 +1417,14 @@ function eventsToBubbleItems(events, userName = GUEST_USER_NAME) {
   const items = events.flatMap((entry) => {
     if (!entry) return [];
     const timestamp = formatMessageTimestamp(entry.timestamp);
-    const meta = [timestamp, entry.type === "history" ? "history" : ""].filter(Boolean).join(" · ");
+    const meta = timestamp;
 
     if (entry.type === "prompt") {
       const images = Array.isArray(entry.data?.images) ? entry.data.images : [];
       const text = entry.data?.prompt ? String(entry.data.prompt) : "";
       return [
         createBubbleItem(entry.id, "user", {
-          header: <BubbleHeader label={userLabel} meta={[timestamp, modeLabel[entry.data?.mode]].filter(Boolean).join(" · ")} />,
+          header: <BubbleHeader label={userLabel} meta={meta} timeFirst />,
           avatar: <UserAvatar label={userLabel} />,
           content: <MessageContent text={text} images={images} />,
           copyText: text,
@@ -1608,7 +1612,7 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
     if (!text && images.length === 0) return [];
     items.push(
       createBubbleItem(keyBase, role === "user" ? "user" : "assistant", {
-        header: <BubbleHeader label={role === "user" ? userName : "Claude"} meta={meta} />,
+        header: <BubbleHeader label={role === "user" ? userName : "Claude"} meta={meta} timeFirst={role === "user"} />,
         avatar: role === "assistant" ? <AssistantAvatar /> : <UserAvatar label={userName} />,
         content: <MessageContent text={text} images={images} />,
         copyText: text,
@@ -1626,7 +1630,7 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
     if (text || images.length > 0) {
       items.push(
         createBubbleItem(keyBase, "user", {
-          header: <BubbleHeader label={userName} meta={meta} />,
+          header: <BubbleHeader label={userName} meta={meta} timeFirst />,
           avatar: <UserAvatar label={userName} />,
           content: <MessageContent text={text} images={images} />,
           copyText: text,
@@ -1713,7 +1717,7 @@ function getUserBubbleStyles(userName) {
     content: {
       background: accentStyle["--ai-chat-user-accent-bg"],
       backgroundColor: accentStyle["--ai-chat-user-accent-bg"],
-      borderColor: accentStyle["--ai-chat-user-accent-border"],
+      border: `1px solid ${accentStyle["--ai-chat-user-accent-border"]}`,
       color: accentStyle["--ai-chat-user-accent-fg"]
     }
   };
@@ -1741,11 +1745,12 @@ function createToolActivity(key, label, details, tone = "tool", toolUseId) {
   };
 }
 
-function BubbleHeader({ label, meta }) {
+function BubbleHeader({ label, meta, timeFirst }) {
+  const labelEl = <span key="label">{label}</span>;
+  const metaEl = meta ? <small key="meta">{meta}</small> : null;
   return (
     <div className="ai-chat-bubble-header-inline">
-      <span>{label}</span>
-      {meta ? <small>{meta}</small> : null}
+      {timeFirst ? <>{metaEl}{labelEl}</> : <>{labelEl}{metaEl}</>}
     </div>
   );
 }

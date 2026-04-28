@@ -25,7 +25,8 @@ export default function SessionSidebar({
   onRefreshSessions,
   onLoadMoreSessions,
   hasMoreSessions,
-  isLoadingSessions
+  isLoadingSessions,
+  loggedInUserAccentStyle
 }) {
   const handleListScroll = useCallback(
     (event) => {
@@ -76,6 +77,7 @@ export default function SessionSidebar({
         <button
           type="button"
           className="ai-chat-session-item ai-chat-session-item-create"
+          style={loggedInUserAccentStyle}
           onClick={onCreateNewSession}
           aria-label="New session"
           title="New Session"
