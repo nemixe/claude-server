@@ -307,19 +307,23 @@ describe("Hono API", () => {
     ).resolves.toBe("From repo root");
   });
 
-  it("searches workspace files and folders with fuzzy path matching", async () => {
+  it("searches project root files and folders with fuzzy path matching", async () => {
     const config = await createTempConfig();
+    await fs.mkdir(path.join(config.projectRoot, "src/components"), { recursive: true });
+    await fs.mkdir(path.join(config.projectRoot, "docs"), { recursive: true });
+    await fs.mkdir(path.join(config.projectRoot, "node_modules/temp/agent-chat"), { recursive: true });
+    await Promise.all([
+      fs.writeFile(path.join(config.projectRoot, "src/components/Button.tsx"), "export const Button = () => null;", "utf8"),
+      fs.writeFile(path.join(config.projectRoot, "docs/agent-guide.md"), "# Agent guide", "utf8"),
+      fs.writeFile(path.join(config.projectRoot, "node_modules/temp/agent-chat/ignored.js"), "ignored", "utf8")
+    ]);
     const app = createApp({ config });
     const createResponse = await app.request("http://localhost/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
         mode: "plan",
-        title: "Search",
-        files: [
-          { path: "src/components/Button.tsx", content: "export const Button = () => null;" },
-          { path: "docs/agent-guide.md", content: "# Agent guide" }
-        ]
+        title: "Search"
       })
     });
     const created = (await createResponse.json()) as { sessionId: string };
@@ -348,9 +352,21 @@ describe("Hono API", () => {
     expect(fuzzyBody.results[0]?.score).toEqual(expect.any(Number));
     expect(fuzzyBody.results[0]?.updatedAt).toEqual(expect.any(String));
 
-    const invalidResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=`, {
+    const ignoredResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=ignored`, {
       headers: { host: "localhost" }
     });
-    expect(invalidResponse.status).toBe(400);
+    expect(ignoredResponse.status).toBe(200);
+    await expect(ignoredResponse.json()).resolves.toMatchObject({ results: [] });
+
+    const emptyResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=&limit=2`, {
+      headers: { host: "localhost" }
+    });
+    expect(emptyResponse.status).toBe(200);
+    const emptyBody = (await emptyResponse.json()) as { results: Array<Record<string, unknown>> };
+    expect(emptyBody.results).toHaveLength(2);
+    expect(emptyBody.results[0]).toMatchObject({
+      path: "docs",
+      score: 0
+    });
   });
 });

@@ -99,6 +99,8 @@ export default function ChatFooter({
   onClearUploads,
   slashCommands,
   mentionSuggestions,
+  mentionStatus = "idle",
+  onMentionSearch,
   formatBytes,
   estimateBase64Bytes,
   imageSrc
@@ -180,6 +182,20 @@ export default function ChatFooter({
     const el = senderRef.current;
     if (el) updateMention(senderValue, el.selectionStart ?? senderValue.length);
   }, [senderValue, updateMention]);
+
+  useEffect(() => {
+    if (!onMentionSearch) return undefined;
+    if (!isMentionActive) {
+      onMentionSearch(null);
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      onMentionSearch(mentionQuery);
+    }, mentionQuery.trim() ? 120 : 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [isMentionActive, mentionQuery, onMentionSearch]);
 
   useEffect(() => {
     if (!isSlashActive || !dropdownRef.current) return;
@@ -318,7 +334,14 @@ export default function ChatFooter({
   };
 
   const showSlashDropdown = isSlashActive && filteredCommands.length > 0;
-  const showMentionDropdown = isMentionActive && filteredFiles.length > 0;
+  const showMentionDropdown = isMentionActive && (filteredFiles.length > 0 || mentionStatus !== "idle");
+
+  const mentionEmptyText = {
+    loading: "Searching files...",
+    empty: mentionQuery.trim() ? "No matching files" : "No files in this session",
+    error: "Could not search files",
+    "needs-session": "Select or create a session to search files"
+  }[mentionStatus] || "No files found";
 
   return (
     <div className="ai-chat-footer">
@@ -464,6 +487,11 @@ export default function ChatFooter({
         ) : null}
         {showMentionDropdown ? (
           <div ref={mentionDropdownRef} className="ai-chat-slash-dropdown" role="listbox" aria-label="File mentions">
+            {filteredFiles.length === 0 ? (
+              <div className="ai-chat-slash-dropdown-item is-disabled" role="option" aria-disabled="true">
+                <span className="ai-chat-slash-dropdown-desc">{mentionEmptyText}</span>
+              </div>
+            ) : null}
             {filteredFiles.map((filePath, index) => {
               const isFolder = filePath.endsWith("/");
               const trimmed = isFolder ? filePath.slice(0, -1) : filePath;

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { type AllowedHostRule, parseAllowedHostList } from "./hostname.js";
 
 export type AppConfig = {
+  projectRoot: string;
   port: number;
   bindHost: string;
   allowedHosts: AllowedHostRule[];
@@ -41,6 +42,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
   }
 
   return {
+    projectRoot: cwd,
     port: parseInteger(raw.PORT, 3000, "PORT"),
     bindHost: raw.BIND_HOST ?? "0.0.0.0",
     allowedHosts,

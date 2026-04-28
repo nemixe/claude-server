@@ -573,37 +573,6 @@ body {
   font-size: 12px;
 }
 
-.ai-chat-search-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
-  gap: 6px;
-}
-
-.ai-chat-search-empty {
-  margin-top: 2px;
-}
-
-.ai-chat-search-results {
-  overflow: auto;
-  max-height: 180px;
-  border: 1px solid var(--ai-chat-color-border-light);
-  border-radius: 6px;
-}
-
-.search-result-path {
-  display: block;
-  margin-top: 2px;
-  color: #0958d9;
-  font-size: 11px;
-  word-break: break-word;
-}
-
-.search-result-meta {
-  margin-top: 4px;
-  color: var(--ai-chat-color-text-secondary);
-  font-size: 11px;
-}
-
 /* Messages */
 
 .ai-chat-messages {
@@ -1339,6 +1308,14 @@ body {
 .ai-chat-slash-dropdown-item:hover,
 .ai-chat-slash-dropdown-item.is-highlighted {
   background: var(--ai-chat-color-bg-secondary);
+}
+
+.ai-chat-slash-dropdown-item.is-disabled {
+  cursor: default;
+}
+
+.ai-chat-slash-dropdown-item.is-disabled:hover {
+  background: transparent;
 }
 
 .ai-chat-slash-dropdown-name {

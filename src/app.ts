@@ -76,7 +76,7 @@ const deleteClaudeCommandSchema = z.object({
 });
 
 const workspaceSearchSchema = z.object({
-  q: z.string().min(1).max(200),
+  q: z.string().max(200).default(""),
   limit: z.coerce.number().int().positive().max(200).default(50)
 });
 
@@ -140,7 +140,7 @@ export function createApp(dependencies: AppDependencies): Hono {
       q: c.req.query("q"),
       limit: c.req.query("limit")
     });
-    const results = await sessionStore.searchWorkspace(session, query.q, query.limit);
+    const results = await sessionStore.searchProjectFiles(query.q, query.limit);
     return c.json({ results });
   });
 

@@ -7,6 +7,7 @@ import type { ClaudeCommand, ClaudeCommandInput, ClaudeMode, SessionMetadata, Up
 const CLAUDE_COMMANDS_DIR = ".claude/commands";
 const DEFAULT_WORKSPACE_SEARCH_LIMIT = 50;
 const MAX_WORKSPACE_SEARCH_LIMIT = 200;
+const PROJECT_SEARCH_IGNORED_DIRS = new Set([".data", ".git", "dist", "node_modules"]);
 
 export type CreateSessionInput = {
   mode: ClaudeMode;
@@ -138,12 +139,21 @@ export class SessionStore {
     }
   }
 
-  async searchWorkspace(session: SessionMetadata, query: string, limit = DEFAULT_WORKSPACE_SEARCH_LIMIT): Promise<WorkspaceSearchResult[]> {
+  async searchProjectFiles(query: string, limit = DEFAULT_WORKSPACE_SEARCH_LIMIT): Promise<WorkspaceSearchResult[]> {
     const normalizedQuery = normalizeSearchValue(query);
     const boundedLimit = Math.min(Math.max(limit, 1), MAX_WORKSPACE_SEARCH_LIMIT);
-    if (!normalizedQuery) return [];
 
-    const entries = await listWorkspaceEntries(session.workspacePath);
+    const entries = await listSearchEntries(this.config.projectRoot, {
+      ignoredDirectoryNames: PROJECT_SEARCH_IGNORED_DIRS,
+      ignoredRootPaths: [this.config.workspaceDir, this.config.sessionDir]
+    });
+    if (!normalizedQuery) {
+      return entries
+        .map((entry) => ({ ...entry, score: 0 }))
+        .sort((left, right) => left.path.localeCompare(right.path))
+        .slice(0, boundedLimit);
+    }
+
     return entries
       .map((entry) => {
         const score = fuzzyScore(normalizedQuery, normalizeSearchValue(entry.path));
@@ -275,7 +285,14 @@ async function listMarkdownFiles(root: string, current: string = root): Promise<
   return files.flat();
 }
 
-async function listWorkspaceEntries(root: string, current: string = root): Promise<Omit<WorkspaceSearchResult, "score">[]> {
+async function listSearchEntries(
+  root: string,
+  options: {
+    ignoredDirectoryNames?: Set<string>;
+    ignoredRootPaths?: string[];
+  } = {},
+  current: string = root
+): Promise<Omit<WorkspaceSearchResult, "score">[]> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(current, { withFileTypes: true });
@@ -289,6 +306,7 @@ async function listWorkspaceEntries(root: string, current: string = root): Promi
     entries.map(async (entry) => {
       const entryPath = path.join(current, entry.name);
       if (entry.isSymbolicLink()) return [];
+      if (entry.isDirectory() && shouldIgnoreSearchDirectory(entryPath, entry.name, options)) return [];
 
       const relativePath = path.relative(root, entryPath).replaceAll(path.sep, "/");
       const stat = await fs.stat(entryPath);
@@ -301,11 +319,25 @@ async function listWorkspaceEntries(root: string, current: string = root): Promi
       };
 
       if (!entry.isDirectory()) return [result];
-      return [result, ...(await listWorkspaceEntries(root, entryPath))];
+      return [result, ...(await listSearchEntries(root, options, entryPath))];
     })
   );
 
   return results.flat();
+}
+
+function shouldIgnoreSearchDirectory(
+  entryPath: string,
+  entryName: string,
+  options: {
+    ignoredDirectoryNames?: Set<string>;
+    ignoredRootPaths?: string[];
+  }
+): boolean {
+  if (options.ignoredDirectoryNames?.has(entryName)) return true;
+
+  const normalizedEntryPath = path.resolve(entryPath);
+  return Boolean(options.ignoredRootPaths?.some((ignoredPath) => path.resolve(ignoredPath) === normalizedEntryPath));
 }
 
 function normalizeSearchValue(value: string): string {

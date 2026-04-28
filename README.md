@@ -51,15 +51,15 @@ await client.streamMessage(sessionId, {
 
 The API accepts up to 5 images per prompt, 5 MB decoded per image, using `image/jpeg`, `image/png`, `image/gif`, or `image/webp`.
 
-## Workspace search
+## Project search
 
-Search file and folder paths inside a session workspace with fuzzy matching:
+Search file and folder paths inside the server project root with fuzzy matching:
 
 ```ts
 const { results } = await client.searchFiles(sessionId, "cmpbtn", { limit: 10 });
 ```
 
-Each result includes `path`, `name`, `type`, `score`, `updatedAt`, and `size` for files. Results are limited to the session workspace and do not search the host project.
+Each result includes `path`, `name`, `type`, `score`, `updatedAt`, and `size` for files. Results are relative to the server project root. Generated directories such as `.data`, `.git`, `dist`, and `node_modules` are skipped.
 
 ## Claude commands
 

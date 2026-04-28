@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "antd/dist/reset.css";
 import "./styles.css";
 import {
   CopyOutlined,
   DeleteOutlined,
-  FileSearchOutlined,
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
@@ -18,7 +17,6 @@ import {
   Drawer,
   Input,
   InputNumber,
-  List,
   Select,
   Space,
   Tag
@@ -43,7 +41,6 @@ const modeLabel = {
 };
 
 function App() {
-  const [baseUrl, setBaseUrl] = useState(window.location.origin);
   const [status, setStatus] = useState("Idle");
   const [sessionId, setSessionId] = useState("");
   const [sessions, setSessions] = useState([]);
@@ -62,10 +59,8 @@ function App() {
   const [commandPath, setCommandPath] = useState("");
   const [commandContent, setCommandContent] = useState("");
   const [commandsHint, setCommandsHint] = useState("Pick a session to manage slash commands");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchLimit, setSearchLimit] = useState(20);
-  const [searchResults, setSearchResults] = useState([]);
-  const [searchHint, setSearchHint] = useState("Pick a session to search files and folders");
+  const [fileMentionSuggestions, setFileMentionSuggestions] = useState([]);
+  const [fileMentionStatus, setFileMentionStatus] = useState("idle");
   const [isSending, setIsSending] = useState(false);
   const [isObservedRunning, setIsObservedRunning] = useState(false);
   const [historyCopyLabel, setHistoryCopyLabel] = useState("Copy JSON");
@@ -79,7 +74,8 @@ function App() {
   const observeControllerRef = useRef();
   const askQuestionFooterRef = useRef(null);
   const sessionIdRef = useRef("");
-  const baseUrlRef = useRef(baseUrl);
+  const baseUrlRef = useRef(window.location.origin);
+  const mentionSearchRequestRef = useRef(0);
   const commandsRef = useRef([]);
   const historyCopyTimeoutRef = useRef();
   const chatRef = useRef(null);
@@ -88,10 +84,6 @@ function App() {
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
-
-  useEffect(() => {
-    baseUrlRef.current = baseUrl;
-  }, [baseUrl]);
 
   useEffect(() => {
     commandsRef.current = commands;
@@ -159,11 +151,47 @@ function App() {
     }),
     []
   );
-  const mentionSuggestions = useMemo(() => {
-    const paths = searchResults.map((result) => result.path).filter(Boolean);
-    return Array.from(new Set(paths));
-  }, [searchResults]);
   const activeAskUserQuestion = useMemo(() => getActiveAskUserQuestion(events), [events]);
+
+  const searchFileMentions = useCallback(async (query) => {
+    const requestId = mentionSearchRequestRef.current + 1;
+    mentionSearchRequestRef.current = requestId;
+
+    const activeSessionId = sessionIdRef.current;
+    if (query === null) {
+      setFileMentionSuggestions([]);
+      setFileMentionStatus("idle");
+      return;
+    }
+    if (!activeSessionId) {
+      setFileMentionSuggestions([]);
+      setFileMentionStatus("needs-session");
+      return;
+    }
+    const normalizedQuery = String(query || "").trim();
+
+    setFileMentionStatus("loading");
+    try {
+      const result = await getJson(
+        "/v1/sessions/" +
+          encodeURIComponent(activeSessionId) +
+          "/files:search?q=" +
+          encodeURIComponent(normalizedQuery) +
+          "&limit=50"
+      );
+      if (mentionSearchRequestRef.current !== requestId) return;
+      const paths = (Array.isArray(result.results) ? result.results : [])
+        .map((item) => item.path)
+        .filter(Boolean);
+      setFileMentionSuggestions(Array.from(new Set(paths)));
+      setFileMentionStatus(paths.length > 0 ? "ready" : "empty");
+    } catch {
+      if (mentionSearchRequestRef.current === requestId) {
+        setFileMentionSuggestions([]);
+        setFileMentionStatus("error");
+      }
+    }
+  }, []);
 
   function apiPath(path) {
     return String(baseUrlRef.current || "").replace(/\/$/, "") + path;
@@ -193,11 +221,6 @@ function App() {
 
   async function loadSessions(options = {}) {
     const saved = readSavedSession();
-    if (options.restoreSaved && saved && saved.baseUrl) {
-      setBaseUrl(saved.baseUrl);
-      baseUrlRef.current = saved.baseUrl;
-    }
-
     try {
       const result = await getJson("/v1/sessions");
       const nextSessions = Array.isArray(result.sessions) ? result.sessions : [];
@@ -230,8 +253,8 @@ function App() {
       rememberSession({ sessionId: id });
       setEvents([]);
       appendEntry("session_created", created);
-      setSearchResults([]);
-      setSearchHint("Enter a query to search this session workspace");
+      setFileMentionSuggestions([]);
+      setFileMentionStatus("idle");
       await loadSessions({ restoreSaved: false });
       await loadClaudeCommands(id);
       observeSession(id);
@@ -245,8 +268,8 @@ function App() {
   async function loadSessionView(id, eventName, session) {
     stopObserving();
     setEvents([]);
-    setSearchResults([]);
-    setSearchHint("Enter a query to search this session workspace");
+    setFileMentionSuggestions([]);
+    setFileMentionStatus("idle");
 
     if (session) appendEntry(eventName, session);
     await loadClaudeCommands(id);
@@ -447,43 +470,6 @@ function App() {
     }
   }
 
-  async function runWorkspaceSearch() {
-    const id = sessionIdRef.current;
-    if (!id) {
-      appendEntry("client_error", "Select or create a session before searching the workspace");
-      return;
-    }
-
-    const query = String(searchQuery || "").trim();
-    if (!query) {
-      setSearchResults([]);
-      setSearchHint("Enter a query to search this session workspace");
-      return;
-    }
-
-    setSearchHint("Searching workspace paths");
-    try {
-      const result = await getJson(
-        "/v1/sessions/" +
-          encodeURIComponent(id) +
-          "/files:search?q=" +
-          encodeURIComponent(query) +
-          "&limit=" +
-          encodeURIComponent(String(searchLimit || 20))
-      );
-      const nextResults = Array.isArray(result.results) ? result.results : [];
-      setSearchResults(nextResults);
-      setSearchHint(
-        nextResults.length > 0
-          ? "Search results from the selected session workspace"
-          : "No matching files or folders in this session workspace"
-      );
-    } catch (error) {
-      setSearchHint("Could not search workspace");
-      appendEntry("client_error", "Could not search workspace: " + errorMessage(error));
-    }
-  }
-
   async function observeSession(id) {
     stopObserving();
     const controller = new AbortController();
@@ -641,20 +627,19 @@ function App() {
     setSessionId("");
     sessionIdRef.current = "";
     setCommands([]);
-    setSearchResults([]);
+    setFileMentionSuggestions([]);
+    setFileMentionStatus("idle");
     localStorage.removeItem(storageKey);
     setEvents([]);
     clearCommandEditor();
     setCommandsHint("Pick a session to manage slash commands");
-    setSearchHint("Pick a session to search files and folders");
   }
 
   function rememberSession(session) {
     localStorage.setItem(
       storageKey,
       JSON.stringify({
-        sessionId: session.sessionId,
-        baseUrl: String(baseUrlRef.current || "").replace(/\/$/, "")
+        sessionId: session.sessionId
       })
     );
   }
@@ -823,8 +808,6 @@ function App() {
                     onRefreshSessions={() => loadSessions({ restoreSaved: false })}
                   />
                   <DeveloperTools
-                    baseUrl={baseUrl}
-                    setBaseUrl={setBaseUrl}
                     sessionId={sessionId}
                     maxTurns={maxTurns}
                     setMaxTurns={setMaxTurns}
@@ -841,17 +824,6 @@ function App() {
                     saveCommand={saveCommand}
                     deleteCommand={deleteCommand}
                     clearCommandEditor={clearCommandEditor}
-                    searchQuery={searchQuery}
-                    setSearchQuery={setSearchQuery}
-                    searchLimit={searchLimit}
-                    setSearchLimit={setSearchLimit}
-                    searchHint={searchHint}
-                    searchResults={searchResults}
-                    runWorkspaceSearch={runWorkspaceSearch}
-                    clearSearch={() => {
-                      setSearchQuery("");
-                      setSearchResults([]);
-                    }}
                     clearEvents={() => setEvents([])}
                     openHistory={() => setIsHistoryOpen(true)}
                   />
@@ -896,7 +868,9 @@ function App() {
                   onRemoveUpload={(id) => setSelectedImages((current) => current.filter((image) => image.id !== id))}
                   onClearUploads={() => setSelectedImages([])}
                   slashCommands={slashCommands}
-                  mentionSuggestions={mentionSuggestions}
+                  mentionSuggestions={fileMentionSuggestions}
+                  mentionStatus={fileMentionStatus}
+                  onMentionSearch={searchFileMentions}
                   formatBytes={formatBytes}
                   estimateBase64Bytes={estimateBase64Bytes}
                   imageSrc={imageSrc}
@@ -967,15 +941,6 @@ function DeveloperTools(props) {
       ),
       children: (
         <div className="ai-chat-tool-panel">
-          <label className="ai-chat-field">
-            <span>API base URL</span>
-            <Input
-              size="small"
-              value={props.baseUrl}
-              placeholder="http://localhost:3000"
-              onChange={(event) => props.setBaseUrl(event.target.value)}
-            />
-          </label>
           <label className="ai-chat-field">
             <span>Max turns</span>
             <InputNumber
@@ -1068,46 +1033,6 @@ function DeveloperTools(props) {
         </div>
       )
     },
-    {
-      key: "search",
-      label: (
-        <span className="ai-chat-tool-label">
-          <FileSearchOutlined /> Workspace Search
-        </span>
-      ),
-      children: (
-        <div className="ai-chat-tool-panel">
-          <p className="ai-chat-tool-hint">{props.searchHint}</p>
-          <div className="ai-chat-search-row">
-            <Input
-              size="small"
-              disabled={!props.sessionId}
-              value={props.searchQuery}
-              placeholder="cmpbtn"
-              onChange={(event) => props.setSearchQuery(event.target.value)}
-              onPressEnter={props.runWorkspaceSearch}
-            />
-            <InputNumber
-              size="small"
-              disabled={!props.sessionId}
-              min={1}
-              max={200}
-              value={props.searchLimit}
-              onChange={(value) => props.setSearchLimit(value || 20)}
-            />
-          </div>
-          <Space size={6} wrap>
-            <Button size="small" type="primary" disabled={!props.sessionId} onClick={props.runWorkspaceSearch}>
-              Search
-            </Button>
-            <Button size="small" disabled={!props.sessionId} onClick={props.clearSearch}>
-              Clear
-            </Button>
-          </Space>
-          <SearchResults results={props.searchResults} query={props.searchQuery} />
-        </div>
-      )
-    }
   ];
 
   return (
@@ -1117,32 +1042,6 @@ function DeveloperTools(props) {
       className="ai-chat-tools"
       items={collapseItems}
       defaultActiveKey={["settings"]}
-    />
-  );
-}
-
-function SearchResults({ results, query }) {
-  if (!results || results.length === 0) {
-    return <Alert className="ai-chat-search-empty" type="info" message={String(query || "").trim() ? "No matching files or folders" : "Search results will appear here"} />;
-  }
-  return (
-    <List
-      className="ai-chat-search-results"
-      size="small"
-      dataSource={results}
-      renderItem={(result) => (
-        <List.Item>
-          <div>
-            <strong>{result.name || result.path || "Untitled"}</strong>
-            <code className="search-result-path">{result.path || ""}</code>
-            <div className="search-result-meta">
-              {[result.type || "file", Number.isFinite(result.score) ? "score " + result.score : "", result.size ? formatBytes(result.size) : "", result.updatedAt ? new Date(result.updatedAt).toLocaleString() : ""]
-                .filter(Boolean)
-                .join(" · ")}
-            </div>
-          </div>
-        </List.Item>
-      )}
     />
   );
 }
