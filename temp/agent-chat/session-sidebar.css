@@ -168,7 +168,7 @@
   display: block;
   font-size: 13px;
   line-height: 1.4;
-  color: #202124;
+  color: rgb(96, 97, 99);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -183,10 +183,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.ai-chat-session-item.active .ai-chat-session-title {
-  color: #1677ff;
 }
 
 .ai-chat-session-item.active .ai-chat-session-meta {
