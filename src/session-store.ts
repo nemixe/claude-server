@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import type { ClaudeCommand, ClaudeCommandInput, ClaudeMode, SessionMetadata, UploadedFile, WorkspaceSearchResult } from "./types.js";
+import { CLAUDE_MODES, type ClaudeCommand, type ClaudeCommandInput, type ClaudeMode, type SessionMetadata, type UploadedFile, type WorkspaceSearchResult } from "./types.js";
 
 const CLAUDE_COMMANDS_DIR = ".claude/commands";
 const DEFAULT_WORKSPACE_SEARCH_LIMIT = 50;
@@ -262,7 +262,8 @@ export class SessionStore {
   private async readMetadata(filePath: string): Promise<SessionMetadata | undefined> {
     try {
       const raw = await fs.readFile(filePath, "utf8");
-      return JSON.parse(raw) as SessionMetadata;
+      const parsed = JSON.parse(raw);
+      return isSessionMetadata(parsed) ? parsed : undefined;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") return undefined;
@@ -319,6 +320,24 @@ export class SessionStore {
       throw error;
     }
   }
+}
+
+function isSessionMetadata(value: unknown): value is SessionMetadata {
+  if (!value || typeof value !== "object") return false;
+  const metadata = value as Partial<SessionMetadata>;
+  return (
+    typeof metadata.id === "string" &&
+    metadata.id.trim().length > 0 &&
+    typeof metadata.workspacePath === "string" &&
+    metadata.workspacePath.trim().length > 0 &&
+    typeof metadata.createdAt === "string" &&
+    metadata.createdAt.trim().length > 0 &&
+    typeof metadata.updatedAt === "string" &&
+    metadata.updatedAt.trim().length > 0 &&
+    typeof metadata.hasRun === "boolean" &&
+    typeof metadata.mode === "string" &&
+    (CLAUDE_MODES as readonly string[]).includes(metadata.mode)
+  );
 }
 
 export function sanitizeWorkspaceRelativePath(value: string): string {

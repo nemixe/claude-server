@@ -518,6 +518,13 @@ describe("Hono API", () => {
     expect(persisted.maxConcurrentRuns).toBe(8);
     expect(persisted.maxTurns).toBe(50);
 
+    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+      headers: { host: "localhost" }
+    });
+    expect(sessionsResponse.status).toBe(200);
+    const sessionsBody = (await sessionsResponse.json()) as { sessions: unknown[] };
+    expect(sessionsBody.sessions).toEqual([]);
+
     // Verify a fresh app instance loads persisted values
     const freshApp = await createApp({ config });
     const freshGet = await freshApp.request("http://localhost/v1/settings", {

@@ -118,8 +118,14 @@ body {
 }
 
 .ai-chat-resizing,
-.ai-chat-resizing * {
+.ai-chat-resizing *,
+.ai-chat-dragging,
+.ai-chat-dragging * {
   user-select: none !important;
+}
+
+.ai-chat-dragging .ai-chat-floating {
+  will-change: transform;
 }
 
 .ai-chat-two-columns {
@@ -272,6 +278,7 @@ body {
   padding: 8px 10px;
   background: var(--ai-chat-color-bg);
   cursor: grab;
+  touch-action: none;
   user-select: none;
 }
 

@@ -126,6 +126,7 @@ function App() {
   const streamQueueRef = useRef([]);
   const streamFrameRef = useRef(null);
   const streamTimeoutRef = useRef(null);
+  const dragFrameRef = useRef(null);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -156,6 +157,7 @@ function App() {
       stopObserving();
       if (historyCopyTimeoutRef.current) window.clearTimeout(historyCopyTimeoutRef.current);
       cancelQueuedStreamFlush();
+      if (dragFrameRef.current) window.cancelAnimationFrame(dragFrameRef.current);
       if (controllerRef.current) controllerRef.current.abort();
     };
   }, []);
@@ -1005,32 +1007,62 @@ function App() {
 
   function startDrag(event) {
     if (event.button !== undefined && event.button !== 0) return;
+    if (window.innerWidth <= 768) return;
     if (event.target.closest("button, input, textarea, select, a, .ant-dropdown, .ant-drawer")) return;
+    event.preventDefault();
     const origin = chatFrameRef.current;
+    const dragNode = chatRef.current;
     const dragStart = {
       pointerX: event.clientX,
       pointerY: event.clientY,
       originX: origin.x,
       originY: origin.y
     };
+    let nextFrame = origin;
+    let pendingOffset = { x: 0, y: 0 };
+    const restoreInteraction = beginDragInteraction();
+
+    function applyPendingOffset() {
+      dragFrameRef.current = null;
+      if (!dragNode) return;
+      dragNode.style.transform = `translate3d(${pendingOffset.x}px, ${pendingOffset.y}px, 0)`;
+    }
 
     function move(pointerEvent) {
-      setChatFrame((current) =>
-        clampChatFrame({
-          ...current,
-          x: dragStart.originX + pointerEvent.clientX - dragStart.pointerX,
-          y: dragStart.originY + pointerEvent.clientY - dragStart.pointerY
-        })
-      );
+      nextFrame = clampChatFrame({
+        ...origin,
+        x: dragStart.originX + pointerEvent.clientX - dragStart.pointerX,
+        y: dragStart.originY + pointerEvent.clientY - dragStart.pointerY
+      });
+      pendingOffset = {
+        x: nextFrame.x - dragStart.originX,
+        y: nextFrame.y - dragStart.originY
+      };
+      if (!dragFrameRef.current) {
+        dragFrameRef.current = window.requestAnimationFrame(applyPendingOffset);
+      }
     }
 
     function stop() {
+      if (dragFrameRef.current) {
+        window.cancelAnimationFrame(dragFrameRef.current);
+        dragFrameRef.current = null;
+      }
+      if (dragNode) {
+        dragNode.style.left = nextFrame.x + "px";
+        dragNode.style.top = nextFrame.y + "px";
+        dragNode.style.transform = "";
+      }
+      restoreInteraction();
+      setChatFrame(nextFrame);
       window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointercancel", stop);
       window.removeEventListener("pointerup", stop);
     }
 
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop, { once: true });
+    window.addEventListener("pointercancel", stop, { once: true });
   }
 
   function startWindowResize(event, direction) {
@@ -2212,6 +2244,16 @@ function beginResizeInteraction(cursor) {
   return () => {
     document.body.classList.remove("ai-chat-resizing");
     document.body.style.cursor = previousCursor;
+    document.body.style.userSelect = previousUserSelect;
+  };
+}
+
+function beginDragInteraction() {
+  const previousUserSelect = document.body.style.userSelect;
+  document.body.classList.add("ai-chat-dragging");
+  document.body.style.userSelect = "none";
+  return () => {
+    document.body.classList.remove("ai-chat-dragging");
     document.body.style.userSelect = previousUserSelect;
   };
 }
