@@ -1714,7 +1714,6 @@ function getUserBubbleStyles(userName) {
     content: {
       background: accentStyle["--ai-chat-user-accent-bg"],
       backgroundColor: accentStyle["--ai-chat-user-accent-bg"],
-      border: `1px solid ${accentStyle["--ai-chat-user-accent-border"]}`,
       color: accentStyle["--ai-chat-user-accent-fg"]
     }
   };
