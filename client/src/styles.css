@@ -755,7 +755,7 @@ body {
 
 .ai-chat-session-item.active .ai-chat-session-title {
   color: var(--ai-chat-color-text-primary);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .ai-chat-session-item.active .ai-chat-session-user {
