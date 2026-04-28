@@ -461,8 +461,8 @@ body {
 .ai-chat-sessions-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
-  gap: 7px;
-  padding: 9px 10px 8px;
+  gap: 8px;
+  padding: 12px 12px 10px;
   min-width: 0;
 }
 
@@ -583,11 +583,11 @@ body {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   min-height: 130px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 8px var(--ai-chat-space-md);
+  padding: 0 10px var(--ai-chat-space-md);
 }
 
 .ai-chat-sessions-empty {
@@ -645,10 +645,10 @@ body {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   border: none;
   border-radius: var(--ai-chat-radius-md);
-  padding: 8px 9px;
+  padding: 10px 12px;
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -693,13 +693,13 @@ body {
 
 .ai-chat-session-avatar {
   display: flex;
-  flex: 0 0 24px;
+  flex: 0 0 28px;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--ai-chat-radius-circle);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1;
 }
@@ -709,7 +709,7 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .ai-chat-session-title {
@@ -717,9 +717,9 @@ body {
   min-width: 0;
   overflow: hidden;
   color: #202124;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -731,8 +731,8 @@ body {
   min-width: 0;
   overflow: hidden;
   color: #7d8085;
-  font-size: 10.5px;
-  line-height: 1.4;
+  font-size: 11.5px;
+  line-height: 1.45;
   white-space: nowrap;
 }
 
