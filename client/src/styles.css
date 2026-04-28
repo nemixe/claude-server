@@ -657,11 +657,11 @@ body {
 }
 
 .ai-chat-session-item:hover:not(:disabled):not(.ai-chat-session-item-create) {
-  background: var(--ai-chat-user-accent-bg-hover);
+  background: var(--ai-chat-color-bg-secondary);
 }
 
 .ai-chat-session-item.active {
-  background: var(--ai-chat-user-accent-bg-active);
+  background: var(--ai-chat-color-bg-secondary);
 }
 
 .ai-chat-session-item-create {
@@ -754,20 +754,20 @@ body {
 }
 
 .ai-chat-session-item.active .ai-chat-session-title {
-  color: var(--ai-chat-user-accent-fg);
+  color: var(--ai-chat-color-text-primary);
   font-weight: 700;
 }
 
 .ai-chat-session-item.active .ai-chat-session-user {
-  color: var(--ai-chat-user-accent-fg);
+  color: var(--ai-chat-color-text-primary);
 }
 
 .ai-chat-session-item.active .ai-chat-session-meta {
-  color: var(--ai-chat-user-accent-muted);
+  color: var(--ai-chat-color-text-secondary);
 }
 
 .ai-chat-session-item.active .ai-chat-session-details {
-  color: var(--ai-chat-user-accent-muted);
+  color: var(--ai-chat-color-text-secondary);
 }
 
 /* Developer tools */
