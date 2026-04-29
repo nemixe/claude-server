@@ -1,13 +1,23 @@
 {
   "name": "claude-server",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/app.d.ts",
+  "bin": {
+    "claude-server": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example"
+  ],
   "exports": {
     ".": "./dist/app.js",
     "./client": "./dist/client.js",
-    "./chat-contract": "./dist/chat-contract.js"
+    "./chat-contract": "./dist/chat-contract.js",
+    "./config": "./dist/config-file.js",
+    "./server": "./dist/server.js"
   },
   "scripts": {
     "dev": "npm run build:client && tsx watch src/index.ts",

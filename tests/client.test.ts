@@ -198,4 +198,59 @@ describe("browser client", () => {
       })
     );
   });
+
+  it("uses only standard /v1 routes for AI tool operations", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/v1/sessions")) {
+        return new Response(
+          JSON.stringify({ id: "s1", sessionId: "s1", mode: "plan", createdAt: "now", updatedAt: "now", hasRun: false }),
+          { status: 201, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (url.endsWith("/messages:stream")) {
+        return new Response("event: done\ndata: {\"ok\":true}\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream" }
+        });
+      }
+      if (url.endsWith("/interrupt")) {
+        return new Response(JSON.stringify({ interrupted: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.includes("/files:search")) {
+        return new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.endsWith("/v1/claude-commands")) {
+        return new Response(JSON.stringify({ commands: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    const session = await client.createSession({ mode: "plan", title: "Prototype" });
+    await client.streamMessage(session.sessionId, { prompt: "Change the UI" });
+    await client.interrupt(session.sessionId);
+    await client.searchFiles(session.sessionId, "button");
+    await client.listClaudeCommands(session.sessionId);
+
+    const urls = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(urls).toEqual([
+      "https://api.example.com/v1/sessions",
+      "https://api.example.com/v1/sessions/s1/messages:stream",
+      "https://api.example.com/v1/sessions/s1/interrupt",
+      "https://api.example.com/v1/sessions/s1/files:search?q=button",
+      "https://api.example.com/v1/claude-commands"
+    ]);
+    expect(urls.every((url) => url.includes("/v1/"))).toBe(true);
+    expect(urls.every((url) => !url.includes("/api/agent"))).toBe(true);
+  });
 });

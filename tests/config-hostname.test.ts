@@ -39,6 +39,26 @@ describe("config and hostname parsing", () => {
     expect(config.sessionDir).toBe(path.join(root, ".data", "sessions"));
   });
 
+  it("loads custom multi-instance port and isolated data directories", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-instance-root-"));
+    const config = loadConfig(
+      {
+        PORT: "3002",
+        PROJECT_ROOT: root,
+        SESSION_DIR: ".data/claude-server/prototype-b/sessions",
+        WORKSPACE_DIR: ".data/claude-server/prototype-b/workspaces",
+        ALLOWED_HOSTNAMES: "prototype.example.com,localhost"
+      },
+      process.cwd()
+    );
+
+    expect(config.port).toBe(3002);
+    expect(config.projectRoot).toBe(root);
+    expect(config.sessionDir).toBe(path.join(root, ".data", "claude-server", "prototype-b", "sessions"));
+    expect(config.workspaceDir).toBe(path.join(root, ".data", "claude-server", "prototype-b", "workspaces"));
+    expect(config.allowedHosts).toEqual([{ hostname: "prototype.example.com" }, { hostname: "localhost" }]);
+  });
+
   it("prefers explicit projectRoot options over PROJECT_ROOT env", async () => {
     const envRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-env-root-"));
     const optionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-option-root-"));

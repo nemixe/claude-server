@@ -16,6 +16,47 @@ The test client defaults to `30` max turns; lower or raise the server cap with `
 The browser client also supports local PNG, JPEG, GIF, and WebP image prompts. Sent images are passed to Claude as base64 image content blocks and previewed from session history when available.
 Set `PROJECT_ROOT` to control the project directory Claude runs in, where `.claude/commands` is read from, and where `@` file mentions search.
 
+## Plug-and-play integration
+
+Use the CLI to generate a backend instance for any prototype repository:
+
+```bash
+npx claude-server init --name prototype-a --port 3001 --project-root /srv/prototype-a
+claude-server start --config ./claude-server.config.mjs
+```
+
+The generated config uses isolated data paths:
+
+```txt
+SESSION_DIR=.data/claude-server/prototype-a/sessions
+WORKSPACE_DIR=.data/claude-server/prototype-a/workspaces
+```
+
+For several prototypes on the same VPS, repeat `init` with a unique `--name`, `--port`, and `--project-root`.
+Point each frontend proxy at the matching backend, for example `/v1/* -> http://127.0.0.1:3001/v1/*`.
+
+You can also embed the server in an existing Hono/Node backend:
+
+```ts
+import { createApp } from "claude-server";
+import { loadConfig } from "claude-server/config";
+```
+
+AI tools should use the standard client:
+
+```ts
+import { createClaudeClient } from "claude-server/client";
+
+const client = createClaudeClient({ baseUrl: "http://localhost:3001" });
+const session = await client.createSession({ mode: "plan", title: "Prototype edit" });
+
+await client.streamMessage(session.sessionId, { prompt: "Improve the dashboard empty state" }, {
+  onMessage(message) {
+    console.log(message);
+  }
+});
+```
+
 ## Endpoints
 
 - `GET /health`
@@ -34,6 +75,7 @@ Set `PROJECT_ROOT` to control the project directory Claude runs in, where `.clau
 - `DELETE /v1/sessions/:sessionId`
 
 Modes are `plan`, `edit`, and `bypass`. Tool execution runs from the configured project root with Agent SDK sandboxing enabled. Session metadata remains under `SESSION_DIR`.
+The `/v1/*` routes are the standard integration contract; `/api/agent/*` routes are intentionally not provided by this package.
 
 ## Image prompts
 
@@ -80,9 +122,9 @@ await client.deleteClaudeCommand(sessionId, "review/fix.md");
 
 The API also accepts `.claude/commands/review/fix.md` as input, but persisted command paths are returned as `review/fix.md`.
 
-## Legacy web chat contract
+## Web chat contract
 
-Use `claude-server/chat-contract` when integrating with an existing chat UI that expects normal chat messages instead of raw Agent SDK events.
+Use `claude-server/chat-contract` when integrating with a chat UI that expects normal chat messages instead of raw Agent SDK events.
 
 ```ts
 import { createClaudeWebChatContract } from "claude-server/chat-contract";
@@ -97,7 +139,7 @@ const { session, messages, runResult } = await chat.sendMessage(
   },
   {
     onMessage(message) {
-      // Append user/assistant messages to your legacy chat transcript.
+      // Append user/assistant messages to your chat transcript.
       console.log(message.role, message.text, message.images);
     },
     onRunResult(result) {
