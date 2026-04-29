@@ -1735,7 +1735,7 @@ body {
 
 .ai-chat-footer-approval-footer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   border-top: 1px solid var(--ai-chat-color-border-light);
   background: #fff;
 }

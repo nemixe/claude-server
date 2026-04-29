@@ -297,7 +297,11 @@ export default function ChatFooter({
       return;
     }
 
-    if (activeExitPlanApproval) return;
+    if (activeExitPlanApproval) {
+      if (!senderValue.trim()) return;
+      submitExitPlanApproval(false);
+      return;
+    }
 
     if (!senderValue.trim() || isStreamingActiveSession) return;
     void onSubmit(senderValue);
@@ -509,14 +513,6 @@ export default function ChatFooter({
             <button
               type="button"
               className="ai-chat-footer-approval-action"
-              onClick={() => submitExitPlanApproval(false)}
-              disabled={!isSessionOwner}
-            >
-              Keep planning
-            </button>
-            <button
-              type="button"
-              className="ai-chat-footer-approval-action"
               onClick={() => submitExitPlanApproval(true)}
               disabled={!isSessionOwner}
             >
@@ -612,7 +608,7 @@ export default function ChatFooter({
               : showQuestionFooter
                 ? "Or type a custom answer..."
                 : activeExitPlanApproval
-                  ? "Optional feedback before staying in plan mode..."
+                  ? "Type feedback to keep planning, or press Approve plan..."
                 : "Enter a prompt... Shift+Enter for a new line"
           }
           value={senderValue}
@@ -642,7 +638,6 @@ export default function ChatFooter({
             onClick={handleSend}
             disabled={
               !isSessionOwner ||
-              Boolean(activeExitPlanApproval) ||
               (showQuestionFooter ? !(senderValue.trim() || hasChipAnswer) : !senderValue.trim())
             }
             aria-label="Send message"
