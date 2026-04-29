@@ -15,6 +15,7 @@ import {
   Alert,
   Button,
   Drawer,
+  Form,
   Input,
   InputNumber,
   Select,
@@ -224,9 +225,7 @@ function App() {
   const hasVisibleMoreSessions =
     sessionsHasMore && (!hasActiveSessionFilter || filteredSessions.length >= SESSION_PAGE_SIZE);
 
-  const commandOptions = [{ value: "", label: commands.length > 0 ? "Choose a command" : "No command selected" }].concat(
-    commands.map((command) => ({ value: command.path, label: command.path }))
-  );
+  const commandOptions = commands.map((command) => ({ value: command.path, label: command.path }));
 
   const slashCommands = useMemo(() => {
     return commands.map((command) => ({
@@ -1538,11 +1537,11 @@ function SettingsPanel(props) {
           </label>
           <Button
             size="small"
+            type="primary"
             htmlType="submit"
             icon={<SendOutlined />}
             loading={isSavingSettings}
             disabled={!canSaveSettings}
-            className="ai-chat-settings-action is-strong"
           >
             Save settings
           </Button>
@@ -1557,52 +1556,56 @@ function SettingsPanel(props) {
         </span>
       ),
       children: (
-        <div className="ai-chat-tool-panel">
+        <Form layout="vertical" size="small" component="div" className="ai-chat-tool-panel ai-chat-tool-form">
           <p className="ai-chat-tool-hint">{props.commandsHint}</p>
-          <label className="ai-chat-field">
-            <span>Commands</span>
+          <Form.Item label="Commands">
             <Select
               size="small"
               className="ai-chat-settings-select"
               popupClassName="ai-chat-settings-select-popup"
-              value={props.selectedCommandPath}
+              value={props.selectedCommandPath || undefined}
+              placeholder={props.commandOptions.length > 0 ? "Choose a command" : "No commands saved"}
+              notFoundContent="No commands saved"
               options={props.commandOptions}
               style={{ width: "100%" }}
+              allowClear
+              showSearch
+              optionFilterProp="label"
               onChange={(value) => {
-                props.setSelectedCommandPath(value);
-                value ? props.loadClaudeCommand(value) : props.clearCommandEditor();
+                const nextValue = value || "";
+                props.setSelectedCommandPath(nextValue);
+                nextValue ? props.loadClaudeCommand(nextValue) : props.clearCommandEditor();
               }}
             />
-          </label>
-          <label className="ai-chat-field">
-            <span>Command path</span>
+          </Form.Item>
+          <Form.Item label="Command path">
             <Input
               size="small"
               value={props.commandPath}
               placeholder="review/fix.md"
               onChange={(event) => props.setCommandPath(event.target.value)}
             />
-          </label>
-          <label className="ai-chat-field">
-            <span>Command content</span>
+          </Form.Item>
+          <Form.Item label="Command content">
             <TextArea
+              size="small"
               rows={5}
               value={props.commandContent}
               placeholder="Write the Claude slash command markdown here."
               onChange={(event) => props.setCommandContent(event.target.value)}
             />
-          </label>
-          <Space size={6} wrap>
-            <Button size="small" className="ai-chat-settings-action is-strong" onClick={props.saveCommand}>
+          </Form.Item>
+          <Space size={8} wrap className="ai-chat-tool-actions">
+            <Button size="small" type="primary" onClick={props.saveCommand}>
               Save
             </Button>
-            <Button size="small" className="ai-chat-settings-action" onClick={props.clearCommandEditor}>
+            <Button size="small" onClick={props.clearCommandEditor}>
               New
             </Button>
             <Button
               size="small"
               icon={<DeleteOutlined />}
-              className="ai-chat-settings-action is-danger"
+              danger
               onClick={props.deleteCommand}
             >
               Delete
@@ -1610,13 +1613,12 @@ function SettingsPanel(props) {
             <Button
               size="small"
               icon={<ReloadOutlined />}
-              className="ai-chat-settings-action"
               onClick={() => props.loadClaudeCommands()}
             >
               Refresh
             </Button>
           </Space>
-        </div>
+        </Form>
       )
     },
   ];
