@@ -402,6 +402,56 @@ describe("Hono API", () => {
     expect(updated).not.toHaveProperty("pendingInterrupt");
   });
 
+  it("discards a malformed persisted AskUserQuestion interrupt and re-runs the agent", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const query = vi.fn(() => {
+      return (async function* () {
+        yield { type: "result", is_error: false };
+      })();
+    });
+    const adapter: AgentSdkAdapter = {
+      query,
+      getSessionMessages: async () => []
+    };
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, adapter)
+    });
+
+    const session = await sessionStore.create({ mode: "plan", title: "Resume bad interrupt" });
+    await sessionStore.save({
+      ...session,
+      status: "awaiting_user_input",
+      pendingInterrupt: {
+        id: "interrupt:toolu_bad",
+        type: "user_input",
+        toolCallId: "toolu_bad",
+        toolName: "AskUserQuestion",
+        prompt: "Answer questions?",
+        payload: {
+          input: { questions: "[{\"question\": \"What?\"}]" },
+          questions: "[{\"question\": \"What?\"}]"
+        }
+      }
+    });
+
+    const response = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Continue", mode: "plan" })
+    });
+    const text = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(text).not.toContain("event: question_pending");
+    expect(query).toHaveBeenCalledOnce();
+
+    const updated = await sessionStore.get(session.id);
+    expect(updated).not.toHaveProperty("pendingInterrupt");
+  });
+
   it("accepts validated base64 image prompt requests", async () => {
     const config = await createTempConfig();
     const seenPrompts: unknown[] = [];

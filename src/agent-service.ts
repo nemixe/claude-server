@@ -41,7 +41,12 @@ type ToolLedger = Map<string, ToolLedgerEntry>;
 export type ToolOutcome =
   | { kind: "success"; content: unknown }
   | { kind: "control"; control: ControlSignal }
+  | { kind: "validation_error"; message: string }
   | { kind: "real_error"; message: string; retryable: boolean };
+
+export const MAX_CONSECUTIVE_VALIDATION_ERRORS = 3;
+
+const TOOL_USE_ERROR_PATTERN = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/i;
 
 export type ControlSignal =
   | {
@@ -80,6 +85,18 @@ export class ConcurrencyLimitError extends Error {
   constructor() {
     super("Too many active Claude runs");
     this.name = "ConcurrencyLimitError";
+  }
+}
+
+export class ValidationErrorLimitError extends Error {
+  readonly code = "tool_validation_limit";
+  constructor(
+    public readonly toolName: string,
+    public readonly attempts: number,
+    public readonly lastMessage: string
+  ) {
+    super(`Tool ${toolName} failed input validation ${attempts} times in a row`);
+    this.name = "ValidationErrorLimitError";
   }
 }
 
@@ -257,10 +274,24 @@ export class AgentService {
       { closeOnFinish: true, closeOnError: false }
     );
     const toolLedger: ToolLedger = new Map();
+    const validationCounters = new Map<string, number>();
 
     for await (const message of agentQuery) {
       recordToolUses(message, toolLedger);
-      const controlResultEvent = this.controlEventFromToolResults(input.session, message, toolLedger);
+      const { control: controlResultEvent, validation: validationEvents, terminate } = this.controlEventFromToolResults(
+        input.session,
+        message,
+        toolLedger,
+        validationCounters
+      );
+      for (const validationEvent of validationEvents) {
+        yield this.emitEvent(activeRun, validationEvent);
+      }
+      if (terminate) {
+        abortController.abort();
+        agentQuery.close?.();
+        throw terminate;
+      }
       if (controlResultEvent) {
         abortController.abort();
         agentQuery.close?.();
@@ -303,6 +334,7 @@ export class AgentService {
 
     await sendPrompt(sdkSession, buildAgentPrompt(input.request));
     const toolLedger: ToolLedger = new Map();
+    const validationCounters = new Map<string, number>();
 
     for await (const message of sdkSession.stream()) {
       const claudeSessionId = getSessionIdFromEvent(message);
@@ -311,7 +343,19 @@ export class AgentService {
       }
 
       recordToolUses(message, toolLedger);
-      const controlResultEvent = this.controlEventFromToolResults(input.session, message, toolLedger);
+      const { control: controlResultEvent, validation: validationEvents, terminate } = this.controlEventFromToolResults(
+        input.session,
+        message,
+        toolLedger,
+        validationCounters
+      );
+      for (const validationEvent of validationEvents) {
+        yield this.emitEvent(activeRun, validationEvent);
+      }
+      if (terminate) {
+        activeRun.handle.close();
+        throw terminate;
+      }
       if (controlResultEvent) {
         activeRun.handle.close();
         yield this.emitEvent(activeRun, controlResultEvent);
@@ -371,8 +415,12 @@ export class AgentService {
   private controlEventFromToolResults(
     session: SessionMetadata,
     message: unknown,
-    toolLedger: ToolLedger
-  ): NormalizedAgentEvent | undefined {
+    toolLedger: ToolLedger,
+    validationCounters: Map<string, number>
+  ): { control?: NormalizedAgentEvent; validation: NormalizedAgentEvent[]; terminate?: ValidationErrorLimitError } {
+    const validation: NormalizedAgentEvent[] = [];
+    let terminate: ValidationErrorLimitError | undefined;
+
     for (const rawResult of getToolResultBlocksFromEvent(message)) {
       const toolCallId = typeof rawResult.tool_use_id === "string" ? rawResult.tool_use_id : undefined;
       if (!toolCallId) continue;
@@ -385,23 +433,47 @@ export class AgentService {
 
       if (outcome.kind === "success") {
         entry.status = "completed";
+        validationCounters.delete(entry.toolName);
+        continue;
+      }
+
+      if (outcome.kind === "validation_error") {
+        entry.status = "failed";
+        const attempts = (validationCounters.get(entry.toolName) ?? 0) + 1;
+        validationCounters.set(entry.toolName, attempts);
+        validation.push({
+          type: "tool_validation_error",
+          data: {
+            toolUseId: toolCallId,
+            toolName: entry.toolName,
+            message: outcome.message,
+            attempts,
+            limit: MAX_CONSECUTIVE_VALIDATION_ERRORS
+          }
+        });
+        if (attempts >= MAX_CONSECUTIVE_VALIDATION_ERRORS) {
+          terminate = new ValidationErrorLimitError(entry.toolName, attempts, outcome.message);
+          break;
+        }
         continue;
       }
 
       if (outcome.kind === "real_error") {
         entry.status = "failed";
+        validationCounters.delete(entry.toolName);
         continue;
       }
 
+      validationCounters.delete(entry.toolName);
       const interrupt = interruptFromControl(toolCall, outcome.control);
       entry.status = "interrupted";
       entry.interrupt = interrupt;
       session.pendingInterrupt = interrupt;
       session.status = statusForInterrupt(interrupt);
-      return pendingEventFromInterrupt(interrupt);
+      return { control: pendingEventFromInterrupt(interrupt), validation };
     }
 
-    return undefined;
+    return { validation, terminate };
   }
 }
 
@@ -749,6 +821,14 @@ export function classifyToolResult(toolCall: ToolCallRecord, rawResult: unknown)
     };
   }
 
+  const validationMatch = contentText.match(TOOL_USE_ERROR_PATTERN);
+  if (validationMatch) {
+    return {
+      kind: "validation_error",
+      message: validationMatch[1].trim() || contentText
+    };
+  }
+
   return {
     kind: "real_error",
     message: contentText || "Tool failed",
@@ -848,22 +928,43 @@ function protocolMessage(value: unknown): Record<string, unknown> | undefined {
   return value;
 }
 
+export function isPendingInterruptPayloadValid(interrupt: PendingInterrupt): boolean {
+  const payload = isRecord(interrupt.payload) ? interrupt.payload : {};
+  const input = isRecord(payload.input) ? payload.input : payload;
+
+  if (interrupt.toolName === "AskUserQuestion") {
+    const questions = isRecord(payload) && "questions" in payload ? payload.questions : input.questions;
+    return Array.isArray(questions) && questions.length > 0;
+  }
+
+  if (interrupt.toolName === "ExitPlanMode") {
+    const plan = isRecord(payload) && "plan" in payload ? payload.plan : input.plan;
+    return typeof plan === "string" && plan.trim() !== "";
+  }
+
+  return true;
+}
+
 function controlSignalFromToolUse(toolCall: ToolCallRecord): ControlSignal | undefined {
   if (toolCall.name === "AskUserQuestion") {
+    const questions = inputProperty(toolCall.input, "questions");
+    if (!Array.isArray(questions) || questions.length === 0) return undefined;
     return {
       type: "user_input_required",
       prompt: "Answer questions?",
-      questions: inputProperty(toolCall.input, "questions"),
+      questions,
       toolCallId: toolCall.id
     };
   }
 
   if (toolCall.name === "ExitPlanMode") {
+    const plan = inputProperty(toolCall.input, "plan");
+    if (typeof plan !== "string" || plan.trim() === "") return undefined;
     return {
       type: "approval_required",
       action: "exit_plan_mode",
       prompt: "Exit plan mode?",
-      plan: inputProperty(toolCall.input, "plan"),
+      plan,
       toolCallId: toolCall.id
     };
   }

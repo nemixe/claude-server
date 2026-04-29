@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { AgentService, ConcurrencyLimitError } from "./agent-service.js";
+import { AgentService, ConcurrencyLimitError, isPendingInterruptPayloadValid, ValidationErrorLimitError } from "./agent-service.js";
 import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { createSessionFactory, MissingClaudeSessionIdError } from "./session-adapter.js";
@@ -295,6 +295,10 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     const request = streamMessageSchema.parse(await c.req.json());
     applyToolResultToSession(session, request);
 
+    if (session.pendingInterrupt && !isPendingInterruptPayloadValid(session.pendingInterrupt)) {
+      delete session.pendingInterrupt;
+    }
+
     if (!session.pendingInterrupt) {
       session.status = session.mode === "plan" ? "planning" : "executing";
     }
@@ -370,9 +374,11 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
         const status =
           error instanceof ConcurrencyLimitError
             ? "concurrency_limit"
-            : error instanceof MissingClaudeSessionIdError
+            : error instanceof ValidationErrorLimitError
               ? error.code
-              : "agent_error";
+              : error instanceof MissingClaudeSessionIdError
+                ? error.code
+                : "agent_error";
         await stream.writeSSE({
           event: "error",
           data: JSON.stringify({ error: { code: status, message: errorMessage(error) } })
