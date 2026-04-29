@@ -9,14 +9,22 @@ import { createTempConfig } from "./helpers.js";
 describe("sandbox and agent options", () => {
   it("blocks credential paths, unix sockets, and unsandboxed commands", async () => {
     const config = await createTempConfig();
-    const workspacePath = path.join(config.workspaceDir, "session-id");
-    const sandbox = buildSandboxSettings(config, workspacePath);
+    const sandbox = buildSandboxSettings(config);
 
     expect(sandbox.enabled).toBe(true);
     expect(sandbox.allowUnsandboxedCommands).toBe(false);
     expect(sandbox.network.allowUnixSockets).toEqual([]);
     expect(sandbox.network.allowAllUnixSockets).toBe(false);
-    expect(sandbox.filesystem.allowWrite).toEqual([workspacePath]);
+    expect(sandbox.filesystem.allowWrite).toEqual([config.projectRoot]);
+    expect(sandbox.filesystem.denyWrite).toEqual([
+      config.sessionDir,
+      config.workspaceDir,
+      path.join(config.projectRoot, ".env"),
+      path.join(config.projectRoot, ".env.local")
+    ]);
+    expect(sandbox.filesystem.denyRead).toContain(config.workspaceDir);
+    expect(sandbox.filesystem.denyRead).toContain(config.sessionDir);
+    expect(sandbox.filesystem.denyRead).toContain(path.join(config.projectRoot, ".env"));
     expect(sandbox.filesystem.denyRead).toContain(path.join(os.homedir(), ".claude"));
   });
 
@@ -45,6 +53,8 @@ describe("sandbox and agent options", () => {
     expect(editOptions.enableFileCheckpointing).toBe(true);
     expect(bypassOptions.permissionMode).toBe("bypassPermissions");
     expect(bypassOptions.allowDangerouslySkipPermissions).toBe(true);
+    expect(planOptions.cwd).toBe(config.projectRoot);
+    expect(planOptions.sandbox).toMatchObject({ filesystem: { allowWrite: [config.projectRoot] } });
     expect(bypassOptions.resume).toBe(session.id);
     expect(bypassOptions.sessionId).toBeUndefined();
   });

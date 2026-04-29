@@ -28,6 +28,21 @@ describe("Hono API", () => {
     expect(html).not.toContain("unpkg.com");
   });
 
+  it("exposes configured project root information", async () => {
+    const config = await createTempConfig();
+    const app = await createApp({ config });
+
+    const response = await app.request("http://localhost/v1/root", {
+      headers: { host: "localhost" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      projectRoot: config.projectRoot,
+      claudeCommandsDir: config.claudeCommandsDir
+    });
+  });
+
   it("creates sessions and streams normalized events", async () => {
     const config = await createTempConfig();
     const adapter: AgentSdkAdapter = {
@@ -487,6 +502,65 @@ describe("Hono API", () => {
       path: "docs",
       score: 0
     });
+  });
+
+  it("stores Claude commands only under the configured project root", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const app = await createApp({ config, sessionStore });
+
+    const saveResponse = await app.request("http://localhost/v1/claude-commands", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
+    });
+    expect(saveResponse.status).toBe(201);
+    await expect(saveResponse.json()).resolves.toMatchObject({ command: { path: "review/fix.md", content: "Fix it" } });
+
+    const rootCommandPath = path.join(config.projectRoot, ".claude", "commands", "review", "fix.md");
+    await expect(fs.readFile(rootCommandPath, "utf8")).resolves.toBe("Fix it");
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "No command copy" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+    const session = await sessionStore.get(created.sessionId);
+    expect(session).toMatchObject({ workspacePath: config.projectRoot });
+    await expect(fs.stat(config.workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const deleteResponse = await app.request("http://localhost/v1/claude-commands", {
+      method: "DELETE",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ path: "review/fix.md" })
+    });
+    expect(deleteResponse.status).toBe(200);
+    await expect(fs.stat(rootCommandPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("deletes session metadata without deleting the project root", async () => {
+    const config = await createTempConfig();
+    const app = await createApp({ config });
+    const rootFile = path.join(config.projectRoot, "keep.txt");
+    await fs.writeFile(rootFile, "keep me", "utf8");
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Delete" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const deleteResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}`, {
+      method: "DELETE",
+      headers: { host: "localhost" }
+    });
+
+    expect(deleteResponse.status).toBe(200);
+    const rootStat = await fs.stat(config.projectRoot);
+    expect(rootStat.isDirectory()).toBe(true);
+    await expect(fs.readFile(rootFile, "utf8")).resolves.toBe("keep me");
   });
 
   it("persists settings to disk via PATCH /v1/settings and reads them back", async () => {

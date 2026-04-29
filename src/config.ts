@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { type AllowedHostRule, parseAllowedHostList } from "./hostname.js";
@@ -21,7 +22,13 @@ export type AppConfig = {
   defaultModel?: string;
 };
 
+export type LoadConfigOptions = {
+  cwd?: string;
+  projectRoot?: string;
+};
+
 const RawEnvSchema = z.object({
+  PROJECT_ROOT: z.string().optional(),
   PORT: z.string().optional(),
   BIND_HOST: z.string().optional(),
   ALLOWED_HOSTNAMES: z.string().optional(),
@@ -38,8 +45,14 @@ const RawEnvSchema = z.object({
   CLAUDE_MODEL: z.string().optional()
 });
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): AppConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string | LoadConfigOptions = process.cwd()): AppConfig {
   const raw = RawEnvSchema.parse(env);
+  const normalizedOptions: LoadConfigOptions = typeof options === "string" ? { cwd: options } : options;
+  const cwd = path.resolve(normalizedOptions.cwd ?? process.cwd());
+  const projectRoot = resolveExistingProjectRoot(
+    normalizeOptionalString(normalizedOptions.projectRoot) ?? normalizeOptionalString(raw.PROJECT_ROOT) ?? cwd,
+    cwd
+  );
   const allowedHostValue = raw.ALLOWED_HOSTNAMES ?? "localhost,127.0.0.1";
   const allowedHosts = parseAllowedHostList(allowedHostValue);
 
@@ -48,14 +61,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
   }
 
   return {
-    projectRoot: cwd,
+    projectRoot,
     port: parseInteger(raw.PORT, 3000, "PORT"),
     bindHost: raw.BIND_HOST ?? "0.0.0.0",
     allowedHosts,
     trustProxy: parseBoolean(raw.TRUST_PROXY, false, "TRUST_PROXY"),
-    claudeCommandsDir: resolveFromCwd(".claude/commands", cwd),
-    workspaceDir: resolveFromCwd(raw.WORKSPACE_DIR ?? ".data/workspaces", cwd),
-    sessionDir: resolveFromCwd(raw.SESSION_DIR ?? ".data/sessions", cwd),
+    claudeCommandsDir: resolveFromRoot(".claude/commands", projectRoot),
+    workspaceDir: resolveFromRoot(raw.WORKSPACE_DIR ?? ".data/workspaces", projectRoot),
+    sessionDir: resolveFromRoot(raw.SESSION_DIR ?? ".data/sessions", projectRoot),
     maxConcurrentRuns: parseInteger(raw.MAX_CONCURRENT_RUNS, 4, "MAX_CONCURRENT_RUNS"),
     maxTurns: parseInteger(raw.MAX_TURNS, 30, "MAX_TURNS"),
     maxBudgetUsd: parseNumber(raw.MAX_BUDGET_USD, 1, "MAX_BUDGET_USD"),
@@ -67,8 +80,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd = process.c
   };
 }
 
-function resolveFromCwd(value: string, cwd: string): string {
-  return path.isAbsolute(value) ? value : path.resolve(cwd, value);
+function resolveExistingProjectRoot(value: string, cwd: string): string {
+  const resolved = resolveFromRoot(value, cwd);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolved);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(`PROJECT_ROOT must be an existing directory: ${resolved}`);
+    }
+    throw error;
+  }
+
+  if (!stat.isDirectory()) {
+    throw new Error(`PROJECT_ROOT must be a directory: ${resolved}`);
+  }
+  return resolved;
+}
+
+function resolveFromRoot(value: string, root: string): string {
+  return path.isAbsolute(value) ? path.resolve(value) : path.resolve(root, value);
 }
 
 function parseCsv(value: string): string[] {

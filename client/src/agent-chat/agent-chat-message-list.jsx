@@ -6,8 +6,10 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from "react";
+import { DownOutlined } from "@ant-design/icons";
 import ActivityTimeline from "./activity-timeline.jsx";
 import MessageBubble from "./message-bubble.jsx";
 import { groupActivityItemsForVirtualRows } from "./event-state-utils.js";
@@ -23,6 +25,10 @@ const GROUP_ROLE = "assistant_activity_group";
 
 function isScrolledNearBottom(el) {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD_PX;
+}
+
+function getScrollDistanceFromBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight;
 }
 
 const AgentChatMessageList = forwardRef(
@@ -46,6 +52,7 @@ const AgentChatMessageList = forwardRef(
     const previousScrollResetKeyRef = useRef(scrollResetKey);
     const scrollFrameRef = useRef(null);
     const prependAnchorRef = useRef(null);
+    const [showScrollToBottomAction, setShowScrollToBottomAction] = useState(false);
     const processedItems = useMemo(
       () =>
         groupActivityItemsForVirtualRows(bubbleItems, {
@@ -64,7 +71,7 @@ const AgentChatMessageList = forwardRef(
     });
 
     const scrollToBottom = useCallback(
-      ({ force = false } = {}) => {
+      ({ force = false, behavior } = {}) => {
         if (processedItems.length === 0) return;
         if (scrollFrameRef.current !== null) {
           window.cancelAnimationFrame(scrollFrameRef.current);
@@ -74,9 +81,10 @@ const AgentChatMessageList = forwardRef(
           scrollFrameRef.current = null;
           if (!force && !isPinnedToBottomRef.current) return;
 
-          virtualizer.scrollToIndex(processedItems.length - 1, { align: "end" });
+          virtualizer.scrollToIndex(processedItems.length - 1, { align: "end", behavior });
           isPinnedToBottomRef.current = true;
           pendingInitialScrollRef.current = false;
+          setShowScrollToBottomAction(false);
         });
       },
       [processedItems.length, virtualizer]
@@ -95,12 +103,14 @@ const AgentChatMessageList = forwardRef(
       previousScrollResetKeyRef.current = scrollResetKey;
       isPinnedToBottomRef.current = true;
       pendingInitialScrollRef.current = true;
+      setShowScrollToBottomAction(false);
     }, [scrollResetKey]);
 
     useEffect(() => {
       if (processedItems.length !== 0) return;
       isPinnedToBottomRef.current = true;
       pendingInitialScrollRef.current = true;
+      setShowScrollToBottomAction(false);
     }, [processedItems.length]);
 
     useEffect(() => {
@@ -156,7 +166,9 @@ const AgentChatMessageList = forwardRef(
     const handleScroll = useCallback(() => {
       const el = scrollElementRef.current;
       if (!el) return;
-      isPinnedToBottomRef.current = isScrolledNearBottom(el);
+      const scrolledNearBottom = isScrolledNearBottom(el);
+      isPinnedToBottomRef.current = scrolledNearBottom;
+      setShowScrollToBottomAction(!scrolledNearBottom && getScrollDistanceFromBottom(el) >= el.clientHeight);
       if (!hasMoreBefore || isLoadingBefore || typeof onLoadBefore !== "function") return;
       if (el.scrollTop > MESSAGE_LIST_TOP_THRESHOLD_PX) return;
       prependAnchorRef.current = {
@@ -165,6 +177,11 @@ const AgentChatMessageList = forwardRef(
       };
       onLoadBefore();
     }, [hasMoreBefore, isLoadingBefore, onLoadBefore]);
+
+    const handleScrollToBottomClick = useCallback(() => {
+      setShowScrollToBottomAction(false);
+      scrollToBottom({ force: true, behavior: "smooth" });
+    }, [scrollToBottom]);
 
     const virtualItems = virtualizer.getVirtualItems();
 
@@ -178,62 +195,76 @@ const AgentChatMessageList = forwardRef(
         >
           <div>
             <h1>Claude AI Chat</h1>
-            <p>Choose or create a session, then ask about this workspace.</p>
+            <p>Choose or create a session, then ask about this project root.</p>
           </div>
         </div>
       );
     }
 
     return (
-      <div
-        ref={scrollElementRef}
-        className="ai-chat-messages"
-        role="log"
-        aria-label="Chat messages"
-        aria-live="polite"
-        aria-busy={isStreaming || isLoadingBefore}
-        onScroll={handleScroll}
-      >
-        {isLoadingBefore ? <div className="ai-chat-history-loading">Loading earlier messages...</div> : null}
-        <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
-          {virtualItems.map((virtualRow) => {
-            const item = processedItems[virtualRow.index];
-            const isGroup = item.role === GROUP_ROLE;
+      <div className="ai-chat-message-list-shell">
+        <div
+          ref={scrollElementRef}
+          className="ai-chat-messages"
+          role="log"
+          aria-label="Chat messages"
+          aria-live="polite"
+          aria-busy={isStreaming || isLoadingBefore}
+          onScroll={handleScroll}
+        >
+          {isLoadingBefore ? <div className="ai-chat-history-loading">Loading earlier messages...</div> : null}
+          <div style={{ height: virtualizer.getTotalSize(), width: "100%", position: "relative" }}>
+            {virtualItems.map((virtualRow) => {
+              const item = processedItems[virtualRow.index];
+              const isGroup = item.role === GROUP_ROLE;
 
-            return (
-              <div
-                key={virtualRow.key}
-                data-index={virtualRow.index}
-                ref={virtualizer.measureElement}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  transform: `translateY(${virtualRow.start}px)`,
-                  paddingBottom: BUBBLE_GAP
-                }}
-              >
-                {isGroup ? (
-                  <ActivityTimeline
-                    items={item.items}
-                    isLastGroup={(() => {
-                      if (!isStreaming) return false;
-                      const next = processedItems[virtualRow.index + 1];
-                      return !next || next.loading === true;
-                    })()}
-                  />
-                ) : (
-                  <MessageBubble
-                    roleConfig={bubbleRoles[item.role] || {}}
-                    item={item}
-                    writeClipboard={writeClipboard}
-                  />
-                )}
-              </div>
-            );
-          })}
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${virtualRow.start}px)`,
+                    paddingBottom: BUBBLE_GAP
+                  }}
+                >
+                  {isGroup ? (
+                    <ActivityTimeline
+                      items={item.items}
+                      isLastGroup={(() => {
+                        if (!isStreaming) return false;
+                        const next = processedItems[virtualRow.index + 1];
+                        return !next || next.loading === true;
+                      })()}
+                    />
+                  ) : (
+                    <MessageBubble
+                      roleConfig={bubbleRoles[item.role] || {}}
+                      item={item}
+                      writeClipboard={writeClipboard}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
+        {showScrollToBottomAction ? (
+          <button
+            type="button"
+            className="ai-chat-scroll-bottom-action"
+            aria-label="Scroll to latest message"
+            title="Scroll to latest"
+            onClick={handleScrollToBottomClick}
+          >
+            <DownOutlined aria-hidden="true" />
+            <span>Latest</span>
+          </button>
+        ) : null}
       </div>
     );
   }

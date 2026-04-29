@@ -68,6 +68,7 @@ export default function SessionSidebar({
             size="small"
             variant="borderless"
             className="ai-chat-session-creator-filter"
+            popupClassName="ai-chat-session-creator-filter-popup"
             value={creatorFilter || ""}
             onChange={(value) => setCreatorFilter(value || "")}
             options={[{ value: "", label: "All creators" }].concat(creatorFilterOptions || [])}

@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { isAllowedHost, parseAllowedHostList, parseHostLike, parseOrigin } from "../src/hostname.js";
@@ -17,6 +20,43 @@ describe("config and hostname parsing", () => {
       { hostname: "example.com" },
       { hostname: "app.example.com", port: "8443" }
     ]);
+  });
+
+  it("loads PROJECT_ROOT and resolves default data paths from that root", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-root-"));
+    const config = loadConfig({ PROJECT_ROOT: root }, process.cwd());
+
+    expect(config.projectRoot).toBe(root);
+    expect(config.claudeCommandsDir).toBe(path.join(root, ".claude", "commands"));
+    expect(config.workspaceDir).toBe(path.join(root, ".data", "workspaces"));
+    expect(config.sessionDir).toBe(path.join(root, ".data", "sessions"));
+  });
+
+  it("prefers explicit projectRoot options over PROJECT_ROOT env", async () => {
+    const envRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-env-root-"));
+    const optionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-option-root-"));
+    const config = loadConfig({ PROJECT_ROOT: envRoot }, { projectRoot: optionRoot });
+
+    expect(config.projectRoot).toBe(optionRoot);
+  });
+
+  it("resolves relative project roots against the configured cwd", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-cwd-"));
+    const projectRoot = path.join(cwd, "nested-project");
+    await fs.mkdir(projectRoot);
+
+    const config = loadConfig({ PROJECT_ROOT: "nested-project" }, cwd);
+
+    expect(config.projectRoot).toBe(projectRoot);
+  });
+
+  it("rejects missing or non-directory project roots", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-invalid-root-"));
+    const filePath = path.join(root, "not-a-directory");
+    await fs.writeFile(filePath, "not a dir", "utf8");
+
+    expect(() => loadConfig({ PROJECT_ROOT: path.join(root, "missing") }, root)).toThrow(/PROJECT_ROOT must be an existing directory/);
+    expect(() => loadConfig({ PROJECT_ROOT: filePath }, root)).toThrow(/PROJECT_ROOT must be a directory/);
   });
 
   it("ignores ports for hostname-only entries and requires exact ports for port-specific entries", () => {

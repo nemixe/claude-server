@@ -251,6 +251,8 @@ export default function ChatFooter({
   };
 
   const handleSend = () => {
+    if (!isSessionOwner) return;
+
     if (showQuestionFooter && askQuestionFooterRef.current) {
       const result = askQuestionFooterRef.current.submitCurrentStep(senderValue);
       setSenderValue("");
@@ -329,6 +331,7 @@ export default function ChatFooter({
   };
 
   const handleFileSelect = (event) => {
+    if (!isSessionOwner) return;
     const files = Array.from(event.target.files || []);
     if (files.length > 0) void onAddUploads(files);
     event.target.value = "";
@@ -339,7 +342,7 @@ export default function ChatFooter({
 
   const mentionEmptyText = {
     loading: "Searching files...",
-    empty: mentionQuery.trim() ? "No matching files" : "No files in this session",
+    empty: mentionQuery.trim() ? "No matching files" : "No files in this project root",
     error: "Could not search files",
     "needs-session": "Select or create a session to search files"
   }[mentionStatus] || "No files found";
@@ -353,6 +356,7 @@ export default function ChatFooter({
           icon={<AimOutlined />}
           className={hasGrabContext ? "is-active" : ""}
           onClick={onActivateInspect}
+          disabled={!isSessionOwner}
           aria-label="Inspect element"
         >
           Inspect
@@ -363,6 +367,7 @@ export default function ChatFooter({
             shape="circle"
             icon={<CloseOutlined style={{ fontSize: 11 }} />}
             onClick={onInspectPillClear}
+            disabled={!isSessionOwner}
             aria-label="Clear selected inspect context"
             title="Clear selected inspect context"
           />
@@ -373,6 +378,7 @@ export default function ChatFooter({
           icon={<EditOutlined />}
           className={isAnnotating || latestAnnotation ? "is-active" : ""}
           onClick={onStartAnnotating}
+          disabled={!isSessionOwner}
           aria-label={isAnnotating ? "Stop annotating" : "Annotate"}
           title={isAnnotating ? "Stop Annotating" : "Annotate"}
         >
@@ -384,6 +390,7 @@ export default function ChatFooter({
             shape="circle"
             icon={<CloseOutlined style={{ fontSize: 11 }} />}
             onClick={onClearAnnotation}
+            disabled={!isSessionOwner}
             aria-label="Clear annotation"
             title="Clear annotation"
           />
@@ -413,6 +420,7 @@ export default function ChatFooter({
             shape="circle"
             icon={<CloseOutlined style={{ fontSize: 11 }} />}
             onClick={onClearUploads}
+            disabled={!isSessionOwner}
             aria-label="Clear uploads"
             title="Clear uploads"
           />
@@ -424,6 +432,7 @@ export default function ChatFooter({
               type="button"
               className={`ai-chat-mode-btn ${permissionMode === option.value ? "is-active" : ""}`}
               onClick={() => onPermissionChange(option.value)}
+              disabled={!isSessionOwner}
               aria-pressed={permissionMode === option.value}
             >
               {option.label}
@@ -437,6 +446,7 @@ export default function ChatFooter({
           questionData={activeAskUserQuestionData}
           questionMessageId={activeAskUserQuestionMessageId}
           senderValue={senderValue}
+          disabled={!isSessionOwner}
           onSelectionChange={setHasChipAnswer}
         />
       ) : null}
@@ -457,6 +467,7 @@ export default function ChatFooter({
                 type="button"
                 className="ai-chat-upload-card-remove"
                 onClick={() => onRemoveUpload(file.id)}
+                disabled={!isSessionOwner}
                 aria-label={`Remove ${file.name || "upload"}`}
               >
                 <CloseOutlined style={{ fontSize: 10 }} />
@@ -465,7 +476,7 @@ export default function ChatFooter({
           ))}
         </div>
       ) : null}
-      <div className="ai-chat-input">
+      <div className={["ai-chat-input", !isSessionOwner ? "is-disabled" : ""].filter(Boolean).join(" ")}>
         {showSlashDropdown ? (
           <div ref={dropdownRef} className="ai-chat-slash-dropdown" role="listbox" aria-label="Slash commands">
             {filteredCommands.map((command, index) => (
@@ -542,6 +553,7 @@ export default function ChatFooter({
           <button
             className="ai-chat-input-btn ai-chat-input-btn-stop"
             onClick={onStopStreaming}
+            disabled={!isSessionOwner}
             aria-label="Stop generation"
             title="Stop"
           >

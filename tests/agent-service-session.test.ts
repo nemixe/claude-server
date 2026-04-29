@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { AgentService, buildSessionOptions } from "../src/agent-service.js";
+import { AgentService, buildSessionOptions, type AgentSdkAdapter } from "../src/agent-service.js";
 import { MissingClaudeSessionIdError, type SessionFactory, type SessionLike } from "../src/session-adapter.js";
 import type { SessionMetadata } from "../src/types.js";
 import { createTempConfig } from "./helpers.js";
@@ -14,7 +14,7 @@ describe("buildSessionOptions", () => {
 
     expect(options).toMatchObject({
       model: "claude-sonnet-4-6",
-      cwd: session.workspacePath,
+      cwd: config.projectRoot,
       settingSources: ["project"],
       permissionMode: "plan",
       allowDangerouslySkipPermissions: false
@@ -42,6 +42,22 @@ describe("buildSessionOptions", () => {
 
     const missingModelConfig = await createTempConfig({ ENABLE_SESSION_API: "true" });
     expect(() => buildSessionOptions(missingModelConfig, session, { prompt: "hello" })).toThrow(/CLAUDE_MODEL/);
+  });
+
+  it("reads persisted messages from the configured project root", async () => {
+    const config = await createTempConfig();
+    let seenOptions: { dir?: string; limit?: number; offset?: number } | undefined;
+    const adapter: AgentSdkAdapter = {
+      query: () => (async function* () {})(),
+      getSessionMessages: async (_sessionId, options) => {
+        seenOptions = options;
+        return [];
+      }
+    };
+
+    await new AgentService(config, adapter).getMessages(metadata(config.workspaceDir), 10, 20);
+
+    expect(seenOptions).toEqual({ dir: config.projectRoot, limit: 10, offset: 20 });
   });
 });
 

@@ -5,6 +5,7 @@ import type {
   ListMessagesResponse,
   ListSessionsResponse,
   PublicSession,
+  RootInfoResponse,
   StreamMessageRequest,
   UploadedFile,
   WorkspaceSearchResult
@@ -113,6 +114,10 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       return requestJson<PublicSession>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
     },
 
+    getRoot(): Promise<RootInfoResponse> {
+      return requestJson<RootInfoResponse>("/v1/root");
+    },
+
     getMessages(sessionId: string, options: ListMessagesOptions = {}): Promise<ListMessagesResponse> {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set("limit", String(options.limit));
@@ -132,25 +137,25 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       );
     },
 
-    listClaudeCommands(sessionId: string): Promise<{ commands: ClaudeCommand[] }> {
-      return requestJson<{ commands: ClaudeCommand[] }>(`/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands`);
+    listClaudeCommands(_sessionId?: string): Promise<{ commands: ClaudeCommand[] }> {
+      return requestJson<{ commands: ClaudeCommand[] }>("/v1/claude-commands");
     },
 
-    getClaudeCommand(sessionId: string, commandPath: string): Promise<{ command: ClaudeCommand }> {
+    getClaudeCommand(_sessionId: string | undefined, commandPath: string): Promise<{ command: ClaudeCommand }> {
       return requestJson<{ command: ClaudeCommand }>(
-        `/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands?path=${encodeURIComponent(commandPath)}`
+        `/v1/claude-commands?path=${encodeURIComponent(commandPath)}`
       );
     },
 
-    saveClaudeCommand(sessionId: string, command: ClaudeCommandInput): Promise<{ command: ClaudeCommand }> {
-      return requestJson<{ command: ClaudeCommand }>(`/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands`, {
+    saveClaudeCommand(_sessionId: string | undefined, command: ClaudeCommandInput): Promise<{ command: ClaudeCommand }> {
+      return requestJson<{ command: ClaudeCommand }>("/v1/claude-commands", {
         method: "POST",
         body: JSON.stringify(command)
       });
     },
 
-    deleteClaudeCommand(sessionId: string, commandPath: string): Promise<{ deleted: true }> {
-      return requestJson<{ deleted: true }>(`/v1/sessions/${encodeURIComponent(sessionId)}/claude-commands`, {
+    deleteClaudeCommand(_sessionId: string | undefined, commandPath: string): Promise<{ deleted: true }> {
+      return requestJson<{ deleted: true }>("/v1/claude-commands", {
         method: "DELETE",
         body: JSON.stringify({ path: commandPath })
       });

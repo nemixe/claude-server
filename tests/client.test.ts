@@ -76,6 +76,25 @@ describe("browser client", () => {
     );
   });
 
+  it("loads configured project root information", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ projectRoot: "/repo", claudeCommandsDir: "/repo/.claude/commands" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await expect(client.getRoot()).resolves.toEqual({ projectRoot: "/repo", claudeCommandsDir: "/repo/.claude/commands" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/root",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+  });
+
   it("adds pagination parameters when loading session messages", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response(JSON.stringify({ messages: [], offset: 800, limit: 200, total: 1000, hasMoreBefore: true, hasMoreAfter: false }), {
@@ -138,7 +157,7 @@ describe("browser client", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.example.com/v1/sessions/s1/claude-commands",
+      "https://api.example.com/v1/claude-commands",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
@@ -146,12 +165,12 @@ describe("browser client", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.example.com/v1/sessions/s1/claude-commands?path=review%2Ffix.md",
+      "https://api.example.com/v1/claude-commands?path=review%2Ffix.md",
       expect.objectContaining({ headers: expect.objectContaining({ "content-type": "application/json" }) })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "https://api.example.com/v1/sessions/s1/claude-commands",
+      "https://api.example.com/v1/claude-commands",
       expect.objectContaining({
         method: "DELETE",
         body: JSON.stringify({ path: "review/fix.md" })
@@ -159,7 +178,7 @@ describe("browser client", () => {
     );
   });
 
-  it("calls workspace fuzzy file search endpoint", async () => {
+  it("calls project root fuzzy file search endpoint", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response(JSON.stringify({ results: [{ path: "src/app.ts", name: "app.ts", type: "file", score: 42, updatedAt: "now" }] }), {
         status: 200,

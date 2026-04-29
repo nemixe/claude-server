@@ -38,8 +38,7 @@ export class SessionStore {
 
     const id = randomUUID();
     const now = new Date().toISOString();
-    const workspacePath = path.join(this.config.workspaceDir, id);
-    await fs.mkdir(workspacePath, { recursive: true });
+    const workspacePath = this.config.projectRoot;
 
     const metadata: SessionMetadata = {
       id,
@@ -53,7 +52,6 @@ export class SessionStore {
     };
 
     await this.writeUploadedFiles(workspacePath, input.files ?? []);
-    await this.syncSharedClaudeCommandsToWorkspace(workspacePath);
     await this.save(metadata);
     return metadata;
   }
@@ -146,10 +144,12 @@ export class SessionStore {
     const metadata = await this.get(id);
     if (!metadata) return false;
 
-    await Promise.allSettled([
-      fs.rm(this.metadataPath(id), { force: true }),
-      fs.rm(metadata.workspacePath, { recursive: true, force: true })
-    ]);
+    const cleanupTasks: Promise<unknown>[] = [fs.rm(this.metadataPath(id), { force: true })];
+    if (shouldDeleteLegacyWorkspace(metadata.workspacePath, this.config)) {
+      cleanupTasks.push(fs.rm(metadata.workspacePath, { recursive: true, force: true }));
+    }
+
+    await Promise.allSettled(cleanupTasks);
 
     return true;
   }
@@ -177,7 +177,6 @@ export class SessionStore {
 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, command.content, "utf8");
-    await this.syncSharedClaudeCommandsToAllWorkspaces(relativePath);
 
     const saved = await this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
     if (!saved) throw new Error(`Could not save Claude command: ${relativePath}`);
@@ -201,29 +200,7 @@ export class SessionStore {
     }
 
     if (!deleted) return false;
-
-    const sessions = await this.list();
-    await Promise.all(
-      sessions.map(async (session) => {
-        const workspaceTargetPath = path.join(session.workspacePath, CLAUDE_COMMANDS_DIR, relativePath);
-        try {
-          await fs.rm(workspaceTargetPath, { force: true });
-          await pruneEmptyParents(path.dirname(workspaceTargetPath), path.join(session.workspacePath, CLAUDE_COMMANDS_DIR));
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== "ENOENT") throw error;
-        }
-      })
-    );
-
     return true;
-  }
-
-  private async syncSharedClaudeCommandsToAllWorkspaces(relativePath: string): Promise<void> {
-    const sessions = await this.list();
-    await Promise.all(
-      sessions.map((session) => this.syncSharedClaudeCommandsToWorkspace(session.workspacePath, relativePath))
-    );
   }
 
   async searchProjectFiles(query: string, limit = DEFAULT_WORKSPACE_SEARCH_LIMIT): Promise<WorkspaceSearchResult[]> {
@@ -253,10 +230,7 @@ export class SessionStore {
   }
 
   private async ensureBaseDirs(): Promise<void> {
-    await Promise.all([
-      fs.mkdir(this.config.workspaceDir, { recursive: true }),
-      fs.mkdir(this.config.sessionDir, { recursive: true })
-    ]);
+    await fs.mkdir(this.config.sessionDir, { recursive: true });
   }
 
   private async readMetadata(filePath: string): Promise<SessionMetadata | undefined> {
@@ -285,20 +259,6 @@ export class SessionStore {
 
         await fs.mkdir(path.dirname(targetPath), { recursive: true });
         await fs.writeFile(targetPath, content);
-      })
-    );
-  }
-
-  private async syncSharedClaudeCommandsToWorkspace(workspacePath: string, onlyRelativePath?: string): Promise<void> {
-    const files = onlyRelativePath ? [sanitizeClaudeCommandPath(onlyRelativePath)] : await listMarkdownFiles(this.config.claudeCommandsDir);
-
-    await Promise.all(
-      files.map(async (relativePath) => {
-        const sourcePath = path.join(this.config.claudeCommandsDir, relativePath);
-        const targetPath = path.join(workspacePath, CLAUDE_COMMANDS_DIR, relativePath);
-        const content = await fs.readFile(sourcePath, "utf8");
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await fs.writeFile(targetPath, content, "utf8");
       })
     );
   }
@@ -338,6 +298,18 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     typeof metadata.mode === "string" &&
     (CLAUDE_MODES as readonly string[]).includes(metadata.mode)
   );
+}
+
+function shouldDeleteLegacyWorkspace(workspacePath: string, config: AppConfig): boolean {
+  const resolvedWorkspacePath = path.resolve(workspacePath);
+  const resolvedProjectRoot = path.resolve(config.projectRoot);
+  if (resolvedWorkspacePath === resolvedProjectRoot) return false;
+
+  const resolvedWorkspaceDir = path.resolve(config.workspaceDir);
+  if (resolvedWorkspaceDir === resolvedProjectRoot) return false;
+
+  const relative = path.relative(resolvedWorkspaceDir, resolvedWorkspacePath);
+  return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 export function sanitizeWorkspaceRelativePath(value: string): string {

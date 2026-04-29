@@ -198,7 +198,7 @@ export class AgentService {
 
     const sessionId = this.pool && session.claudeSessionId ? session.claudeSessionId : session.id;
     return this.adapter.getSessionMessages(sessionId, {
-      dir: session.workspacePath,
+      dir: this.config.projectRoot,
       limit,
       offset
     });
@@ -377,7 +377,7 @@ export function buildAgentOptions(
 
   return {
     abortController,
-    cwd: session.workspacePath,
+    cwd: config.projectRoot,
     ...(session.hasRun ? { resume: session.id } : { sessionId: session.id }),
     persistSession: true,
     settingSources: ["project"],
@@ -390,7 +390,7 @@ export function buildAgentOptions(
     maxBudgetUsd: config.maxBudgetUsd,
     model: request.model,
     env: buildSafeAgentEnv(),
-    sandbox: buildSandboxSettings(config, session.workspacePath),
+    sandbox: buildSandboxSettings(config),
     disallowedTools: disallowedToolsFor(mode)
   };
 }
@@ -404,7 +404,7 @@ export function buildSessionOptions(config: AppConfig, session: SessionMetadata,
 
   return {
     model,
-    cwd: session.workspacePath,
+    cwd: config.projectRoot,
     settingSources: ["project"],
     permissionMode: permissionModeFor(mode),
     allowDangerouslySkipPermissions: mode === "bypass",

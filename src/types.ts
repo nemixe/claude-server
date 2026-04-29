@@ -28,6 +28,11 @@ export type WorkspaceSearchResult = {
   updatedAt: string;
 };
 
+export type RootInfoResponse = {
+  projectRoot: string;
+  claudeCommandsDir: string;
+};
+
 export type PromptImage = {
   name?: string;
   mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";

@@ -1,5 +1,6 @@
 import { Button, Dropdown, Space } from "antd";
 import {
+  ArrowLeftOutlined,
   CloseOutlined,
   DownloadOutlined,
   FileSearchOutlined,
@@ -12,8 +13,13 @@ import {
 import { getAvatarThemeFromLabel } from "./chat-ui-utils.js";
 
 export default function ChatHeader({
+  title = "AI Assistant",
+  showBackButton = false,
+  hideSidebarToggle = false,
+  hideStatusDot = false,
   isSidebarOpen,
   onToggleSidebar,
+  onBack,
   hasStreamingSessions,
   hasCurrentUserIdentity,
   currentUserDisplayLabel,
@@ -46,23 +52,38 @@ export default function ChatHeader({
   return (
     <div className="ai-chat-header" {...dragHandleProps}>
       <div className="ai-chat-title-shell">
-        <Button
-          size="middle"
-          type="text"
-          className="ai-chat-sidebar-toggle"
-          icon={isSidebarOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
-          onClick={onToggleSidebar}
-          onMouseDown={(event) => event.stopPropagation()}
-          title={isSidebarOpen ? "Hide Sessions" : "Show Sessions"}
-          aria-label={isSidebarOpen ? "Hide sessions sidebar" : "Show sessions sidebar"}
-        />
-        <span
-          className={`ai-chat-status-dot${hasStreamingSessions ? " is-running" : ""}`}
-          role="status"
-          aria-label={status}
-          title={status}
-        />
-        <div className="ai-chat-title-main">AI Assistant</div>
+        {showBackButton ? (
+          <Button
+            size="middle"
+            type="text"
+            className="ai-chat-header-back"
+            icon={<ArrowLeftOutlined />}
+            onClick={onBack}
+            onMouseDown={(event) => event.stopPropagation()}
+            title="Back"
+            aria-label="Back to chat"
+          />
+        ) : !hideSidebarToggle ? (
+          <Button
+            size="middle"
+            type="text"
+            className="ai-chat-sidebar-toggle"
+            icon={isSidebarOpen ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
+            onClick={onToggleSidebar}
+            onMouseDown={(event) => event.stopPropagation()}
+            title={isSidebarOpen ? "Hide Sessions" : "Show Sessions"}
+            aria-label={isSidebarOpen ? "Hide sessions sidebar" : "Show sessions sidebar"}
+          />
+        ) : null}
+        {!hideStatusDot ? (
+          <span
+            className={`ai-chat-status-dot${hasStreamingSessions ? " is-running" : ""}`}
+            role="status"
+            aria-label={status}
+            title={status}
+          />
+        ) : null}
+        <div className="ai-chat-title-main">{title}</div>
       </div>
 
       {hasCurrentUserIdentity && currentUserDisplayLabel ? (

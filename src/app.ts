@@ -15,6 +15,7 @@ import {
   type ListSessionsResponse,
   type PromptImage,
   type PublicSession,
+  type RootInfoResponse,
   type SessionMetadata
 } from "./types.js";
 
@@ -140,6 +141,14 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
       maxConcurrentRuns: agentService.getMaxConcurrentRuns(),
       maxTurns: agentService.getMaxTurns()
     });
+  });
+
+  app.get("/v1/root", (c) => {
+    const rootInfo: RootInfoResponse = {
+      projectRoot: dependencies.config.projectRoot,
+      claudeCommandsDir: dependencies.config.claudeCommandsDir
+    };
+    return c.json(rootInfo);
   });
 
   app.patch("/v1/settings", async (c) => {

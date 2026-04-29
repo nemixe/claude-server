@@ -21,9 +21,12 @@ export type SandboxSettings = {
   };
 };
 
-export function buildSandboxSettings(config: AppConfig, workspacePath: string): SandboxSettings {
+export function buildSandboxSettings(config: AppConfig): SandboxSettings {
   const homeDir = os.homedir();
   const claudeDir = path.join(homeDir, ".claude");
+  const rootEnvPath = path.join(config.projectRoot, ".env");
+  const rootLocalEnvPath = path.join(config.projectRoot, ".env.local");
+  const legacyWorkspaceDir = path.resolve(config.workspaceDir) === path.resolve(config.projectRoot) ? undefined : config.workspaceDir;
 
   return {
     enabled: true,
@@ -38,17 +41,17 @@ export function buildSandboxSettings(config: AppConfig, workspacePath: string): 
       allowAllUnixSockets: false
     },
     filesystem: {
-      allowWrite: [workspacePath],
-      denyWrite: [homeDir, config.sessionDir, config.workspaceDir === workspacePath ? "" : config.workspaceDir].filter(Boolean),
+      allowWrite: [config.projectRoot],
+      denyWrite: [config.sessionDir, legacyWorkspaceDir, rootEnvPath, rootLocalEnvPath].filter(isString),
       denyRead: [
         claudeDir,
         path.join(homeDir, ".config", "claude"),
         path.join(homeDir, ".anthropic"),
-        path.resolve(".env"),
-        path.resolve(".env.local"),
-        path.resolve("src"),
+        rootEnvPath,
+        rootLocalEnvPath,
+        legacyWorkspaceDir,
         config.sessionDir
-      ]
+      ].filter(isString)
     }
   };
 }
@@ -63,4 +66,8 @@ export function buildSafeAgentEnv(env: NodeJS.ProcessEnv = process.env): Record<
     LC_ALL: env.LC_ALL,
     CLAUDE_AGENT_SDK_CLIENT_APP: "claude-server-hono"
   };
+}
+
+function isString(value: string | undefined): value is string {
+  return typeof value === "string";
 }

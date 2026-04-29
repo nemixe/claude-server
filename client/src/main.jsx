@@ -14,12 +14,12 @@ import {
 import {
   Alert,
   Button,
-  Collapse,
   Drawer,
   Input,
   InputNumber,
   Select,
-  Space
+  Space,
+  Tabs
 } from "antd";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import AgentChatMessageList from "./agent-chat/agent-chat-message-list.jsx";
@@ -78,6 +78,7 @@ function App() {
   const [isSessionsLoading, setIsSessionsLoading] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [creatorFilter, setCreatorFilter] = useState("");
+  const [activePanelView, setActivePanelView] = useState("chat");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isClosed, setIsClosed] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -93,7 +94,8 @@ function App() {
   const [selectedCommandPath, setSelectedCommandPath] = useState("");
   const [commandPath, setCommandPath] = useState("");
   const [commandContent, setCommandContent] = useState("");
-  const [commandsHint, setCommandsHint] = useState("Pick a session to manage slash commands");
+  const [commandsHint, setCommandsHint] = useState("Manage project root slash commands");
+  const [rootInfo, setRootInfo] = useState(null);
   const [fileMentionSuggestions, setFileMentionSuggestions] = useState([]);
   const [fileMentionStatus, setFileMentionStatus] = useState("idle");
   const [isSending, setIsSending] = useState(false);
@@ -147,6 +149,9 @@ function App() {
   useEffect(() => {
     loadSessions({ restoreSaved: true });
     loadClaudeCommands();
+    getJson("/v1/root")
+      .then((result) => setRootInfo(result))
+      .catch(() => {});
     getJson("/v1/settings")
       .then((result) => {
         if (Number.isInteger(result?.maxConcurrentRuns)) setMaxConcurrentRuns(result.maxConcurrentRuns);
@@ -178,6 +183,10 @@ function App() {
     (isSending && streamingSessionIdRef.current === sessionId) ||
     (isObservedRunning && observingSessionIdRef.current === sessionId);
   const activeSession = sessions.find((session) => getSessionId(session) === sessionId);
+  const isActiveSessionOwner = activeSession
+    ? normalizeUserLabel(getSessionUserName(activeSession)).toLowerCase() ===
+      normalizeUserLabel(userName || GUEST_USER_NAME).toLowerCase()
+    : true;
   const deferredSessionSearchQuery = useDeferredValue(sessionSearchQuery);
   const deferredCreatorFilter = useDeferredValue(creatorFilter);
   const creatorFilterOptions = useMemo(() => {
@@ -209,6 +218,10 @@ function App() {
           .includes(query);
       });
   }, [deferredCreatorFilter, deferredSessionSearchQuery, sessions]);
+  const hasActiveSessionFilter =
+    Boolean(deferredSessionSearchQuery.trim()) || Boolean(normalizeUserLabel(deferredCreatorFilter));
+  const hasVisibleMoreSessions =
+    sessionsHasMore && (!hasActiveSessionFilter || filteredSessions.length >= SESSION_PAGE_SIZE);
 
   const commandOptions = [{ value: "", label: commands.length > 0 ? "Choose a command" : "No command selected" }].concat(
     commands.map((command) => ({ value: command.path, label: command.path }))
@@ -453,6 +466,7 @@ function App() {
   }
 
   function createSession() {
+    setActivePanelView("chat");
     forgetSession();
     setStatus("Idle");
   }
@@ -518,6 +532,10 @@ function App() {
   async function runPrompt(value, options = {}) {
     const nextPrompt = String(value ?? prompt).trim();
     if (!nextPrompt) return;
+    if (!isActiveSessionOwner) {
+      appendEntry("client_error", "You can only interact with sessions created by your login.");
+      return;
+    }
 
     const promptTimestamp = new Date().toISOString();
     setIsSending(true);
@@ -600,6 +618,7 @@ function App() {
   }
 
   async function interrupt() {
+    if (!isActiveSessionOwner) return;
     // If messages:stream is running, abort it for immediate UI feedback.
     // Use the streaming session ID (not the currently selected session)
     // so the interrupt hits the correct session after a session switch.
@@ -616,15 +635,15 @@ function App() {
 
   async function loadClaudeCommands() {
     setSelectedCommandPath("");
-    setCommandsHint("Loading commands from .claude/commands");
+    setCommandsHint("Loading commands from project root .claude/commands");
     try {
       const result = await getJson("/v1/claude-commands");
       const nextCommands = Array.isArray(result.commands) ? result.commands : [];
       setCommands(nextCommands);
       setCommandsHint(
         nextCommands.length > 0
-          ? "Commands live in .claude/commands"
-          : "No commands saved in .claude/commands"
+          ? "Commands live in project root .claude/commands"
+          : "No commands saved in project root .claude/commands"
       );
     } catch (error) {
       setCommands([]);
@@ -693,7 +712,11 @@ function App() {
       setCommands(nextCommands);
       clearCommandEditor();
       appendEntry("command_deleted", { path });
-      setCommandsHint(nextCommands.length > 0 ? "Commands live in .claude/commands" : "No commands saved in .claude/commands");
+      setCommandsHint(
+        nextCommands.length > 0
+          ? "Commands live in project root .claude/commands"
+          : "No commands saved in project root .claude/commands"
+      );
     } catch (error) {
       appendEntry("client_error", "Could not delete Claude command: " + errorMessage(error));
     }
@@ -800,6 +823,7 @@ function App() {
   }
 
   async function onFilesSelected(files) {
+    if (!isActiveSessionOwner) return;
     try {
       setSelectedImages((current) => {
         if (current.length >= maxImages) return current;
@@ -844,6 +868,7 @@ function App() {
 
   function selectSession(session, eventName) {
     const id = getSessionId(session);
+    setActivePanelView("chat");
     setSessionId(id);
     setMode(session?.mode === "plan" || session?.mode === "bypass" ? session.mode : "bypass");
     rememberSession({ sessionId: id });
@@ -851,6 +876,7 @@ function App() {
   }
 
   function changeMode(nextMode) {
+    if (!isActiveSessionOwner) return;
     setMode(nextMode);
     const id = sessionIdRef.current;
     if (!id) return;
@@ -859,25 +885,15 @@ function App() {
       .catch(() => {});
   }
 
-  function changeMaxConcurrentRuns(value) {
-    setMaxConcurrentRuns(value);
-    patchJson("/v1/settings", { maxConcurrentRuns: value })
+  function saveSettings(nextSettings) {
+    return patchJson("/v1/settings", nextSettings)
       .then((result) => {
+        if (Number.isInteger(result?.maxTurns)) setMaxTurns(result.maxTurns);
         if (Number.isInteger(result?.maxConcurrentRuns)) setMaxConcurrentRuns(result.maxConcurrentRuns);
       })
       .catch((error) => {
-        appendEntry("client_error", "Could not update parallel cap: " + errorMessage(error));
-      });
-  }
-
-  function changeMaxTurns(value) {
-    setMaxTurns(value);
-    patchJson("/v1/settings", { maxTurns: value })
-      .then((result) => {
-        if (Number.isInteger(result?.maxTurns)) setMaxTurns(result.maxTurns);
-      })
-      .catch((error) => {
-        appendEntry("client_error", "Could not update max turns: " + errorMessage(error));
+        appendEntry("client_error", "Could not update settings: " + errorMessage(error));
+        throw error;
       });
   }
 
@@ -914,6 +930,7 @@ function App() {
 
   function logoutIdentity() {
     localStorage.removeItem(identityStorageKey);
+    setActivePanelView("chat");
     setUserName("");
     setIdentityInput("");
     forgetSession();
@@ -978,16 +995,19 @@ function App() {
   }
 
   function activateInspect() {
+    if (!isActiveSessionOwner) return;
     setHasGrabContext(true);
     appendEntry("client", { inspectContext: "workspace", active: true });
   }
 
   function clearInspectContext() {
+    if (!isActiveSessionOwner) return;
     setHasGrabContext(false);
     appendEntry("client", { inspectContext: "workspace", active: false });
   }
 
   function toggleAnnotating() {
+    if (!isActiveSessionOwner) return;
     setIsAnnotating((current) => {
       const next = !current;
       if (next) {
@@ -1000,6 +1020,7 @@ function App() {
   }
 
   function clearAnnotation() {
+    if (!isActiveSessionOwner) return;
     setIsAnnotating(false);
     setLatestAnnotation(null);
     appendEntry("client", { annotation: null });
@@ -1130,8 +1151,13 @@ function App() {
 
   const chatHeader = (
     <ChatHeader
+      title={activePanelView === "settings" ? "Settings" : "AI Assistant"}
+      showBackButton={activePanelView === "settings"}
+      hideSidebarToggle={activePanelView === "settings"}
+      hideStatusDot={activePanelView === "settings"}
       isSidebarOpen={isSidebarOpen}
       onToggleSidebar={() => setIsSidebarOpen((value) => !value)}
+      onBack={() => setActivePanelView("chat")}
       hasStreamingSessions={busy}
       hasCurrentUserIdentity={Boolean(userName)}
       currentUserDisplayLabel={getDisplayLabel(userName || GUEST_USER_NAME)}
@@ -1211,27 +1237,12 @@ function App() {
                       onSessionSelect={onSessionSelect}
                       onRefreshSessions={() => loadSessions({ restoreSaved: false })}
                       onLoadMoreSessions={loadMoreSessions}
-                      hasMoreSessions={sessionsHasMore}
+                      hasMoreSessions={hasVisibleMoreSessions}
                       isLoadingSessions={isSessionsLoading}
                     />
-                    <DeveloperTools
-                      maxTurns={maxTurns}
-                      onChangeMaxTurns={changeMaxTurns}
-                      maxConcurrentRuns={maxConcurrentRuns}
-                      onChangeMaxConcurrentRuns={changeMaxConcurrentRuns}
-                      commandsHint={commandsHint}
-                      commandOptions={commandOptions}
-                      selectedCommandPath={selectedCommandPath}
-                      commandPath={commandPath}
-                      commandContent={commandContent}
-                      setSelectedCommandPath={setSelectedCommandPath}
-                      setCommandPath={setCommandPath}
-                      setCommandContent={setCommandContent}
-                      loadClaudeCommand={loadClaudeCommand}
-                      loadClaudeCommands={loadClaudeCommands}
-                      saveCommand={saveCommand}
-                      deleteCommand={deleteCommand}
-                      clearCommandEditor={clearCommandEditor}
+                    <SidebarSettingsButton
+                      isActive={activePanelView === "settings"}
+                      onClick={() => setActivePanelView("settings")}
                     />
                     <button
                       type="button"
@@ -1248,53 +1259,77 @@ function App() {
               ) : null}
               <main className="ai-chat-main-column">
                 {chatHeader}
-                <AgentChatMessageList
-                  bubbleItems={bubbleItems}
-                  bubbleRoles={bubbleRoles}
-                  isStreaming={isStreamingActiveSession}
-                  open={!isClosed && !isMinimized}
-                  scrollResetKey={sessionId || "new"}
-                  hasMoreBefore={historyPageInfo.hasMoreBefore}
-                  isLoadingBefore={isHistoryLoading}
-                  onLoadBefore={loadOlderMessages}
-                  writeClipboard={writeClipboard}
-                />
-                <ChatFooter
-                  senderValue={prompt}
-                  setSenderValue={setPrompt}
-                  permissionMode={mode}
-                  onPermissionChange={changeMode}
-                  showQuestionFooter={Boolean(activeAskUserQuestion)}
-                  activeAskUserQuestionData={activeAskUserQuestion?.data}
-                  activeAskUserQuestionMessageId={activeAskUserQuestion?.id}
-                  activeAskUserQuestionToolUseId={activeAskUserQuestion?.toolUseId}
-                  hasGrabContext={hasGrabContext}
-                  isAnnotating={isAnnotating}
-                  latestAnnotation={latestAnnotation}
-                  isStreamingActiveSession={isStreamingActiveSession}
-                  isSessionOwner={true}
-                  hasChipAnswer={hasChipAnswer}
-                  setHasChipAnswer={setHasChipAnswer}
-                  askQuestionFooterRef={askQuestionFooterRef}
-                  accentStyle={accentStyle}
-                  onActivateInspect={activateInspect}
-                  onInspectPillClear={clearInspectContext}
-                  onStartAnnotating={toggleAnnotating}
-                  onClearAnnotation={clearAnnotation}
-                  onStopStreaming={interrupt}
-                  onSubmit={runPrompt}
-                  pendingUploads={selectedImages}
-                  onAddUploads={onFilesSelected}
-                  onRemoveUpload={(id) => setSelectedImages((current) => current.filter((image) => image.id !== id))}
-                  onClearUploads={() => setSelectedImages([])}
-                  slashCommands={slashCommands}
-                  mentionSuggestions={fileMentionSuggestions}
-                  mentionStatus={fileMentionStatus}
-                  onMentionSearch={searchFileMentions}
-                  formatBytes={formatBytes}
-                  estimateBase64Bytes={estimateBase64Bytes}
-                  imageSrc={imageSrc}
-                />
+                {activePanelView === "settings" ? (
+                  <SettingsPanel
+                    maxTurns={maxTurns}
+                    maxConcurrentRuns={maxConcurrentRuns}
+                    onSubmitSettings={saveSettings}
+                    commandsHint={commandsHint}
+                    rootInfo={rootInfo}
+                    commandOptions={commandOptions}
+                    selectedCommandPath={selectedCommandPath}
+                    commandPath={commandPath}
+                    commandContent={commandContent}
+                    setSelectedCommandPath={setSelectedCommandPath}
+                    setCommandPath={setCommandPath}
+                    setCommandContent={setCommandContent}
+                    loadClaudeCommand={loadClaudeCommand}
+                    loadClaudeCommands={loadClaudeCommands}
+                    saveCommand={saveCommand}
+                    deleteCommand={deleteCommand}
+                    clearCommandEditor={clearCommandEditor}
+                  />
+                ) : (
+                  <>
+                    <AgentChatMessageList
+                      bubbleItems={bubbleItems}
+                      bubbleRoles={bubbleRoles}
+                      isStreaming={isStreamingActiveSession}
+                      open={!isClosed && !isMinimized}
+                      scrollResetKey={sessionId || "new"}
+                      hasMoreBefore={historyPageInfo.hasMoreBefore}
+                      isLoadingBefore={isHistoryLoading}
+                      onLoadBefore={loadOlderMessages}
+                      writeClipboard={writeClipboard}
+                    />
+                    <ChatFooter
+                      senderValue={prompt}
+                      setSenderValue={setPrompt}
+                      permissionMode={mode}
+                      onPermissionChange={changeMode}
+                      showQuestionFooter={Boolean(activeAskUserQuestion)}
+                      activeAskUserQuestionData={activeAskUserQuestion?.data}
+                      activeAskUserQuestionMessageId={activeAskUserQuestion?.id}
+                      activeAskUserQuestionToolUseId={activeAskUserQuestion?.toolUseId}
+                      hasGrabContext={hasGrabContext}
+                      isAnnotating={isAnnotating}
+                      latestAnnotation={latestAnnotation}
+                      isStreamingActiveSession={isStreamingActiveSession}
+                      isSessionOwner={isActiveSessionOwner}
+                      hasChipAnswer={hasChipAnswer}
+                      setHasChipAnswer={setHasChipAnswer}
+                      askQuestionFooterRef={askQuestionFooterRef}
+                      accentStyle={accentStyle}
+                      onActivateInspect={activateInspect}
+                      onInspectPillClear={clearInspectContext}
+                      onStartAnnotating={toggleAnnotating}
+                      onClearAnnotation={clearAnnotation}
+                      onStopStreaming={interrupt}
+                      onSubmit={runPrompt}
+                      pendingUploads={selectedImages}
+                      onAddUploads={onFilesSelected}
+                      onRemoveUpload={(id) => setSelectedImages((current) => current.filter((image) => image.id !== id))}
+                      onClearUploads={() => setSelectedImages([])}
+                      slashCommands={slashCommands}
+                      mentionSuggestions={fileMentionSuggestions}
+                      mentionStatus={fileMentionStatus}
+                      onMentionSearch={searchFileMentions}
+                      formatBytes={formatBytes}
+                      estimateBase64Bytes={estimateBase64Bytes}
+                      imageSrc={imageSrc}
+                    />
+                  </>
+                )}
               </main>
             </div>
           )}
@@ -1409,8 +1444,40 @@ function ImageAttachmentGrid({ images }) {
   );
 }
 
-function DeveloperTools(props) {
-  const collapseItems = [
+function SettingsPanel(props) {
+  const [draftMaxTurns, setDraftMaxTurns] = useState(props.maxTurns);
+  const [draftMaxConcurrentRuns, setDraftMaxConcurrentRuns] = useState(props.maxConcurrentRuns);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+
+  useEffect(() => {
+    setDraftMaxTurns(props.maxTurns);
+  }, [props.maxTurns]);
+
+  useEffect(() => {
+    setDraftMaxConcurrentRuns(props.maxConcurrentRuns);
+  }, [props.maxConcurrentRuns]);
+
+  const canSaveSettings =
+    Number.isInteger(draftMaxTurns) &&
+    draftMaxTurns >= 1 &&
+    draftMaxTurns <= 200 &&
+    Number.isInteger(draftMaxConcurrentRuns) &&
+    draftMaxConcurrentRuns >= 1 &&
+    draftMaxConcurrentRuns <= 64;
+
+  function submitSettings(event) {
+    event.preventDefault();
+    if (!canSaveSettings || isSavingSettings) return;
+    setIsSavingSettings(true);
+    Promise.resolve(props.onSubmitSettings?.({
+      maxTurns: draftMaxTurns,
+      maxConcurrentRuns: draftMaxConcurrentRuns
+    }))
+      .catch(() => {})
+      .finally(() => setIsSavingSettings(false));
+  }
+
+  const tabItems = [
     {
       key: "settings",
       label: (
@@ -1419,19 +1486,23 @@ function DeveloperTools(props) {
         </span>
       ),
       children: (
-        <div className="ai-chat-tool-panel">
+        <form className="ai-chat-tool-panel" onSubmit={submitSettings}>
+          {props.rootInfo ? (
+            <div className="ai-chat-root-info">
+              <span>Project root</span>
+              <code title={props.rootInfo.projectRoot}>{props.rootInfo.projectRoot}</code>
+              <span>Claude commands</span>
+              <code title={props.rootInfo.claudeCommandsDir}>{props.rootInfo.claudeCommandsDir}</code>
+            </div>
+          ) : null}
           <label className="ai-chat-field">
             <span>Max turns</span>
             <InputNumber
               size="small"
               min={1}
               max={200}
-              value={props.maxTurns}
-              onChange={(value) => {
-                if (typeof value === "number" && Number.isInteger(value) && value >= 1) {
-                  props.onChangeMaxTurns?.(value);
-                }
-              }}
+              value={draftMaxTurns}
+              onChange={(value) => setDraftMaxTurns(value)}
               style={{ width: "100%" }}
             />
           </label>
@@ -1441,16 +1512,22 @@ function DeveloperTools(props) {
               size="small"
               min={1}
               max={64}
-              value={props.maxConcurrentRuns ?? null}
-              onChange={(value) => {
-                if (typeof value === "number" && Number.isInteger(value) && value >= 1) {
-                  props.onChangeMaxConcurrentRuns?.(value);
-                }
-              }}
+              value={draftMaxConcurrentRuns ?? null}
+              onChange={(value) => setDraftMaxConcurrentRuns(value)}
               style={{ width: "100%" }}
             />
           </label>
-        </div>
+          <Button
+            size="small"
+            htmlType="submit"
+            icon={<SendOutlined />}
+            loading={isSavingSettings}
+            disabled={!canSaveSettings}
+            className="ai-chat-settings-action is-strong"
+          >
+            Save settings
+          </Button>
+        </form>
       )
     },
     {
@@ -1467,8 +1544,11 @@ function DeveloperTools(props) {
             <span>Commands</span>
             <Select
               size="small"
+              className="ai-chat-settings-select"
+              popupClassName="ai-chat-settings-select-popup"
               value={props.selectedCommandPath}
               options={props.commandOptions}
+              style={{ width: "100%" }}
               onChange={(value) => {
                 props.setSelectedCommandPath(value);
                 value ? props.loadClaudeCommand(value) : props.clearCommandEditor();
@@ -1494,16 +1574,16 @@ function DeveloperTools(props) {
             />
           </label>
           <Space size={6} wrap>
-            <Button size="small" type="primary" onClick={props.saveCommand}>
+            <Button size="small" className="ai-chat-settings-action is-strong" onClick={props.saveCommand}>
               Save
             </Button>
-            <Button size="small" onClick={props.clearCommandEditor}>
+            <Button size="small" className="ai-chat-settings-action" onClick={props.clearCommandEditor}>
               New
             </Button>
             <Button
               size="small"
-              danger
               icon={<DeleteOutlined />}
+              className="ai-chat-settings-action is-danger"
               onClick={props.deleteCommand}
             >
               Delete
@@ -1511,6 +1591,7 @@ function DeveloperTools(props) {
             <Button
               size="small"
               icon={<ReloadOutlined />}
+              className="ai-chat-settings-action"
               onClick={() => props.loadClaudeCommands()}
             >
               Refresh
@@ -1522,12 +1603,29 @@ function DeveloperTools(props) {
   ];
 
   return (
-    <Collapse
-      size="small"
-      ghost
-      className="ai-chat-tools"
-      items={collapseItems}
-    />
+    <div className="ai-chat-settings-panel">
+      <Tabs
+        defaultActiveKey="settings"
+        items={tabItems}
+        className="ai-chat-settings-tabs"
+        size="small"
+      />
+    </div>
+  );
+}
+
+function SidebarSettingsButton({ isActive, onClick }) {
+  return (
+    <div className="ai-chat-sidebar-footer">
+      <button
+        type="button"
+        className={["ai-chat-sidebar-footer-button", isActive ? "is-active" : ""].filter(Boolean).join(" ")}
+        onClick={onClick}
+      >
+        <SettingOutlined />
+        Settings
+      </button>
+    </div>
   );
 }
 

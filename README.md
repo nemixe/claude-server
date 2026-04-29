@@ -14,24 +14,26 @@ The API only responds when the request hostname and browser origin match `ALLOWE
 Open `http://localhost:3000/client` for a minimal browser client that creates sessions and shows streaming events.
 The test client defaults to `30` max turns; lower or raise the server cap with `MAX_TURNS`.
 The browser client also supports local PNG, JPEG, GIF, and WebP image prompts. Sent images are passed to Claude as base64 image content blocks and previewed from session history when available.
+Set `PROJECT_ROOT` to control the project directory Claude runs in, where `.claude/commands` is read from, and where `@` file mentions search.
 
 ## Endpoints
 
 - `GET /health`
 - `GET /client`
+- `GET /v1/root`
 - `POST /v1/sessions`
 - `GET /v1/sessions`
 - `GET /v1/sessions/:sessionId/messages`
 - `GET /v1/sessions/:sessionId/files:search?q=button&limit=50`
-- `GET /v1/sessions/:sessionId/claude-commands`
-- `POST /v1/sessions/:sessionId/claude-commands`
-- `DELETE /v1/sessions/:sessionId/claude-commands`
+- `GET /v1/claude-commands`
+- `POST /v1/claude-commands`
+- `DELETE /v1/claude-commands`
 - `GET /v1/sessions/:sessionId/events:stream`
 - `POST /v1/sessions/:sessionId/messages:stream`
 - `POST /v1/sessions/:sessionId/interrupt`
 - `DELETE /v1/sessions/:sessionId`
 
-Modes are `plan`, `edit`, and `bypass`. Tool execution runs from an isolated per-session workspace with Agent SDK sandboxing enabled.
+Modes are `plan`, `edit`, and `bypass`. Tool execution runs from the configured project root with Agent SDK sandboxing enabled. Session metadata remains under `SESSION_DIR`.
 
 ## Image prompts
 
@@ -53,17 +55,17 @@ The API accepts up to 5 images per prompt, 5 MB decoded per image, using `image/
 
 ## Project search
 
-Search file and folder paths inside the server project root with fuzzy matching:
+Search file and folder paths inside the configured project root with fuzzy matching:
 
 ```ts
 const { results } = await client.searchFiles(sessionId, "cmpbtn", { limit: 10 });
 ```
 
-Each result includes `path`, `name`, `type`, `score`, `updatedAt`, and `size` for files. Results are relative to the server project root. Generated directories such as `.data`, `.git`, `dist`, and `node_modules` are skipped.
+Each result includes `path`, `name`, `type`, `score`, `updatedAt`, and `size` for files. Results are relative to the configured project root. Generated directories such as `.data`, `.git`, `dist`, and `node_modules` are skipped.
 
 ## Claude commands
 
-Custom Claude slash commands are stored per session under the workspace `.claude/commands` directory. Command paths are normalized relative to that directory and must be Markdown files.
+Custom Claude slash commands are stored under `<PROJECT_ROOT>/.claude/commands`. Command paths are normalized relative to that directory and must be Markdown files.
 
 ```ts
 await client.saveClaudeCommand(sessionId, {

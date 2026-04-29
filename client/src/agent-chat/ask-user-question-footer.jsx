@@ -59,7 +59,7 @@ function composeToolResultContent(questions, answersByStep) {
 }
 
 const AskUserQuestionFooter = forwardRef(
-  ({ questionData, questionMessageId, senderValue, onSelectionChange }, ref) => {
+  ({ questionData, questionMessageId, senderValue, disabled, onSelectionChange }, ref) => {
     const resolvedData = useMemo(() => resolveAskUserQuestionData(questionData), [questionData]);
     const normalizedQuestions = resolvedData?.questions ?? [];
     const questionCount = normalizedQuestions.length;
@@ -98,6 +98,8 @@ const AskUserQuestionFooter = forwardRef(
       ref,
       () => ({
         submitCurrentStep(customText) {
+          if (disabled) return { advanced: false, ready: false };
+
           const current = answersRef.current;
           const safeStep = Math.min(stepIndex, questionCount - 1);
           const trimmed = typeof customText === "string" ? customText.trim() : "";
@@ -150,7 +152,7 @@ const AskUserQuestionFooter = forwardRef(
           notifySelectionChange(empty);
         }
       }),
-      [stepIndex, questionCount, normalizedQuestions, getAllStepsAnswered, notifySelectionChange]
+      [disabled, stepIndex, questionCount, normalizedQuestions, getAllStepsAnswered, notifySelectionChange]
     );
 
     if (questionCount === 0) return null;
@@ -164,6 +166,8 @@ const AskUserQuestionFooter = forwardRef(
     const answeredStepCount = answersByStep.filter((answer) => stepHasAnswer(answer)).length;
 
     const handleChipClick = (label) => {
+      if (disabled) return;
+
       setAnswersByStep((previous) => {
         const next = previous.map((answer, index) => {
           if (index !== safeStepIndex) return answer;
@@ -191,7 +195,7 @@ const AskUserQuestionFooter = forwardRef(
             <button
               type="button"
               className="ai-chat-footer-question-nav"
-              disabled={safeStepIndex === 0}
+              disabled={disabled || safeStepIndex === 0}
               onClick={() => setStepIndex((previous) => Math.max(0, previous - 1))}
               aria-label="Previous question"
             >
@@ -212,7 +216,7 @@ const AskUserQuestionFooter = forwardRef(
             <button
               type="button"
               className="ai-chat-footer-question-nav"
-              disabled={safeStepIndex === questionCount - 1}
+              disabled={disabled || safeStepIndex === questionCount - 1}
               onClick={() => setStepIndex((previous) => Math.min(questionCount - 1, previous + 1))}
               aria-label="Next question"
             >
@@ -225,7 +229,13 @@ const AskUserQuestionFooter = forwardRef(
           {currentQuestion?.options?.map((option) => {
             const isSelected = currentChipSelections.includes(option.label);
             return (
-              <Tooltip key={option.label} title={option.description || undefined}>
+              <Tooltip
+                key={option.label}
+                title={option.description || undefined}
+                classNames={{ root: "ai-chat-footer-chip-tooltip" }}
+                mouseLeaveDelay={0}
+                destroyOnHidden
+              >
                 <button
                   type="button"
                   className={[
@@ -236,6 +246,7 @@ const AskUserQuestionFooter = forwardRef(
                     .filter(Boolean)
                     .join(" ")}
                   onClick={() => handleChipClick(option.label)}
+                  disabled={disabled}
                   aria-pressed={isSelected}
                 >
                   {option.label}
