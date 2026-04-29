@@ -11,6 +11,15 @@ describe("web chat contract", () => {
     const messages = toWebChatMessages(
       [
         {
+          type: "system",
+          uuid: "sys1",
+          session_id: "s1",
+          message: {
+            role: "system",
+            content: [{ type: "text", text: "init" }]
+          }
+        },
+        {
           type: "user",
           uuid: "u1",
           session_id: "s1",

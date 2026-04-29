@@ -795,16 +795,23 @@ function App() {
     });
 
     const parsed = parseJsonOrText(data.join("\n"));
-    if (event === "status" && parsed && typeof parsed.running === "boolean") {
+    const normalizedEvent = normalizeSseEventType(event, parsed);
+    if (normalizedEvent === "status" && parsed && typeof parsed.running === "boolean") {
       setIsObservedRunning(parsed.running);
-      return { event, data: parsed, consumed: true };
+      return { event: normalizedEvent, data: parsed, consumed: true };
     }
-    if (event === "done" && source === "observer" && parsed && parsed.observing === false) {
+    if (normalizedEvent === "done" && source === "observer" && parsed && parsed.observing === false) {
       setIsObservedRunning(false);
-      return { event, data: parsed, consumed: true };
+      return { event: normalizedEvent, data: parsed, consumed: true };
     }
-    queueStreamEntry(event, parsed);
-    return { event, data: parsed, consumed: false };
+    if (!shouldSkipDisplayEntry(normalizedEvent, parsed)) queueStreamEntry(normalizedEvent, parsed);
+    return { event: normalizedEvent, data: parsed, consumed: false };
+  }
+
+  function normalizeSseEventType(event, data) {
+    if (event !== "message" || !data || typeof data !== "object" || typeof data.type !== "string") return event;
+    if (data.type === "result" || data.type === "system") return data.type;
+    return event;
   }
 
   function updateStreamOutcome(outcome, emitted, source) {
@@ -1680,10 +1687,12 @@ function eventsToBubbleItems(events, userName = GUEST_USER_NAME) {
   const userLabel = getDisplayLabel(userName || GUEST_USER_NAME);
   const items = events.flatMap((entry) => {
     if (!entry) return [];
+    if (shouldSkipDisplayEntry(entry.type, entry.data)) return [];
+    const displayType = getDisplayEntryType(entry.type, entry.data);
     const timestamp = formatMessageTimestamp(entry.timestamp);
     const meta = timestamp;
 
-    if (entry.type === "prompt") {
+    if (displayType === "prompt") {
       const images = Array.isArray(entry.data?.images) ? entry.data.images : [];
       const text = entry.data?.prompt ? String(entry.data.prompt) : "";
       return [
@@ -1697,20 +1706,20 @@ function eventsToBubbleItems(events, userName = GUEST_USER_NAME) {
       ];
     }
 
-    if (entry.type === "history") {
+    if (displayType === "history") {
       if (entry.data && entry.data.empty) return [createActivity(entry.id, "History", "No saved messages yet for this session.")];
       return toProtocolItems(entry.data, meta, entry.id, userLabel);
     }
 
-    if (entry.type === "message") {
+    if (displayType === "message") {
       return toProtocolItems(entry.data, timestamp, entry.id, userLabel);
     }
 
-    if (entry.type === "result") {
-      return resultToItems(entry);
+    if (displayType === "result") {
+      return resultToItems(entry, displayType);
     }
 
-    if (entry.type === "client_error" || entry.type === "error") {
+    if (displayType === "client_error" || displayType === "error") {
       return [createActivity(entry.id, "Error", activityText(entry.type, entry.data), "error")];
     }
 
@@ -1720,12 +1729,33 @@ function eventsToBubbleItems(events, userName = GUEST_USER_NAME) {
   return mergeToolResultsIntoToolUse(items);
 }
 
-function resultToItems(entry) {
+function resultToItems(entry, type = entry.type) {
   const data = entry.data;
-  if (data && typeof data === "object" && data.is_error === true) {
-    return [createActivity(entry.id, "Run error", activityText(entry.type, data), "error")];
-  }
-  return [];
+  return [createActivity(entry.id, "Run error", activityText(type, data), "error")];
+}
+
+function shouldSkipDisplayEntry(type, data) {
+  const displayType = getDisplayEntryType(type, data);
+  if (displayType === "system") return true;
+  if (displayType === "result") return !(data && typeof data === "object" && data.is_error === true);
+  if (displayType !== "history" && displayType !== "message") return false;
+
+  return getProtocolRole(data) === "system";
+}
+
+function getDisplayEntryType(type, data) {
+  if (type !== "history" && type !== "message") return type;
+
+  const messageType = data && typeof data === "object" ? data.type : undefined;
+  if (messageType === "system" || messageType === "result") return messageType;
+  return type;
+}
+
+function getProtocolRole(value) {
+  if (!value || typeof value !== "object") return null;
+  const record = value;
+  const messageRecord = record.message && typeof record.message === "object" ? record.message : record;
+  return normalizeRole(messageRecord.role || record.type);
 }
 
 function mergeToolResultsIntoToolUse(items) {
@@ -1864,11 +1894,6 @@ function toProtocolItems(value, meta, keyBase, userName = GUEST_USER_NAME) {
   const content = messageRecord.content !== undefined ? messageRecord.content : record.content !== undefined ? record.content : record.message;
   const blocks = Array.isArray(content) ? content : [];
   const items = [];
-
-  if (role === "system") {
-    items.push(createActivity(`${keyBase}:system`, "System", extractTextContent(content) || JSON.stringify(redactImageData(content), null, 2), "tool"));
-    return items;
-  }
 
   if (!Array.isArray(content)) {
     const text = extractTextContent(content);

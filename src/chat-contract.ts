@@ -243,7 +243,7 @@ function toWebChatMessage(value: unknown, fallbackSessionId: string, fallbackInd
   if (!isRecord(value)) return undefined;
   const messageRecord = isRecord(value.message) ? value.message : value;
   const role = getRole(value, messageRecord);
-  if (!role) return undefined;
+  if (shouldSkipDisplayMessage(role)) return undefined;
 
   const content = messageRecord.content ?? value.content ?? value.message;
   const text = extractText(content);
@@ -283,6 +283,10 @@ function getRole(value: Record<string, unknown>, message: Record<string, unknown
   if (role === "user" || role === "assistant" || role === "system") return role;
   if (role === "tool" || role === "tool_use" || role === "tool_result") return "tool";
   return undefined;
+}
+
+function shouldSkipDisplayMessage(role: WebChatRole | undefined): role is undefined | "system" {
+  return !role || role === "system";
 }
 
 function extractText(content: unknown): string {
