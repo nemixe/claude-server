@@ -17,7 +17,6 @@ export type AppConfig = {
   maxBudgetUsd: number;
   runTimeoutMs: number;
   sandboxAllowedDomains: string[];
-  useSessionApi: boolean;
   sessionIdleTtlMs: number;
   defaultModel?: string;
 };
@@ -40,7 +39,6 @@ const RawEnvSchema = z.object({
   MAX_BUDGET_USD: z.string().optional(),
   RUN_TIMEOUT_MS: z.string().optional(),
   SANDBOX_ALLOWED_DOMAINS: z.string().optional(),
-  ENABLE_SESSION_API: z.string().optional(),
   SESSION_IDLE_TTL_MS: z.string().optional(),
   CLAUDE_MODEL: z.string().optional()
 });
@@ -74,7 +72,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
     maxBudgetUsd: parseNumber(raw.MAX_BUDGET_USD, 1, "MAX_BUDGET_USD"),
     runTimeoutMs: parseInteger(raw.RUN_TIMEOUT_MS, 600_000, "RUN_TIMEOUT_MS"),
     sandboxAllowedDomains: parseCsv(raw.SANDBOX_ALLOWED_DOMAINS ?? "api.anthropic.com,claude.ai,statsig.anthropic.com"),
-    useSessionApi: parseBoolean(raw.ENABLE_SESSION_API, false, "ENABLE_SESSION_API"),
     sessionIdleTtlMs: parsePositiveInteger(raw.SESSION_IDLE_TTL_MS, 300_000, "SESSION_IDLE_TTL_MS"),
     defaultModel: normalizeOptionalString(raw.CLAUDE_MODEL)
   };

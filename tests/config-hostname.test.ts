@@ -20,6 +20,13 @@ describe("config and hostname parsing", () => {
       { hostname: "example.com" },
       { hostname: "app.example.com", port: "8443" }
     ]);
+    expect(config).not.toHaveProperty("useSessionApi");
+  });
+
+  it("ignores removed ENABLE_SESSION_API values", () => {
+    const config = loadConfig({ ENABLE_SESSION_API: "false" });
+
+    expect(config).not.toHaveProperty("useSessionApi");
   });
 
   it("loads PROJECT_ROOT and resolves default data paths from that root", async () => {

@@ -6,11 +6,7 @@ import { loadConfig } from "./config.js";
 import { createSessionFactory } from "./session-adapter.js";
 
 const config = loadConfig();
-const agentService = new AgentService(
-  config,
-  undefined,
-  config.useSessionApi ? createSessionFactory() : undefined
-);
+const agentService = new AgentService(config, undefined, createSessionFactory());
 const app = await createApp({ config, agentService });
 
 const server = serve(

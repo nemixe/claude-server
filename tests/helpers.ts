@@ -14,6 +14,7 @@ export async function createTempConfig(overrides: Partial<NodeJS.ProcessEnv> = {
       MAX_CONCURRENT_RUNS: "2",
       MAX_TURNS: "5",
       MAX_BUDGET_USD: "0.5",
+      CLAUDE_MODEL: "claude-sonnet-4-6",
       ...overrides
     },
     root

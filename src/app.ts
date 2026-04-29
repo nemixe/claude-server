@@ -121,11 +121,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   const sessionStore = dependencies.sessionStore ?? new SessionStore(dependencies.config);
   const agentService =
     dependencies.agentService ??
-    new AgentService(
-      dependencies.config,
-      undefined,
-      dependencies.config.useSessionApi ? createSessionFactory() : undefined
-    );
+    new AgentService(dependencies.config, undefined, createSessionFactory());
   const settingsStore = dependencies.settingsStore ?? new SettingsStore(dependencies.config);
 
   // Load persisted settings into the agent service on startup

@@ -1,18 +1,18 @@
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AgentService,
-  buildAgentOptions,
   buildAgentPrompt,
+  buildSessionOptions,
   classifyToolResult,
   getAskUserQuestionTool,
   isPendingInterruptPayloadValid,
   MAX_CONSECUTIVE_VALIDATION_ERRORS,
-  ValidationErrorLimitError,
-  type AgentSdkAdapter
+  ValidationErrorLimitError
 } from "../src/agent-service.js";
 import { buildSandboxSettings } from "../src/sandbox.js";
+import type { SessionFactory, SessionLike } from "../src/session-adapter.js";
 import type { SessionMetadata } from "../src/types.js";
 import { createTempConfig } from "./helpers.js";
 
@@ -46,27 +46,25 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
 
-    const planOptions = buildAgentOptions(config, session, { prompt: "inspect", mode: "plan" }, new AbortController(), config.maxTurns);
-    const editOptions = buildAgentOptions(config, session, { prompt: "edit", mode: "edit" }, new AbortController(), config.maxTurns);
-    const bypassOptions = buildAgentOptions(config, session, { prompt: "run", mode: "bypass" }, new AbortController(), config.maxTurns);
+    const planOptions = buildSessionOptions(config, session, { prompt: "inspect", mode: "plan" });
+    const editOptions = buildSessionOptions(config, session, { prompt: "edit", mode: "edit" });
+    const bypassOptions = buildSessionOptions(config, session, { prompt: "run", mode: "bypass" });
 
     expect(planOptions.permissionMode).toBe("plan");
-    expect(planOptions.enableFileCheckpointing).toBe(false);
     expect(planOptions.disallowedTools).toContain("Bash");
     expect(planOptions.disallowedTools).not.toContain("Write");
     expect(planOptions.disallowedTools).not.toContain("Edit");
     expect(planOptions.disallowedTools).not.toContain("MultiEdit");
     expect(editOptions.permissionMode).toBe("acceptEdits");
-    expect(editOptions.enableFileCheckpointing).toBe(true);
     expect(bypassOptions.permissionMode).toBe("bypassPermissions");
     expect(bypassOptions.allowDangerouslySkipPermissions).toBe(true);
     expect(planOptions.cwd).toBe(config.projectRoot);
-    expect(planOptions.sandbox).toMatchObject({ filesystem: { allowWrite: [config.projectRoot] } });
-    expect(bypassOptions.resume).toBe(session.id);
-    expect(bypassOptions.sessionId).toBeUndefined();
+    expect(planOptions).not.toHaveProperty("sandbox");
+    expect(bypassOptions).not.toHaveProperty("resume");
+    expect(bypassOptions).not.toHaveProperty("sessionId");
   });
 
   it("maps text and image requests to Agent SDK prompt shapes", async () => {
@@ -225,49 +223,43 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-bad-question"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => undefined,
-        async *[Symbol.asyncIterator]() {
-          yield {
-            type: "assistant",
-            message: {
-              role: "assistant",
-              stop_reason: null,
-              content: [
-                {
-                  type: "tool_use",
-                  id: "toolu_q",
-                  name: "AskUserQuestion",
-                  input: { questions: "[{\"question\": \"What?\"}]" }
-                }
-              ]
+    const { service } = createServiceWithStream(config, async function* () {
+      yield {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_q",
+              name: "AskUserQuestion",
+              input: { questions: "[{\"question\": \"What?\"}]" }
             }
-          };
-          yield {
-            type: "user",
-            message: {
-              role: "user",
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: "toolu_q",
-                  is_error: true,
-                  content:
-                    "<tool_use_error>InputValidationError: AskUserQuestion failed due to the following issue:\nThe parameter `questions` type is expected as `array` but provided as `string`</tool_use_error>"
-                }
-              ]
-            }
-          };
+          ]
         }
-      }),
-      getSessionMessages: async () => []
-    };
+      };
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_q",
+              is_error: true,
+              content:
+                "<tool_use_error>InputValidationError: AskUserQuestion failed due to the following issue:\nThe parameter `questions` type is expected as `array` but provided as `string`</tool_use_error>"
+            }
+          ]
+        }
+      };
+    });
 
     const events = [];
-    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "ask" } })) {
+    for await (const event of service.stream({ session, request: { prompt: "ask" } })) {
       events.push(event);
     }
 
@@ -289,41 +281,35 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-bad-plan"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => undefined,
-        async *[Symbol.asyncIterator]() {
-          yield {
-            type: "assistant",
-            message: {
-              role: "assistant",
-              stop_reason: null,
-              content: [{ type: "tool_use", id: "toolu_exit", name: "ExitPlanMode", input: {} }]
-            }
-          };
-          yield {
-            type: "user",
-            message: {
-              role: "user",
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: "toolu_exit",
-                  is_error: true,
-                  content: "<tool_use_error>InputValidationError: plan is required</tool_use_error>"
-                }
-              ]
-            }
-          };
+    const { service } = createServiceWithStream(config, async function* () {
+      yield {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          content: [{ type: "tool_use", id: "toolu_exit", name: "ExitPlanMode", input: {} }]
         }
-      }),
-      getSessionMessages: async () => []
-    };
+      };
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_exit",
+              is_error: true,
+              content: "<tool_use_error>InputValidationError: plan is required</tool_use_error>"
+            }
+          ]
+        }
+      };
+    });
 
     const events = [];
-    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "plan", mode: "plan" } })) {
+    for await (const event of service.stream({ session, request: { prompt: "plan", mode: "plan" } })) {
       events.push(event);
     }
 
@@ -357,44 +343,38 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-validation"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => undefined,
-        async *[Symbol.asyncIterator]() {
-          yield {
-            type: "assistant",
-            message: {
-              role: "assistant",
-              stop_reason: null,
-              content: [
-                { type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: 5 } }
-              ]
-            }
-          };
-          yield {
-            type: "user",
-            message: {
-              role: "user",
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: "toolu_read",
-                  is_error: true,
-                  content:
-                    "<tool_use_error>InputValidationError: Read failed due to the following issue:\nThe parameter `file_path` type is expected as `string` but provided as `number`</tool_use_error>"
-                }
-              ]
-            }
-          };
+    const { service } = createServiceWithStream(config, async function* () {
+      yield {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          stop_reason: null,
+          content: [
+            { type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: 5 } }
+          ]
         }
-      }),
-      getSessionMessages: async () => []
-    };
+      };
+      yield {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_read",
+              is_error: true,
+              content:
+                "<tool_use_error>InputValidationError: Read failed due to the following issue:\nThe parameter `file_path` type is expected as `string` but provided as `number`</tool_use_error>"
+            }
+          ]
+        }
+      };
+    });
 
     const events = [];
-    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "read" } })) {
+    for await (const event of service.stream({ session, request: { prompt: "read" } })) {
       events.push(event);
     }
 
@@ -420,41 +400,35 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-validation-cap"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
     const errorContent =
       "<tool_use_error>InputValidationError: parameter shape</tool_use_error>";
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => undefined,
-        async *[Symbol.asyncIterator]() {
-          for (let i = 0; i < MAX_CONSECUTIVE_VALIDATION_ERRORS + 2; i += 1) {
-            const id = `toolu_read_${i}`;
-            yield {
-              type: "assistant",
-              message: {
-                role: "assistant",
-                stop_reason: null,
-                content: [{ type: "tool_use", id, name: "Read", input: { file_path: 5 } }]
-              }
-            };
-            yield {
-              type: "user",
-              message: {
-                role: "user",
-                content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: errorContent }]
-              }
-            };
+    const { service } = createServiceWithStream(config, async function* () {
+      for (let i = 0; i < MAX_CONSECUTIVE_VALIDATION_ERRORS + 2; i += 1) {
+        const id = `toolu_read_${i}`;
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            stop_reason: null,
+            content: [{ type: "tool_use", id, name: "Read", input: { file_path: 5 } }]
           }
-        }
-      }),
-      getSessionMessages: async () => []
-    };
+        };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: errorContent }]
+          }
+        };
+      }
+    });
 
     const events = [];
     let caught: unknown;
     try {
-      for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "read" } })) {
+      for await (const event of service.stream({ session, request: { prompt: "read" } })) {
         events.push(event);
       }
     } catch (error) {
@@ -477,57 +451,51 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-validation-reset"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
     const errorContent =
       "<tool_use_error>InputValidationError: parameter shape</tool_use_error>";
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => undefined,
-        async *[Symbol.asyncIterator]() {
-          for (let cycle = 0; cycle < 3; cycle += 1) {
-            const errorId = `toolu_err_${cycle}`;
-            const okId = `toolu_ok_${cycle}`;
-            yield {
-              type: "assistant",
-              message: {
-                role: "assistant",
-                stop_reason: null,
-                content: [{ type: "tool_use", id: errorId, name: "Read", input: { file_path: 5 } }]
-              }
-            };
-            yield {
-              type: "user",
-              message: {
-                role: "user",
-                content: [{ type: "tool_result", tool_use_id: errorId, is_error: true, content: errorContent }]
-              }
-            };
-            yield {
-              type: "assistant",
-              message: {
-                role: "assistant",
-                stop_reason: null,
-                content: [{ type: "tool_use", id: okId, name: "Read", input: { file_path: "ok.md" } }]
-              }
-            };
-            yield {
-              type: "user",
-              message: {
-                role: "user",
-                content: [{ type: "tool_result", tool_use_id: okId, is_error: false, content: "ok" }]
-              }
-            };
+    const { service } = createServiceWithStream(config, async function* () {
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        const errorId = `toolu_err_${cycle}`;
+        const okId = `toolu_ok_${cycle}`;
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            stop_reason: null,
+            content: [{ type: "tool_use", id: errorId, name: "Read", input: { file_path: 5 } }]
           }
-        }
-      }),
-      getSessionMessages: async () => []
-    };
+        };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: errorId, is_error: true, content: errorContent }]
+          }
+        };
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            stop_reason: null,
+            content: [{ type: "tool_use", id: okId, name: "Read", input: { file_path: "ok.md" } }]
+          }
+        };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: okId, is_error: false, content: "ok" }]
+          }
+        };
+      }
+    });
 
     const events = [];
     let caught: unknown;
     try {
-      for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "read" } })) {
+      for await (const event of service.stream({ session, request: { prompt: "read" } })) {
         events.push(event);
       }
     } catch (error) {
@@ -585,46 +553,44 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-question"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
     let closed = false;
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => {
-          closed = true;
-        },
-        async *[Symbol.asyncIterator]() {
+    const { service } = createServiceWithStream(
+      config,
+      async function* () {
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            stop_reason: null,
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_question",
+                name: "AskUserQuestion",
+                input: { questions: [{ question: "What should I build?", options: [] }] }
+              }
+            ]
+          }
+        };
+        if (!closed) {
           yield {
-            type: "assistant",
+            type: "user",
             message: {
-              role: "assistant",
-              stop_reason: null,
-              content: [
-                {
-                  type: "tool_use",
-                  id: "toolu_question",
-                  name: "AskUserQuestion",
-                  input: { questions: [{ question: "What should I build?", options: [] }] }
-                }
-              ]
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: "toolu_question", is_error: true, content: "Answer questions?" }]
             }
           };
-          if (!closed) {
-            yield {
-              type: "user",
-              message: {
-                role: "user",
-                content: [{ type: "tool_result", tool_use_id: "toolu_question", is_error: true, content: "Answer questions?" }]
-              }
-            };
-          }
         }
-      }),
-      getSessionMessages: async () => []
-    };
+      },
+      () => {
+        closed = true;
+      }
+    );
 
     const events = [];
-    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "ask" } })) {
+    for await (const event of service.stream({ session, request: { prompt: "ask" } })) {
       events.push(event);
     }
 
@@ -641,46 +607,44 @@ describe("sandbox and agent options", () => {
       workspacePath: path.join(config.workspaceDir, "session-exit-plan"),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      hasRun: true
+      hasRun: false
     };
     let closed = false;
-    const adapter: AgentSdkAdapter = {
-      query: () => ({
-        close: () => {
-          closed = true;
-        },
-        async *[Symbol.asyncIterator]() {
+    const { service } = createServiceWithStream(
+      config,
+      async function* () {
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            stop_reason: null,
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_exit",
+                name: "ExitPlanMode",
+                input: { plan: "Implement the control dispatcher." }
+              }
+            ]
+          }
+        };
+        if (!closed) {
           yield {
-            type: "assistant",
+            type: "user",
             message: {
-              role: "assistant",
-              stop_reason: null,
-              content: [
-                {
-                  type: "tool_use",
-                  id: "toolu_exit",
-                  name: "ExitPlanMode",
-                  input: { plan: "Implement the control dispatcher." }
-                }
-              ]
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: "toolu_exit", is_error: true, content: "Exit plan mode?" }]
             }
           };
-          if (!closed) {
-            yield {
-              type: "user",
-              message: {
-                role: "user",
-                content: [{ type: "tool_result", tool_use_id: "toolu_exit", is_error: true, content: "Exit plan mode?" }]
-              }
-            };
-          }
         }
-      }),
-      getSessionMessages: async () => []
-    };
+      },
+      () => {
+        closed = true;
+      }
+    );
 
     const events = [];
-    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "plan", mode: "plan" } })) {
+    for await (const event of service.stream({ session, request: { prompt: "plan", mode: "plan" } })) {
       events.push(event);
     }
 
@@ -698,3 +662,33 @@ describe("sandbox and agent options", () => {
     expect(JSON.stringify(events)).not.toContain('"type":"tool_result"');
   });
 });
+
+function createServiceWithStream(
+  config: Awaited<ReturnType<typeof createTempConfig>>,
+  stream: () => AsyncGenerator<unknown>,
+  onClose: () => void = () => undefined
+): { service: AgentService; session: SessionLike; factory: SessionFactory } {
+  const session = createMockSession("claude-test", stream, onClose);
+  const factory: SessionFactory = {
+    createSession: vi.fn(() => session),
+    resumeSession: vi.fn(() => session)
+  };
+
+  return {
+    service: new AgentService(config, undefined, factory),
+    session,
+    factory
+  };
+}
+
+function createMockSession(id: string, stream: () => AsyncGenerator<unknown>, onClose: () => void): SessionLike {
+  return {
+    get sessionId() {
+      return id;
+    },
+    send: vi.fn(),
+    stream: vi.fn().mockImplementation(stream),
+    close: vi.fn(onClose),
+    [Symbol.asyncDispose]: vi.fn()
+  } as unknown as SessionLike;
+}

@@ -1,18 +1,19 @@
-import { getSessionMessages, query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AppConfig } from "./config.js";
-import { buildSafeAgentEnv, buildSandboxSettings } from "./sandbox.js";
-import { MissingClaudeSessionIdError, SessionPool, type SessionFactory, type SessionLike, type SessionOptions } from "./session-adapter.js";
+import { buildSafeAgentEnv } from "./sandbox.js";
+import {
+  createSessionFactory,
+  MissingClaudeSessionIdError,
+  SessionPool,
+  type SessionFactory,
+  type SessionLike,
+  type SessionOptions
+} from "./session-adapter.js";
 import type { AgentStatus, ClaudeMode, NormalizedAgentEvent, PendingInterrupt, SessionMetadata, StreamMessageRequest } from "./types.js";
 
 export type AgentPrompt = string | AsyncIterable<SDKUserMessage>;
 
-export type AgentQuery = AsyncIterable<unknown> & {
-  interrupt?: () => Promise<void>;
-  close?: () => void;
-};
-
 export type AgentSdkAdapter = {
-  query: (input: { prompt: AgentPrompt; options: Record<string, unknown> }) => AgentQuery;
   getSessionMessages: (sessionId: string, options?: { dir?: string; limit?: number; offset?: number }) => Promise<unknown[]>;
 };
 
@@ -77,7 +78,6 @@ type ActiveRun = {
 };
 
 export const defaultAgentSdkAdapter: AgentSdkAdapter = {
-  query: (input) => query(input as never) as AgentQuery,
   getSessionMessages: (sessionId, options) => getSessionMessages(sessionId, options) as Promise<unknown[]>
 };
 
@@ -102,26 +102,24 @@ export class ValidationErrorLimitError extends Error {
 
 export class AgentService {
   private readonly activeRuns = new Map<string, ActiveRun>();
-  private readonly pool?: SessionPool;
-  private readonly cleanupTimer?: ReturnType<typeof setInterval>;
+  private readonly pool: SessionPool;
+  private readonly cleanupTimer: ReturnType<typeof setInterval>;
   private maxConcurrentRuns: number;
   private maxTurns: number;
 
   constructor(
     private readonly config: AppConfig,
     private readonly adapter: AgentSdkAdapter = defaultAgentSdkAdapter,
-    sessionFactory?: SessionFactory
+    sessionFactory: SessionFactory = createSessionFactory()
   ) {
     this.maxConcurrentRuns = config.maxConcurrentRuns;
     this.maxTurns = config.maxTurns;
-    if (sessionFactory) {
-      this.pool = new SessionPool(sessionFactory, { idleTtlMs: config.sessionIdleTtlMs });
-      const timer = setInterval(() => this.pool?.cleanupIdle(), Math.min(config.sessionIdleTtlMs, 60_000));
-      if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
-        timer.unref();
-      }
-      this.cleanupTimer = timer;
+    this.pool = new SessionPool(sessionFactory, { idleTtlMs: config.sessionIdleTtlMs });
+    const timer = setInterval(() => this.pool.cleanupIdle(), Math.min(config.sessionIdleTtlMs, 60_000));
+    if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+      timer.unref();
     }
+    this.cleanupTimer = timer;
   }
 
   getMaxConcurrentRuns(): number {
@@ -171,11 +169,7 @@ export class AgentService {
         return activeRun;
       };
 
-      if (this.pool) {
-        yield* this.streamWithSession(input, register);
-      } else {
-        yield* this.streamWithQuery(input, abortController, register);
-      }
+      yield* this.streamWithSession(input, register);
     } catch (error) {
       if (activeRun) {
         if (activeRun.closeOnError) activeRun.handle.close();
@@ -185,7 +179,7 @@ export class AgentService {
     } finally {
       clearTimeout(timeout);
       if (activeRun?.closeOnFinish) activeRun.handle.close();
-      this.pool?.markRunning(input.session.id, false);
+      this.pool.markRunning(input.session.id, false);
       this.activeRuns.delete(input.session.id);
       if (activeRun) closeObservers(activeRun);
     }
@@ -226,30 +220,30 @@ export class AgentService {
       return true;
     }
 
-    return this.pool?.close(sessionId) ?? false;
+    return this.pool.close(sessionId);
   }
 
   cleanupIdleSessions(): void {
-    this.pool?.cleanupIdle();
+    this.pool.cleanupIdle();
   }
 
   dispose(): void {
-    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    clearInterval(this.cleanupTimer);
     for (const [sessionId, active] of this.activeRuns) {
       active.abortController.abort();
       active.handle.close();
       closeObservers(active);
       this.activeRuns.delete(sessionId);
     }
-    this.pool?.closeAll();
+    this.pool.closeAll();
   }
 
   async getMessages(session: SessionMetadata, limit?: number, offset?: number): Promise<unknown[]> {
-    if (this.pool && session.hasRun && !session.claudeSessionId) {
+    if (session.hasRun && !session.claudeSessionId) {
       throw new MissingClaudeSessionIdError(session.id);
     }
 
-    const sessionId = this.pool && session.claudeSessionId ? session.claudeSessionId : session.id;
+    const sessionId = session.claudeSessionId ?? session.id;
     return this.adapter.getSessionMessages(sessionId, {
       dir: this.config.projectRoot,
       limit,
@@ -257,76 +251,20 @@ export class AgentService {
     });
   }
 
-  private async *streamWithQuery(
-    input: AgentRunInput,
-    abortController: AbortController,
-    register: (handle: ActiveRunHandle, options: { closeOnFinish: boolean; closeOnError: boolean }) => ActiveRun
-  ): AsyncGenerator<NormalizedAgentEvent> {
-    const options = buildAgentOptions(this.config, input.session, input.request, abortController, this.maxTurns);
-    const agentQuery = this.adapter.query({ prompt: buildAgentPrompt(input.request), options });
-    const activeRun = register(
-      {
-        close: () => agentQuery.close?.(),
-        interrupt: async () => {
-          await agentQuery.interrupt?.();
-        }
-      },
-      { closeOnFinish: true, closeOnError: false }
-    );
-    const toolLedger: ToolLedger = new Map();
-    const validationCounters = new Map<string, number>();
-
-    for await (const message of agentQuery) {
-      recordToolUses(message, toolLedger);
-      const { control: controlResultEvent, validation: validationEvents, terminate } = this.controlEventFromToolResults(
-        input.session,
-        message,
-        toolLedger,
-        validationCounters
-      );
-      for (const validationEvent of validationEvents) {
-        yield this.emitEvent(activeRun, validationEvent);
-      }
-      if (terminate) {
-        abortController.abort();
-        agentQuery.close?.();
-        throw terminate;
-      }
-      if (controlResultEvent) {
-        abortController.abort();
-        agentQuery.close?.();
-        yield this.emitEvent(activeRun, controlResultEvent);
-        break;
-      }
-
-      const event = normalizeAgentMessage(message);
-      yield this.emitEvent(activeRun, event);
-      const pendingEvent = this.controlEventFromToolUse(input.session, message, toolLedger);
-      if (pendingEvent) {
-        abortController.abort();
-        agentQuery.close?.();
-        yield this.emitEvent(activeRun, pendingEvent);
-        break;
-      }
-    }
-  }
-
   private async *streamWithSession(
     input: AgentRunInput,
     register: (handle: ActiveRunHandle, options: { closeOnFinish: boolean; closeOnError: boolean }) => ActiveRun
   ): AsyncGenerator<NormalizedAgentEvent> {
-    if (!this.pool) return;
-
     const options = buildSessionOptions(this.config, input.session, input.request);
     const sdkSession = this.pool.getOrCreate(input.session, options);
     this.pool.markRunning(input.session.id, true);
     const activeRun = register(
       {
         close: () => {
-          this.pool?.close(input.session.id);
+          this.pool.close(input.session.id);
         },
         interrupt: async () => {
-          this.pool?.close(input.session.id);
+          this.pool.close(input.session.id);
         }
       },
       { closeOnFinish: false, closeOnError: true }
@@ -545,40 +483,11 @@ async function* emptyEvents(): AsyncGenerator<NormalizedAgentEvent> {
   return;
 }
 
-export function buildAgentOptions(
-  config: AppConfig,
-  session: SessionMetadata,
-  request: StreamMessageRequest,
-  abortController: AbortController,
-  runtimeMaxTurns: number
-): Record<string, unknown> {
-  const mode = request.mode ?? session.mode;
-
-  return {
-    abortController,
-    cwd: config.projectRoot,
-    ...(session.hasRun ? { resume: session.id } : { sessionId: session.id }),
-    persistSession: true,
-    settingSources: ["project"],
-    systemPrompt: { type: "preset", preset: "claude_code" },
-    tools: { type: "preset", preset: "claude_code" },
-    permissionMode: permissionModeFor(mode),
-    allowDangerouslySkipPermissions: mode === "bypass",
-    enableFileCheckpointing: mode !== "plan",
-    maxTurns: Math.min(request.maxTurns ?? runtimeMaxTurns, runtimeMaxTurns),
-    maxBudgetUsd: config.maxBudgetUsd,
-    model: request.model,
-    env: buildSafeAgentEnv(),
-    sandbox: buildSandboxSettings(config),
-    disallowedTools: disallowedToolsFor(mode)
-  };
-}
-
 export function buildSessionOptions(config: AppConfig, session: SessionMetadata, request: StreamMessageRequest): SessionOptions {
   const mode = request.mode ?? session.mode;
   const model = request.model ?? config.defaultModel;
   if (!model) {
-    throw new Error("CLAUDE_MODEL must be set when ENABLE_SESSION_API=true or the stream request must include model");
+    throw new Error("CLAUDE_MODEL must be set or the stream request must include model");
   }
 
   return {

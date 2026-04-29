@@ -7,7 +7,7 @@ import { createTempConfig } from "./helpers.js";
 
 describe("buildSessionOptions", () => {
   it("uses request model and excludes query-only options", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true" });
+    const config = await createTempConfig();
     const session = metadata(config.workspaceDir, { mode: "plan" });
 
     const options = buildSessionOptions(config, session, { prompt: "hello", model: "claude-sonnet-4-6" });
@@ -35,12 +35,12 @@ describe("buildSessionOptions", () => {
   });
 
   it("falls back to CLAUDE_MODEL and errors clearly when missing", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-opus-4-7" });
+    const config = await createTempConfig({ CLAUDE_MODEL: "claude-opus-4-7" });
     const session = metadata(config.workspaceDir);
 
     expect(buildSessionOptions(config, session, { prompt: "hello" }).model).toBe("claude-opus-4-7");
 
-    const missingModelConfig = await createTempConfig({ ENABLE_SESSION_API: "true" });
+    const missingModelConfig = await createTempConfig({ CLAUDE_MODEL: "" });
     expect(() => buildSessionOptions(missingModelConfig, session, { prompt: "hello" })).toThrow(/CLAUDE_MODEL/);
   });
 
@@ -63,7 +63,7 @@ describe("buildSessionOptions", () => {
 
 describe("AgentService with V2 sessions", () => {
   it("creates first turn and reuses warm session for the second turn", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     const mockSession = createMockSession("claude-1", () => resultStream("claude-1"));
     const factory: SessionFactory = {
       createSession: vi.fn(() => mockSession),
@@ -84,7 +84,7 @@ describe("AgentService with V2 sessions", () => {
   });
 
   it("cold-resumes with persisted Claude session ID", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     const resumed = createMockSession("claude-resume", () => resultStream("claude-resume"));
     const factory: SessionFactory = {
       createSession: vi.fn(() => createMockSession("unused", () => resultStream("unused"))),
@@ -100,7 +100,7 @@ describe("AgentService with V2 sessions", () => {
   });
 
   it("throws missing_claude_session_id for already-run sessions without Claude ID", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     const service = new AgentService(config, undefined, {
       createSession: vi.fn(() => createMockSession("unused", () => resultStream("unused"))),
       resumeSession: vi.fn(() => createMockSession("unused", () => resultStream("unused")))
@@ -112,7 +112,7 @@ describe("AgentService with V2 sessions", () => {
   });
 
   it("closes on AskUserQuestion and resumes later with answer text", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     const first = createMockSession("claude-ask", async function* () {
       yield {
         type: "assistant",
@@ -169,7 +169,7 @@ describe("AgentService with V2 sessions", () => {
   });
 
   it("closes/removes sessions on interrupt", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -192,7 +192,7 @@ describe("AgentService with V2 sessions", () => {
   });
 
   it("broadcasts V2 session events to observers", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;

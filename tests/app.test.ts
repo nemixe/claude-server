@@ -46,17 +46,20 @@ describe("Hono API", () => {
   it("creates sessions and streams normalized events", async () => {
     const config = await createTempConfig();
     const adapter: AgentSdkAdapter = {
-      query: () =>
-        (async function* () {
-          yield { type: "assistant", message: { content: "hello" } };
-          yield { type: "result", result: "done" };
-        })(),
       getSessionMessages: async () => [{ type: "user", message: "hi" }]
+    };
+    const sdkSession = createMockSdkSession("claude-created", async function* () {
+      yield { type: "assistant", session_id: "claude-created", message: { content: "hello" } };
+      yield { type: "result", session_id: "claude-created", result: "done" };
+    });
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => sdkSession),
+      resumeSession: vi.fn(() => sdkSession)
     };
     const app = await createApp({
       config,
       sessionStore: new SessionStore(config),
-      agentService: new AgentService(config, adapter)
+      agentService: new AgentService(config, adapter, factory)
     });
 
     const createResponse = await app.request("http://localhost/v1/sessions", {
@@ -191,7 +194,6 @@ describe("Hono API", () => {
     const config = await createTempConfig();
     const messages = Array.from({ length: 5 }, (_, index) => ({ type: "user", message: "m" + index }));
     const adapter: AgentSdkAdapter = {
-      query: () => (async function* () {})(),
       getSessionMessages: async () => messages
     };
     const sessionStore = new SessionStore(config);
@@ -245,17 +247,20 @@ describe("Hono API", () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);
     const adapter: AgentSdkAdapter = {
-      query: () =>
-        (async function* () {
-          yield { type: "result", result: "first", total_cost_usd: 0.1537 };
-          yield { type: "result", result: "second", total_cost_usd: 0.1682 };
-        })(),
       getSessionMessages: async () => []
+    };
+    const sdkSession = createMockSdkSession("claude-cost", async function* () {
+      yield { type: "result", session_id: "claude-cost", result: "first", total_cost_usd: 0.1537 };
+      yield { type: "result", session_id: "claude-cost", result: "second", total_cost_usd: 0.1682 };
+    });
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => sdkSession),
+      resumeSession: vi.fn(() => sdkSession)
     };
     const app = await createApp({
       config,
       sessionStore,
-      agentService: new AgentService(config, adapter)
+      agentService: new AgentService(config, adapter, factory)
     });
 
     const createResponse = await app.request("http://localhost/v1/sessions", {
@@ -284,7 +289,7 @@ describe("Hono API", () => {
   });
 
   it("persists Claude SDK session IDs from V2 stream events", async () => {
-    const config = await createTempConfig({ ENABLE_SESSION_API: "true", CLAUDE_MODEL: "claude-sonnet-4-6" });
+    const config = await createTempConfig();
     const sdkSession = createMockSdkSession("claude-app-1", async function* () {
       yield { type: "result", session_id: "claude-app-1", is_error: false };
     });
@@ -330,20 +335,23 @@ describe("Hono API", () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);
     let seenPermissionMode: unknown;
-    const query = vi.fn(({ options }) => {
-      seenPermissionMode = options.permissionMode;
-      return (async function* () {
-        yield { type: "result", is_error: false };
-      })();
+    const sdkSession = createMockSdkSession("claude-approval", async function* () {
+      yield { type: "result", session_id: "claude-approval", is_error: false };
     });
-    const adapter: AgentSdkAdapter = {
-      query,
-      getSessionMessages: async () => []
+    const factory: SessionFactory = {
+      createSession: vi.fn((options) => {
+        seenPermissionMode = options.permissionMode;
+        return sdkSession;
+      }),
+      resumeSession: vi.fn((_, options) => {
+        seenPermissionMode = options.permissionMode;
+        return sdkSession;
+      })
     };
     const app = await createApp({
       config,
       sessionStore,
-      agentService: new AgentService(config, adapter)
+      agentService: new AgentService(config, undefined, factory)
     });
 
     const session = await sessionStore.create({ mode: "plan", title: "Approve" });
@@ -374,7 +382,8 @@ describe("Hono API", () => {
     expect(pausedResponse.status).toBe(200);
     expect(pausedText).toContain("event: approval_pending");
     expect(pausedText).toContain("Implement the runtime classifier.");
-    expect(query).not.toHaveBeenCalled();
+    expect(factory.createSession).not.toHaveBeenCalled();
+    expect(factory.resumeSession).not.toHaveBeenCalled();
 
     const approvedResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
       method: "POST",
@@ -405,19 +414,17 @@ describe("Hono API", () => {
   it("discards a malformed persisted AskUserQuestion interrupt and re-runs the agent", async () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);
-    const query = vi.fn(() => {
-      return (async function* () {
-        yield { type: "result", is_error: false };
-      })();
+    const sdkSession = createMockSdkSession("claude-bad-interrupt", async function* () {
+      yield { type: "result", session_id: "claude-bad-interrupt", is_error: false };
     });
-    const adapter: AgentSdkAdapter = {
-      query,
-      getSessionMessages: async () => []
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => sdkSession),
+      resumeSession: vi.fn(() => sdkSession)
     };
     const app = await createApp({
       config,
       sessionStore,
-      agentService: new AgentService(config, adapter)
+      agentService: new AgentService(config, undefined, factory)
     });
 
     const session = await sessionStore.create({ mode: "plan", title: "Resume bad interrupt" });
@@ -446,7 +453,7 @@ describe("Hono API", () => {
 
     expect(response.status).toBe(200);
     expect(text).not.toContain("event: question_pending");
-    expect(query).toHaveBeenCalledOnce();
+    expect(factory.createSession).toHaveBeenCalledOnce();
 
     const updated = await sessionStore.get(session.id);
     expect(updated).not.toHaveProperty("pendingInterrupt");
@@ -454,20 +461,17 @@ describe("Hono API", () => {
 
   it("accepts validated base64 image prompt requests", async () => {
     const config = await createTempConfig();
-    const seenPrompts: unknown[] = [];
-    const adapter: AgentSdkAdapter = {
-      query: (input) => {
-        seenPrompts.push(input.prompt);
-        return (async function* () {
-          yield { type: "result", result: "done" };
-        })();
-      },
-      getSessionMessages: async () => []
+    const sdkSession = createMockSdkSession("claude-images", async function* () {
+      yield { type: "result", session_id: "claude-images", result: "done" };
+    });
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => sdkSession),
+      resumeSession: vi.fn(() => sdkSession)
     };
     const app = await createApp({
       config,
       sessionStore: new SessionStore(config),
-      agentService: new AgentService(config, adapter)
+      agentService: new AgentService(config, undefined, factory)
     });
 
     const createResponse = await app.request("http://localhost/v1/sessions", {
@@ -494,13 +498,8 @@ describe("Hono API", () => {
     expect(streamResponse.status).toBe(200);
     expect(await streamResponse.text()).toContain("event: result");
 
-    const prompt = seenPrompts[0];
-    expect(typeof prompt).not.toBe("string");
-    const messages = [];
-    for await (const message of prompt as AsyncIterable<Record<string, unknown>>) {
-      messages.push(message);
-    }
-    expect(messages[0]).toMatchObject({
+    expect(sdkSession.send).toHaveBeenCalledTimes(1);
+    expect(sdkSession.send).toHaveBeenCalledWith(expect.objectContaining({
       type: "user",
       message: {
         role: "user",
@@ -513,7 +512,7 @@ describe("Hono API", () => {
         ]
       },
       parent_tool_use_id: null
-    });
+    }));
   });
 
   it("rejects invalid image prompt requests", async () => {
