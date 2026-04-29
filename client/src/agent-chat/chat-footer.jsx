@@ -197,6 +197,17 @@ export default function ChatFooter({
   }, [senderValue, updateMention]);
 
   useEffect(() => {
+    const el = senderRef.current;
+    if (!el) return;
+    if (!senderValue) {
+      el.style.height = "";
+      return;
+    }
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [senderValue]);
+
+  useEffect(() => {
     if (!onMentionSearch) return undefined;
     if (!isMentionActive) {
       onMentionSearch(null);
