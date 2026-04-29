@@ -749,10 +749,6 @@ export function getAskUserQuestionTool(message: unknown): Record<string, unknown
   return getNamedToolUse(message, "AskUserQuestion");
 }
 
-export function getExitPlanModeTool(message: unknown): Record<string, unknown> | null {
-  return getNamedToolUse(message, "ExitPlanMode");
-}
-
 function getNamedToolUse(message: unknown, toolName: string): Record<string, unknown> | null {
   const messageRecord = protocolMessage(message);
   if (!messageRecord) return null;
