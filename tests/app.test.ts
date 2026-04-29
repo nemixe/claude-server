@@ -326,6 +326,82 @@ describe("Hono API", () => {
     expect(sessionsBody.sessions[0]).not.toHaveProperty("claudeSessionId");
   });
 
+  it("pauses on persisted ExitPlanMode approval and resumes in edit mode after approval", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    let seenPermissionMode: unknown;
+    const query = vi.fn(({ options }) => {
+      seenPermissionMode = options.permissionMode;
+      return (async function* () {
+        yield { type: "result", is_error: false };
+      })();
+    });
+    const adapter: AgentSdkAdapter = {
+      query,
+      getSessionMessages: async () => []
+    };
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, adapter)
+    });
+
+    const session = await sessionStore.create({ mode: "plan", title: "Approve" });
+    await sessionStore.save({
+      ...session,
+      status: "awaiting_approval",
+      pendingInterrupt: {
+        id: "interrupt:toolu_exit",
+        type: "approval",
+        toolCallId: "toolu_exit",
+        toolName: "ExitPlanMode",
+        prompt: "Exit plan mode?",
+        payload: {
+          input: { plan: "Implement the runtime classifier." },
+          plan: "Implement the runtime classifier.",
+          action: "exit_plan_mode"
+        }
+      }
+    });
+
+    const pausedResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "continue" })
+    });
+    const pausedText = await pausedResponse.text();
+
+    expect(pausedResponse.status).toBe(200);
+    expect(pausedText).toContain("event: approval_pending");
+    expect(pausedText).toContain("Implement the runtime classifier.");
+    expect(query).not.toHaveBeenCalled();
+
+    const approvedResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Approved. Continue.",
+        toolResult: {
+          toolUseId: "toolu_exit",
+          kind: "approval",
+          approved: true,
+          content: JSON.stringify({ approved: true, plan: "Implement the runtime classifier." })
+        }
+      })
+    });
+    const approvedText = await approvedResponse.text();
+
+    expect(approvedResponse.status).toBe(200);
+    expect(approvedText).toContain("event: result");
+    expect(seenPermissionMode).toBe("acceptEdits");
+    const updated = await sessionStore.get(session.id);
+    expect(updated).toMatchObject({
+      mode: "edit",
+      status: "done"
+    });
+    expect(updated).not.toHaveProperty("pendingInterrupt");
+  });
+
   it("accepts validated base64 image prompt requests", async () => {
     const config = await createTempConfig();
     const seenPrompts: unknown[] = [];

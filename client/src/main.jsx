@@ -65,6 +65,7 @@ const MESSAGE_PAGE_SIZE = 200;
 
 const modeLabel = {
   plan: "Plan",
+  edit: "Edit",
   bypass: "Bypass"
 };
 
@@ -259,6 +260,7 @@ function App() {
     []
   );
   const activeAskUserQuestion = useMemo(() => getActiveAskUserQuestion(events), [events]);
+  const activeExitPlanApproval = useMemo(() => getActiveExitPlanApproval(events), [events]);
 
   const searchFileMentions = useCallback(async (query) => {
     const requestId = mentionSearchRequestRef.current + 1;
@@ -572,12 +574,14 @@ function App() {
           await patchJson("/v1/sessions/" + encodeURIComponent(activeSessionId), { title: derivedTitle });
         } catch {}
       }
+      const requestMode = options.mode || mode;
+      if (options.mode && options.mode !== mode) setMode(options.mode);
       const images = options.toolResult ? [] : selectedImages.map((image) => ({
         name: image.name,
         mediaType: image.mediaType,
         dataBase64: image.dataBase64
       }));
-      appendEntry("prompt", { prompt: nextPrompt, mode, images, toolResult: options.toolResult }, { timestamp: promptTimestamp });
+      appendEntry("prompt", { prompt: nextPrompt, mode: requestMode, images, toolResult: options.toolResult }, { timestamp: promptTimestamp });
       setPrompt("");
 
       const response = await fetch(apiPath("/v1/sessions/" + encodeURIComponent(activeSessionId) + "/messages:stream"), {
@@ -588,7 +592,7 @@ function App() {
           prompt: nextPrompt,
           images: images.length > 0 ? images : undefined,
           toolResult: options.toolResult,
-          mode,
+          mode: requestMode,
           maxTurns: Number(maxTurns || 30)
         })
       });
@@ -598,6 +602,8 @@ function App() {
       const streamOutcome = await readSse(response.body);
       if (streamOutcome.waitingForUserQuestion) {
         setStatus("Waiting for user");
+      } else if (streamOutcome.waitingForApproval) {
+        setStatus("Waiting for approval");
       } else if (streamOutcome.ok) {
         setStatus("Complete");
       } else {
@@ -761,7 +767,7 @@ function App() {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    const outcome = { ok: true, waitingForUserQuestion: false };
+    const outcome = { ok: true, waitingForUserQuestion: false, waitingForApproval: false };
 
     try {
       while (true) {
@@ -820,8 +826,13 @@ function App() {
       outcome.waitingForUserQuestion = true;
       outcome.ok = true;
     }
+    if (emitted.event === "approval_pending") {
+      outcome.waitingForApproval = true;
+      outcome.ok = true;
+    }
     if (emitted.event === "done") {
       outcome.waitingForUserQuestion = Boolean(emitted.data?.waitingForUserQuestion);
+      outcome.waitingForApproval = Boolean(emitted.data?.waitingForApproval);
       outcome.ok = emitted.data?.ok !== false;
     }
     if (emitted.event === "error") {
@@ -877,7 +888,7 @@ function App() {
     const id = getSessionId(session);
     setActivePanelView("chat");
     setSessionId(id);
-    setMode(session?.mode === "plan" || session?.mode === "bypass" ? session.mode : "bypass");
+    setMode(session?.mode === "plan" || session?.mode === "edit" || session?.mode === "bypass" ? session.mode : "bypass");
     rememberSession({ sessionId: id });
     loadSessionView(id, eventName, session);
   }
@@ -1308,6 +1319,7 @@ function App() {
                       activeAskUserQuestionData={activeAskUserQuestion?.data}
                       activeAskUserQuestionMessageId={activeAskUserQuestion?.id}
                       activeAskUserQuestionToolUseId={activeAskUserQuestion?.toolUseId}
+                      activeExitPlanApproval={activeExitPlanApproval}
                       hasGrabContext={hasGrabContext}
                       isAnnotating={isAnnotating}
                       latestAnnotation={latestAnnotation}
@@ -1837,6 +1849,33 @@ function getActiveAskUserQuestion(events) {
   return null;
 }
 
+function getActiveExitPlanApproval(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const entry = events[index];
+    if (!entry) continue;
+    if (entry.type === "approval_pending" && entry.data?.waitingForApproval) {
+      const input = entry.data.input && typeof entry.data.input === "object" ? entry.data.input : {};
+      return {
+        id: entry.id,
+        data: input,
+        plan: typeof entry.data.plan === "string" ? entry.data.plan : typeof input.plan === "string" ? input.plan : "",
+        toolUseId: entry.data.toolUseId
+      };
+    }
+    const tool = findExitPlanModeTool(entry.data);
+    if (tool?.input) {
+      return {
+        id: entry.id,
+        data: tool.input,
+        plan: typeof tool.input.plan === "string" ? tool.input.plan : "",
+        toolUseId: tool.id
+      };
+    }
+    if (closesExitPlanApproval(entry)) return null;
+  }
+  return null;
+}
+
 function closesAskUserQuestion(entry) {
   if (!entry) return false;
   if (entry.type === "prompt" || entry.type === "result") return true;
@@ -1861,6 +1900,12 @@ function closesAskUserQuestion(entry) {
   return blocks.some((block) => block && typeof block === "object" && block.type === "text" && String(block.text || "").trim());
 }
 
+function closesExitPlanApproval(entry) {
+  if (!entry) return false;
+  if (entry.type === "done") return !entry.data?.waitingForApproval;
+  return closesAskUserQuestion(entry);
+}
+
 function findAskUserQuestionTool(value) {
   if (!value || typeof value !== "object") return null;
   const record = value;
@@ -1876,6 +1921,24 @@ function findAskUserQuestionTool(value) {
         block.name === "AskUserQuestion" &&
         block.input &&
         Array.isArray(block.input.questions)
+    ) || null
+      );
+}
+
+function findExitPlanModeTool(value) {
+  if (!value || typeof value !== "object") return null;
+  const record = value;
+  const message = record.message && typeof record.message === "object" ? record.message : record;
+  if (message.stop_reason !== "tool_use" && message.stop_reason !== null && message.stop_reason !== undefined) return null;
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  return (
+    blocks.find(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        block.type === "tool_use" &&
+        block.name === "ExitPlanMode" &&
+        typeof block.id === "string"
     ) || null
   );
 }

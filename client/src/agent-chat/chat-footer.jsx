@@ -9,9 +9,11 @@ import {
   SendOutlined
 } from "@ant-design/icons";
 import AskUserQuestionFooter from "./ask-user-question-footer.jsx";
+import MarkdownText from "./markdown-text.jsx";
 
 const modeOptions = [
   { value: "plan", label: "Plan" },
+  { value: "edit", label: "Edit" },
   { value: "bypass", label: "Bypass" }
 ];
 
@@ -70,6 +72,14 @@ function detectMentionAtCursor(text, cursorPos) {
   return null;
 }
 
+function approvalPlanText(approval) {
+  const plan = typeof approval?.plan === "string" ? approval.plan : "";
+  return plan
+    .replace(/^\s*<proposed_plan>\s*/i, "")
+    .replace(/\s*<\/proposed_plan>\s*$/i, "")
+    .trim();
+}
+
 export default function ChatFooter({
   senderValue,
   setSenderValue,
@@ -79,6 +89,7 @@ export default function ChatFooter({
   activeAskUserQuestionData,
   activeAskUserQuestionMessageId,
   activeAskUserQuestionToolUseId,
+  activeExitPlanApproval,
   hasGrabContext,
   isAnnotating,
   latestAnnotation,
@@ -139,6 +150,7 @@ export default function ChatFooter({
       .slice(0, 50)
       .map((item) => item.filePath);
   }, [isMentionActive, mentionQuery, mentionSuggestions]);
+  const readableApprovalPlan = useMemo(() => approvalPlanText(activeExitPlanApproval), [activeExitPlanApproval]);
 
   const updateMention = useCallback((text, cursorPos) => {
     const result = detectMentionAtCursor(text, cursorPos);
@@ -274,8 +286,30 @@ export default function ChatFooter({
       return;
     }
 
+    if (activeExitPlanApproval) return;
+
     if (!senderValue.trim() || isStreamingActiveSession) return;
     void onSubmit(senderValue);
+  };
+
+  const submitExitPlanApproval = (approved) => {
+    if (!isSessionOwner || !activeExitPlanApproval?.toolUseId) return;
+    const feedback = senderValue.trim();
+    const plan = typeof activeExitPlanApproval.plan === "string" ? activeExitPlanApproval.plan : "";
+    setSenderValue("");
+    void onSubmit(approved ? "Approved. Continue." : feedback || "Keep planning.", {
+      mode: approved ? "edit" : "plan",
+      toolResult: {
+        toolUseId: activeExitPlanApproval.toolUseId,
+        kind: "approval",
+        approved,
+        content: JSON.stringify({
+          approved,
+          plan,
+          feedback: approved ? "" : feedback
+        })
+      }
+    });
   };
 
   const handleTextareaKeyDown = (event) => {
@@ -450,6 +484,36 @@ export default function ChatFooter({
           onSelectionChange={setHasChipAnswer}
         />
       ) : null}
+      {activeExitPlanApproval ? (
+        <div className="ai-chat-footer-approval">
+          <div className="ai-chat-footer-approval-header">
+            <span className="ai-chat-footer-approval-title">Review plan</span>
+          </div>
+          {readableApprovalPlan ? (
+            <div className="ai-chat-footer-approval-plan" tabIndex={0}>
+              <MarkdownText text={readableApprovalPlan} className="ai-chat-footer-approval-markdown" />
+            </div>
+          ) : null}
+          <div className="ai-chat-footer-approval-footer">
+            <button
+              type="button"
+              className="ai-chat-footer-approval-action"
+              onClick={() => submitExitPlanApproval(false)}
+              disabled={!isSessionOwner}
+            >
+              Keep planning
+            </button>
+            <button
+              type="button"
+              className="ai-chat-footer-approval-action"
+              onClick={() => submitExitPlanApproval(true)}
+              disabled={!isSessionOwner}
+            >
+              Approve plan
+            </button>
+          </div>
+        </div>
+      ) : null}
       {pendingUploads.length > 0 ? (
         <div className="ai-chat-upload-preview">
           {pendingUploads.map((file) => (
@@ -536,6 +600,8 @@ export default function ChatFooter({
               ? "View only - you cannot interact with this session"
               : showQuestionFooter
                 ? "Or type a custom answer..."
+                : activeExitPlanApproval
+                  ? "Optional feedback before staying in plan mode..."
                 : "Enter a prompt... Shift+Enter for a new line"
           }
           value={senderValue}
@@ -565,6 +631,7 @@ export default function ChatFooter({
             onClick={handleSend}
             disabled={
               !isSessionOwner ||
+              Boolean(activeExitPlanApproval) ||
               (showQuestionFooter ? !(senderValue.trim() || hasChipAnswer) : !senderValue.trim())
             }
             aria-label="Send message"

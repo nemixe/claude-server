@@ -2,7 +2,7 @@ import { getSessionMessages, query, type SDKUserMessage } from "@anthropic-ai/cl
 import type { AppConfig } from "./config.js";
 import { buildSafeAgentEnv, buildSandboxSettings } from "./sandbox.js";
 import { MissingClaudeSessionIdError, SessionPool, type SessionFactory, type SessionLike, type SessionOptions } from "./session-adapter.js";
-import type { ClaudeMode, NormalizedAgentEvent, SessionMetadata, StreamMessageRequest } from "./types.js";
+import type { AgentStatus, ClaudeMode, NormalizedAgentEvent, PendingInterrupt, SessionMetadata, StreamMessageRequest } from "./types.js";
 
 export type AgentPrompt = string | AsyncIterable<SDKUserMessage>;
 
@@ -21,6 +21,42 @@ export type AgentRunInput = {
   request: StreamMessageRequest;
   onClaudeSessionId?: (claudeSessionId: string) => void | Promise<void>;
 };
+
+export type ToolCallRecord = {
+  id: string;
+  name: string;
+  input: unknown;
+};
+
+type ToolLedgerEntry = {
+  toolName: string;
+  status: "pending" | "completed" | "interrupted" | "failed";
+  attempts: number;
+  input: unknown;
+  interrupt?: PendingInterrupt;
+};
+
+type ToolLedger = Map<string, ToolLedgerEntry>;
+
+export type ToolOutcome =
+  | { kind: "success"; content: unknown }
+  | { kind: "control"; control: ControlSignal }
+  | { kind: "real_error"; message: string; retryable: boolean };
+
+export type ControlSignal =
+  | {
+      type: "user_input_required";
+      prompt: string;
+      questions: unknown;
+      toolCallId: string;
+    }
+  | {
+      type: "approval_required";
+      action: "exit_plan_mode";
+      prompt: string;
+      plan: unknown;
+      toolCallId: string;
+    };
 
 type ActiveRunHandle = {
   close: () => void;
@@ -220,15 +256,25 @@ export class AgentService {
       },
       { closeOnFinish: true, closeOnError: false }
     );
+    const toolLedger: ToolLedger = new Map();
 
     for await (const message of agentQuery) {
+      recordToolUses(message, toolLedger);
+      const controlResultEvent = this.controlEventFromToolResults(input.session, message, toolLedger);
+      if (controlResultEvent) {
+        abortController.abort();
+        agentQuery.close?.();
+        yield this.emitEvent(activeRun, controlResultEvent);
+        break;
+      }
+
       const event = normalizeAgentMessage(message);
       yield this.emitEvent(activeRun, event);
-      const pendingEvent = this.questionPendingEvent(message, activeRun);
+      const pendingEvent = this.controlEventFromToolUse(input.session, message, toolLedger);
       if (pendingEvent) {
         abortController.abort();
         agentQuery.close?.();
-        yield pendingEvent;
+        yield this.emitEvent(activeRun, pendingEvent);
         break;
       }
     }
@@ -256,6 +302,7 @@ export class AgentService {
     );
 
     await sendPrompt(sdkSession, buildAgentPrompt(input.request));
+    const toolLedger: ToolLedger = new Map();
 
     for await (const message of sdkSession.stream()) {
       const claudeSessionId = getSessionIdFromEvent(message);
@@ -263,12 +310,20 @@ export class AgentService {
         await input.onClaudeSessionId?.(claudeSessionId);
       }
 
+      recordToolUses(message, toolLedger);
+      const controlResultEvent = this.controlEventFromToolResults(input.session, message, toolLedger);
+      if (controlResultEvent) {
+        activeRun.handle.close();
+        yield this.emitEvent(activeRun, controlResultEvent);
+        break;
+      }
+
       const event = normalizeAgentMessage(message);
       yield this.emitEvent(activeRun, event);
-      const pendingEvent = this.questionPendingEvent(message, activeRun);
+      const pendingEvent = this.controlEventFromToolUse(input.session, message, toolLedger);
       if (pendingEvent) {
         activeRun.handle.close();
-        yield pendingEvent;
+        yield this.emitEvent(activeRun, pendingEvent);
         break;
       }
     }
@@ -281,20 +336,72 @@ export class AgentService {
     return event;
   }
 
-  private questionPendingEvent(message: unknown, activeRun: ActiveRun): NormalizedAgentEvent | undefined {
-    const questionTool = getAskUserQuestionToolFromEvent(message);
-    if (!questionTool) return undefined;
-
-    const pendingEvent = {
-      type: "question_pending",
-      data: {
-        waitingForUserQuestion: true,
-        toolUseId: questionTool.id,
-        input: questionTool.input
+  private controlEventFromToolUse(
+    session: SessionMetadata,
+    message: unknown,
+    toolLedger: ToolLedger
+  ): NormalizedAgentEvent | undefined {
+    for (const toolCall of getToolUseBlocksFromEvent(message)) {
+      const entry = toolLedger.get(toolCall.id);
+      if (entry?.status === "interrupted" && entry.interrupt) {
+        session.pendingInterrupt = entry.interrupt;
+        session.status = statusForInterrupt(entry.interrupt);
+        return pendingEventFromInterrupt(entry.interrupt);
       }
-    };
-    broadcastEvent(activeRun, pendingEvent);
-    return pendingEvent;
+
+      const control = controlSignalFromToolUse(toolCall);
+      if (!control) continue;
+
+      const interrupt = interruptFromControl(toolCall, control);
+      toolLedger.set(toolCall.id, {
+        toolName: toolCall.name,
+        status: "interrupted",
+        attempts: entry?.attempts ?? 1,
+        input: toolCall.input,
+        interrupt
+      });
+      session.pendingInterrupt = interrupt;
+      session.status = statusForInterrupt(interrupt);
+      return pendingEventFromInterrupt(interrupt);
+    }
+
+    return undefined;
+  }
+
+  private controlEventFromToolResults(
+    session: SessionMetadata,
+    message: unknown,
+    toolLedger: ToolLedger
+  ): NormalizedAgentEvent | undefined {
+    for (const rawResult of getToolResultBlocksFromEvent(message)) {
+      const toolCallId = typeof rawResult.tool_use_id === "string" ? rawResult.tool_use_id : undefined;
+      if (!toolCallId) continue;
+
+      const entry = toolLedger.get(toolCallId);
+      if (!entry) continue;
+
+      const toolCall = { id: toolCallId, name: entry.toolName, input: entry.input };
+      const outcome = classifyToolResult(toolCall, rawResult);
+
+      if (outcome.kind === "success") {
+        entry.status = "completed";
+        continue;
+      }
+
+      if (outcome.kind === "real_error") {
+        entry.status = "failed";
+        continue;
+      }
+
+      const interrupt = interruptFromControl(toolCall, outcome.control);
+      entry.status = "interrupted";
+      entry.interrupt = interrupt;
+      session.pendingInterrupt = interrupt;
+      session.status = statusForInterrupt(interrupt);
+      return pendingEventFromInterrupt(interrupt);
+    }
+
+    return undefined;
   }
 }
 
@@ -415,6 +522,7 @@ export function buildSessionOptions(config: AppConfig, session: SessionMetadata,
 
 export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
   if (request.toolResult) {
+    if (request.toolResult.kind === "approval") return buildApprovalResultPrompt(request, request.toolResult);
     return buildQuestionAnswerPrompt(request, request.toolResult);
   }
 
@@ -428,6 +536,52 @@ export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
       role: "user",
       content: [
         { type: "text", text: request.prompt },
+        ...request.images.map((image) => ({
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: image.mediaType,
+            data: image.dataBase64
+          }
+        }))
+      ]
+    },
+    parent_tool_use_id: null
+  };
+
+  return singleMessagePrompt(message);
+}
+
+function buildApprovalResultPrompt(request: StreamMessageRequest, toolResult: NonNullable<StreamMessageRequest["toolResult"]>): AgentPrompt {
+  const parsed = parseJsonRecord(toolResult.content);
+  const approved = toolResult.approved ?? (typeof parsed?.approved === "boolean" ? parsed.approved : false);
+  const feedback = typeof parsed?.feedback === "string" && parsed.feedback.trim() ? parsed.feedback.trim() : "";
+  const plan = typeof parsed?.plan === "string" && parsed.plan.trim() ? parsed.plan.trim() : "";
+
+  const text = [
+    approved
+      ? "User approved exiting plan mode. Continue in execution mode."
+      : "User declined exiting plan mode. Continue in plan mode.",
+    plan ? `Plan:\n${plan}` : "",
+    feedback ? `User feedback:\n${feedback}` : "",
+    "",
+    "User answer summary:",
+    request.prompt
+  ]
+    .filter((part) => part !== "")
+    .join("\n")
+    .trim();
+
+  if (!request.images || request.images.length === 0) {
+    return text;
+  }
+
+  const message: SDKUserMessage = {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text },
         ...request.images.map((image) => ({
           type: "image" as const,
           source: {
@@ -562,24 +716,242 @@ export function normalizeAgentMessage(message: unknown): NormalizedAgentEvent {
   return { type: "message", data: message };
 }
 
-export function getAskUserQuestionTool(message: unknown): Record<string, unknown> | null {
-  if (!message || typeof message !== "object") return null;
-  const record = message as Record<string, unknown>;
-  if (record.stop_reason !== "tool_use" && record.stop_reason !== null && record.stop_reason !== undefined) return null;
-  const content = Array.isArray(record.content) ? record.content : [];
-  const tool = content.find((block) => {
-    if (!block || typeof block !== "object") return false;
-    const blockRecord = block as Record<string, unknown>;
-    return blockRecord.type === "tool_use" && blockRecord.name === "AskUserQuestion";
-  });
-  return tool && typeof tool === "object" ? (tool as Record<string, unknown>) : null;
+export function classifyToolResult(toolCall: ToolCallRecord, rawResult: unknown): ToolOutcome {
+  const result = isRecord(rawResult) ? rawResult : {};
+  const contentText = toolResultContentText(result);
+
+  if (result.is_error !== true) {
+    return { kind: "success", content: result.content };
+  }
+
+  if (toolCall.name === "AskUserQuestion" && contentText === "Answer questions?") {
+    return {
+      kind: "control",
+      control: {
+        type: "user_input_required",
+        prompt: contentText,
+        questions: inputProperty(toolCall.input, "questions"),
+        toolCallId: toolCall.id
+      }
+    };
+  }
+
+  if (toolCall.name === "ExitPlanMode" && contentText === "Exit plan mode?") {
+    return {
+      kind: "control",
+      control: {
+        type: "approval_required",
+        action: "exit_plan_mode",
+        prompt: contentText,
+        plan: inputProperty(toolCall.input, "plan"),
+        toolCallId: toolCall.id
+      }
+    };
+  }
+
+  return {
+    kind: "real_error",
+    message: contentText || "Tool failed",
+    retryable: false
+  };
 }
 
-function getAskUserQuestionToolFromEvent(event: unknown): Record<string, unknown> | null {
-  if (!event || typeof event !== "object") return null;
-  const record = event as Record<string, unknown>;
-  if (record.type !== "assistant") return null;
-  return getAskUserQuestionTool(record.message);
+export function getAskUserQuestionTool(message: unknown): Record<string, unknown> | null {
+  return getNamedToolUse(message, "AskUserQuestion");
+}
+
+export function getExitPlanModeTool(message: unknown): Record<string, unknown> | null {
+  return getNamedToolUse(message, "ExitPlanMode");
+}
+
+function getNamedToolUse(message: unknown, toolName: string): Record<string, unknown> | null {
+  const messageRecord = protocolMessage(message);
+  if (!messageRecord) return null;
+  if (messageRecord.stop_reason !== "tool_use" && messageRecord.stop_reason !== null && messageRecord.stop_reason !== undefined) {
+    return null;
+  }
+
+  const tool = getToolUseBlocks(messageRecord).find((block) => block.name === toolName);
+  return tool ? ({ type: "tool_use", id: tool.id, name: tool.name, input: tool.input } as Record<string, unknown>) : null;
+}
+
+function recordToolUses(message: unknown, toolLedger: ToolLedger): void {
+  for (const toolCall of getToolUseBlocksFromEvent(message)) {
+    const existing = toolLedger.get(toolCall.id);
+    if (existing?.status === "interrupted" || existing?.status === "completed") continue;
+
+    toolLedger.set(toolCall.id, {
+      toolName: toolCall.name,
+      status: "pending",
+      attempts: (existing?.attempts ?? 0) + 1,
+      input: toolCall.input,
+      interrupt: existing?.interrupt
+    });
+  }
+}
+
+function getToolUseBlocksFromEvent(event: unknown): ToolCallRecord[] {
+  const record = isRecord(event) ? event : undefined;
+  if (record?.type === "tool_use") return getToolUseBlocks(record);
+  if (record?.type === "assistant" || record?.type === "message" || record?.type === "user") {
+    return getToolUseBlocks(record.message ?? record);
+  }
+  return getToolUseBlocks(event);
+}
+
+function getToolUseBlocks(message: unknown): ToolCallRecord[] {
+  const messageRecord = protocolMessage(message);
+  if (!messageRecord) return [];
+  const blocks = Array.isArray(messageRecord.content) ? messageRecord.content : [];
+  const tools: ToolCallRecord[] = [];
+
+  for (const block of blocks) {
+    if (!isRecord(block)) continue;
+    if (block.type !== "tool_use") continue;
+    if (typeof block.id !== "string" || typeof block.name !== "string") continue;
+    tools.push({ id: block.id, name: block.name, input: block.input });
+  }
+
+  if (messageRecord.type === "tool_use" && typeof messageRecord.id === "string" && typeof messageRecord.name === "string") {
+    tools.push({ id: messageRecord.id, name: messageRecord.name, input: messageRecord.input });
+  }
+
+  return tools;
+}
+
+function getToolResultBlocksFromEvent(event: unknown): Record<string, unknown>[] {
+  const record = isRecord(event) ? event : undefined;
+  if (record?.type === "tool_result") return [record];
+  if (record?.type === "assistant" || record?.type === "message" || record?.type === "user") {
+    return getToolResultBlocks(record.message ?? record);
+  }
+  return getToolResultBlocks(event);
+}
+
+function getToolResultBlocks(message: unknown): Record<string, unknown>[] {
+  const messageRecord = protocolMessage(message);
+  if (!messageRecord) return [];
+  const blocks = Array.isArray(messageRecord.content) ? messageRecord.content : [];
+  const results: Record<string, unknown>[] = [];
+
+  for (const block of blocks) {
+    if (isRecord(block) && block.type === "tool_result") results.push(block);
+  }
+
+  if (messageRecord.type === "tool_result") results.push(messageRecord);
+  return results;
+}
+
+function protocolMessage(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  if (isRecord(value.message)) return value.message;
+  return value;
+}
+
+function controlSignalFromToolUse(toolCall: ToolCallRecord): ControlSignal | undefined {
+  if (toolCall.name === "AskUserQuestion") {
+    return {
+      type: "user_input_required",
+      prompt: "Answer questions?",
+      questions: inputProperty(toolCall.input, "questions"),
+      toolCallId: toolCall.id
+    };
+  }
+
+  if (toolCall.name === "ExitPlanMode") {
+    return {
+      type: "approval_required",
+      action: "exit_plan_mode",
+      prompt: "Exit plan mode?",
+      plan: inputProperty(toolCall.input, "plan"),
+      toolCallId: toolCall.id
+    };
+  }
+
+  return undefined;
+}
+
+function interruptFromControl(toolCall: ToolCallRecord, control: ControlSignal): PendingInterrupt {
+  if (control.type === "user_input_required") {
+    return {
+      id: `interrupt:${toolCall.id}`,
+      type: "user_input",
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      prompt: control.prompt,
+      payload: {
+        input: toolCall.input,
+        questions: control.questions
+      }
+    };
+  }
+
+  return {
+    id: `interrupt:${toolCall.id}`,
+    type: "approval",
+    toolCallId: toolCall.id,
+    toolName: toolCall.name,
+    prompt: control.prompt,
+    payload: {
+      input: toolCall.input,
+      plan: control.plan,
+      action: control.action
+    }
+  };
+}
+
+function pendingEventFromInterrupt(interrupt: PendingInterrupt): NormalizedAgentEvent {
+  const payload = isRecord(interrupt.payload) ? interrupt.payload : {};
+  const input = isRecord(payload.input) ? payload.input : interrupt.payload;
+
+  if (interrupt.type === "user_input") {
+    return {
+      type: "question_pending",
+      data: {
+        waitingForUserQuestion: true,
+        toolUseId: interrupt.toolCallId,
+        input,
+        interrupt
+      }
+    };
+  }
+
+  return {
+    type: "approval_pending",
+    data: {
+      waitingForApproval: true,
+      toolUseId: interrupt.toolCallId,
+      input,
+      plan: payload.plan,
+      interrupt
+    }
+  };
+}
+
+function statusForInterrupt(interrupt: PendingInterrupt): AgentStatus {
+  return interrupt.type === "approval" ? "awaiting_approval" : "awaiting_user_input";
+}
+
+function inputProperty(input: unknown, property: string): unknown {
+  return isRecord(input) ? input[property] : undefined;
+}
+
+function toolResultContentText(result: Record<string, unknown>): string {
+  const content = result.content;
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (isRecord(part) && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  if (content === undefined || content === null) return "";
+  return String(content).trim();
 }
 
 function getSessionIdFromEvent(event: unknown): string | undefined {

@@ -13,10 +13,12 @@ import {
   CLAUDE_MODES,
   type ListMessagesResponse,
   type ListSessionsResponse,
+  type PendingInterrupt,
   type PromptImage,
   type PublicSession,
   type RootInfoResponse,
-  type SessionMetadata
+  type SessionMetadata,
+  type StreamMessageRequest
 } from "./types.js";
 
 const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
@@ -70,7 +72,9 @@ const streamMessageSchema = z.object({
   toolResult: z
     .object({
       toolUseId: z.string().min(1),
-      content: z.string().min(1)
+      content: z.string().min(1),
+      kind: z.enum(["user_input", "approval"]).optional(),
+      approved: z.boolean().optional()
     })
     .optional(),
   mode: z.enum(CLAUDE_MODES).optional(),
@@ -289,11 +293,35 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
     const request = streamMessageSchema.parse(await c.req.json());
+    applyToolResultToSession(session, request);
+
+    if (!session.pendingInterrupt) {
+      session.status = session.mode === "plan" ? "planning" : "executing";
+    }
+
+    if (request.toolResult || session.pendingInterrupt === undefined) {
+      await sessionStore.save(session);
+    }
+
+    if (session.pendingInterrupt && !request.toolResult) {
+      const pendingEvent = pendingEventFromSessionInterrupt(session.pendingInterrupt);
+      return streamSSE(c, async (stream) => {
+        await stream.writeSSE({
+          event: pendingEvent.type,
+          data: JSON.stringify(pendingEvent.data)
+        });
+        await stream.writeSSE({
+          event: "done",
+          data: JSON.stringify(donePayloadForPendingEvent(pendingEvent.type))
+        });
+      });
+    }
 
     return streamSSE(c, async (stream) => {
       let sessionMarkedAsRun = false;
       let persistedClaudeSessionId = session.claudeSessionId;
       let waitingForUserQuestion = false;
+      let waitingForApproval = false;
       try {
         for await (const event of agentService.stream({
           session,
@@ -307,14 +335,20 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
         })) {
           if (!sessionMarkedAsRun) {
             await sessionStore.markRun(session.id);
+            session.hasRun = true;
             sessionMarkedAsRun = true;
           }
           if (event.type === "question_pending") waitingForUserQuestion = true;
+          if (event.type === "approval_pending") waitingForApproval = true;
           if (event.type === "result" && event.data && typeof event.data === "object") {
             const cost = (event.data as { total_cost_usd?: unknown }).total_cost_usd;
             if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
+              session.costUsd = cost;
               await sessionStore.setCost(session.id, cost);
             }
+          }
+          if (event.type === "question_pending" || event.type === "approval_pending") {
+            await sessionStore.save(session);
           }
 
           await stream.writeSSE({
@@ -323,8 +357,16 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
           });
         }
 
-        await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true, waitingForUserQuestion }) });
+        if (!waitingForUserQuestion && !waitingForApproval) {
+          session.status = "done";
+          delete session.pendingInterrupt;
+          await sessionStore.save(session);
+        }
+
+        await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true, waitingForUserQuestion, waitingForApproval }) });
       } catch (error) {
+        session.status = "failed";
+        await sessionStore.save(session).catch(() => undefined);
         const status =
           error instanceof ConcurrencyLimitError
             ? "concurrency_limit"
@@ -381,6 +423,75 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
+function applyToolResultToSession(session: SessionMetadata, request: StreamMessageRequest): void {
+  if (!request.toolResult || !session.pendingInterrupt) return;
+
+  const pending = session.pendingInterrupt;
+  if (request.toolResult.toolUseId !== pending.toolCallId) {
+    throw new Error("Invalid tool result: toolUseId does not match the pending interrupt");
+  }
+  if (request.toolResult.kind && request.toolResult.kind !== pending.type) {
+    throw new Error("Invalid tool result: kind does not match the pending interrupt");
+  }
+  request.toolResult.kind = pending.type;
+
+  if (pending.type === "approval") {
+    const approved = request.toolResult.approved ?? parseApprovalContent(request.toolResult.content);
+    session.mode = approved ? "edit" : "plan";
+    request.mode = session.mode;
+  }
+
+  session.status = session.mode === "plan" ? "planning" : "executing";
+  delete session.pendingInterrupt;
+}
+
+function parseApprovalContent(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed && typeof parsed === "object" && typeof (parsed as { approved?: unknown }).approved === "boolean") {
+      return (parsed as { approved: boolean }).approved;
+    }
+  } catch {}
+
+  return /\bapproved?\b|\byes\b|\bcontinue\b/i.test(content);
+}
+
+function pendingEventFromSessionInterrupt(interrupt: PendingInterrupt): { type: string; data: unknown } {
+  const payload = interrupt.payload && typeof interrupt.payload === "object" ? (interrupt.payload as Record<string, unknown>) : {};
+  const input = payload.input && typeof payload.input === "object" ? payload.input : interrupt.payload;
+
+  if (interrupt.type === "user_input") {
+    return {
+      type: "question_pending",
+      data: {
+        waitingForUserQuestion: true,
+        toolUseId: interrupt.toolCallId,
+        input,
+        interrupt
+      }
+    };
+  }
+
+  return {
+    type: "approval_pending",
+    data: {
+      waitingForApproval: true,
+      toolUseId: interrupt.toolCallId,
+      input,
+      plan: payload.plan,
+      interrupt
+    }
+  };
+}
+
+function donePayloadForPendingEvent(eventType: string): { ok: true; waitingForUserQuestion: boolean; waitingForApproval: boolean } {
+  return {
+    ok: true,
+    waitingForUserQuestion: eventType === "question_pending",
+    waitingForApproval: eventType === "approval_pending"
+  };
+}
+
 function pageMessages(
   messages: unknown[],
   options: { limit?: number; offset: number; tail: boolean }
@@ -425,6 +536,8 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     title: session.title,
     userName: session.userName,
     mode: session.mode,
+    status: session.status,
+    pendingInterrupt: session.pendingInterrupt,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     hasRun: session.hasRun,

@@ -1,7 +1,14 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { AgentService, buildAgentOptions, buildAgentPrompt, getAskUserQuestionTool, type AgentSdkAdapter } from "../src/agent-service.js";
+import {
+  AgentService,
+  buildAgentOptions,
+  buildAgentPrompt,
+  classifyToolResult,
+  getAskUserQuestionTool,
+  type AgentSdkAdapter
+} from "../src/agent-service.js";
 import { buildSandboxSettings } from "../src/sandbox.js";
 import type { SessionMetadata } from "../src/types.js";
 import { createTempConfig } from "./helpers.js";
@@ -107,6 +114,60 @@ describe("sandbox and agent options", () => {
     expect(prompt).toContain("Subject: SaaS product\ncontinue");
   });
 
+  it("maps ExitPlanMode approval results to an execution prompt", async () => {
+    const prompt = buildAgentPrompt({
+      prompt: "Approved. Continue.",
+      toolResult: {
+        toolUseId: "toolu_exit",
+        kind: "approval",
+        approved: true,
+        content: JSON.stringify({
+          approved: true,
+          plan: "1. Update the dispatcher.\n2. Add tests."
+        })
+      }
+    });
+
+    expect(prompt).toContain("User approved exiting plan mode");
+    expect(prompt).toContain("1. Update the dispatcher");
+    expect(prompt).toContain("Approved. Continue.");
+  });
+
+  it("classifies interactive tool failures as control signals with saved tool input", () => {
+    expect(
+      classifyToolResult(
+        { id: "toolu_question", name: "AskUserQuestion", input: { questions: [{ question: "Continue?", options: [] }] } },
+        { type: "tool_result", tool_use_id: "toolu_question", is_error: true, content: "Answer questions?" }
+      )
+    ).toMatchObject({
+      kind: "control",
+      control: {
+        type: "user_input_required",
+        questions: [{ question: "Continue?", options: [] }]
+      }
+    });
+
+    expect(
+      classifyToolResult(
+        { id: "toolu_exit", name: "ExitPlanMode", input: { plan: "Ship the approved patch." } },
+        { type: "tool_result", tool_use_id: "toolu_exit", is_error: true, content: "Exit plan mode?" }
+      )
+    ).toMatchObject({
+      kind: "control",
+      control: {
+        type: "approval_required",
+        plan: "Ship the approved patch."
+      }
+    });
+
+    expect(
+      classifyToolResult(
+        { id: "toolu_read", name: "Read", input: { file_path: "missing" } },
+        { type: "tool_result", tool_use_id: "toolu_read", is_error: true, content: "ENOENT" }
+      )
+    ).toMatchObject({ kind: "real_error", message: "ENOENT" });
+  });
+
   it("detects only AskUserQuestion tool_use messages that stopped for tool use", () => {
     const askTool = getAskUserQuestionTool({
       stop_reason: "tool_use",
@@ -195,6 +256,71 @@ describe("sandbox and agent options", () => {
 
     expect(events.map((event) => event.type)).toEqual(["message", "question_pending"]);
     expect(closed).toBe(true);
-    expect(JSON.stringify(events)).not.toContain("Answer questions?");
+    expect(JSON.stringify(events)).not.toContain('"type":"tool_result"');
+  });
+
+  it("stops streaming after ExitPlanMode and exposes the plan for approval", async () => {
+    const config = await createTempConfig();
+    const session: SessionMetadata = {
+      id: "00000000-0000-4000-8000-000000000002",
+      mode: "plan",
+      workspacePath: path.join(config.workspaceDir, "session-exit-plan"),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      hasRun: true
+    };
+    let closed = false;
+    const adapter: AgentSdkAdapter = {
+      query: () => ({
+        close: () => {
+          closed = true;
+        },
+        async *[Symbol.asyncIterator]() {
+          yield {
+            type: "assistant",
+            message: {
+              role: "assistant",
+              stop_reason: null,
+              content: [
+                {
+                  type: "tool_use",
+                  id: "toolu_exit",
+                  name: "ExitPlanMode",
+                  input: { plan: "Implement the control dispatcher." }
+                }
+              ]
+            }
+          };
+          if (!closed) {
+            yield {
+              type: "user",
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: "toolu_exit", is_error: true, content: "Exit plan mode?" }]
+              }
+            };
+          }
+        }
+      }),
+      getSessionMessages: async () => []
+    };
+
+    const events = [];
+    for await (const event of new AgentService(config, adapter).stream({ session, request: { prompt: "plan", mode: "plan" } })) {
+      events.push(event);
+    }
+
+    expect(events.map((event) => event.type)).toEqual(["message", "approval_pending"]);
+    expect(events[1]).toMatchObject({
+      type: "approval_pending",
+      data: {
+        waitingForApproval: true,
+        toolUseId: "toolu_exit",
+        plan: "Implement the control dispatcher."
+      }
+    });
+    expect(session).toMatchObject({ status: "awaiting_approval", pendingInterrupt: { type: "approval", toolCallId: "toolu_exit" } });
+    expect(closed).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('"type":"tool_result"');
   });
 });

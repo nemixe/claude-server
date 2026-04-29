@@ -2,6 +2,23 @@ export const CLAUDE_MODES = ["plan", "edit", "bypass"] as const;
 
 export type ClaudeMode = (typeof CLAUDE_MODES)[number];
 
+export type AgentStatus =
+  | "planning"
+  | "executing"
+  | "awaiting_user_input"
+  | "awaiting_approval"
+  | "done"
+  | "failed";
+
+export type PendingInterrupt = {
+  id: string;
+  type: "user_input" | "approval";
+  toolCallId: string;
+  toolName: "AskUserQuestion" | "ExitPlanMode" | string;
+  prompt: string;
+  payload: unknown;
+};
+
 export type UploadedFile = {
   path: string;
   content?: string;
@@ -44,6 +61,8 @@ export type SessionMetadata = {
   title?: string;
   userName?: string;
   mode: ClaudeMode;
+  status?: AgentStatus;
+  pendingInterrupt?: PendingInterrupt;
   workspacePath: string;
   createdAt: string;
   updatedAt: string;
@@ -58,6 +77,8 @@ export type PublicSession = {
   title?: string;
   userName?: string;
   mode: ClaudeMode;
+  status?: AgentStatus;
+  pendingInterrupt?: PendingInterrupt;
   createdAt: string;
   updatedAt: string;
   hasRun: boolean;
@@ -94,6 +115,8 @@ export type StreamMessageRequest = {
   toolResult?: {
     toolUseId: string;
     content: string;
+    kind?: "user_input" | "approval";
+    approved?: boolean;
   };
   mode?: ClaudeMode;
   model?: string;

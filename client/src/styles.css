@@ -1670,6 +1670,108 @@ body {
   gap: 5px;
 }
 
+.ai-chat-footer-approval {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ai-chat-color-border-light);
+  border-radius: var(--ai-chat-radius-md);
+  overflow: hidden;
+  background: #fff;
+}
+
+.ai-chat-footer-approval-header {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--ai-chat-color-border-light);
+  padding: 8px 10px;
+  background: var(--ai-chat-color-bg-secondary);
+}
+
+.ai-chat-footer-approval-title {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.ai-chat-footer-approval-plan {
+  max-height: min(44vh, 380px);
+  min-height: 150px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  background: transparent;
+  color: #1e293b;
+  scrollbar-gutter: stable;
+}
+
+.ai-chat-footer-approval-markdown {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-chat-footer-approval-markdown h1,
+.ai-chat-footer-approval-markdown h2,
+.ai-chat-footer-approval-markdown h3,
+.ai-chat-footer-approval-markdown h4 {
+  margin: 0.8em 0 0.35em;
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.ai-chat-footer-approval-markdown ul,
+.ai-chat-footer-approval-markdown ol {
+  padding-left: 18px;
+}
+
+.ai-chat-footer-approval-markdown li + li {
+  margin-top: 0.25em;
+}
+
+.ai-chat-footer-approval-markdown pre {
+  max-height: none;
+}
+
+.ai-chat-footer-approval-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  border-top: 1px solid var(--ai-chat-color-border-light);
+  background: #fff;
+}
+
+.ai-chat-footer-approval-action {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0;
+  padding: 11px 8px;
+  background: transparent;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  transition: background var(--ai-chat-transition-fast), color var(--ai-chat-transition-fast);
+}
+
+.ai-chat-footer-approval-action + .ai-chat-footer-approval-action {
+  border-left: 1px solid var(--ai-chat-color-border-light);
+}
+
+.ai-chat-footer-approval-action:hover:not(:disabled) {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.ai-chat-footer-approval-action:disabled {
+  color: var(--ai-chat-color-disabled-text);
+  cursor: default;
+}
+
 .ai-chat-footer-chip {
   border: 1px solid transparent;
   border-radius: 12px;
