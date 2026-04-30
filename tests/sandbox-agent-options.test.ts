@@ -392,7 +392,7 @@ describe("sandbox and agent options", () => {
     expect((validationEvents[0].data as { message: string }).message).toContain("InputValidationError");
   });
 
-  it("aborts the run after MAX_CONSECUTIVE_VALIDATION_ERRORS for the same tool", async () => {
+  it("aborts the run after MAX_CONSECUTIVE_VALIDATION_ERRORS for the same exact tool input", async () => {
     const config = await createTempConfig();
     const session: SessionMetadata = {
       id: "00000000-0000-4000-8000-000000000011",
@@ -441,6 +441,56 @@ describe("sandbox and agent options", () => {
     expect(validationEvents[validationEvents.length - 1]).toMatchObject({
       data: { attempts: MAX_CONSECUTIVE_VALIDATION_ERRORS, toolName: "Read" }
     });
+  });
+
+  it("does not abort validation errors for the same tool with different inputs", async () => {
+    const config = await createTempConfig();
+    const session: SessionMetadata = {
+      id: "00000000-0000-4000-8000-000000000013",
+      mode: "bypass",
+      workspacePath: path.join(config.workspaceDir, "session-validation-distinct-inputs"),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      hasRun: false
+    };
+    const errorContent = "<tool_use_error>InputValidationError: parameter shape</tool_use_error>";
+    const { service } = createServiceWithStream(config, async function* () {
+      for (let i = 0; i < MAX_CONSECUTIVE_VALIDATION_ERRORS + 2; i += 1) {
+        const id = `toolu_read_distinct_${i}`;
+        yield {
+          type: "assistant",
+          message: {
+            role: "assistant",
+            stop_reason: null,
+            content: [{ type: "tool_use", id, name: "Read", input: { file_path: i } }]
+          }
+        };
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: errorContent }]
+          }
+        };
+      }
+    });
+
+    const events = [];
+    let caught: unknown;
+    try {
+      for await (const event of service.stream({ session, request: { prompt: "read" } })) {
+        events.push(event);
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeUndefined();
+    const validationEvents = events.filter((event) => event.type === "tool_validation_error");
+    expect(validationEvents).toHaveLength(MAX_CONSECUTIVE_VALIDATION_ERRORS + 2);
+    for (const event of validationEvents) {
+      expect((event.data as { attempts: number }).attempts).toBe(1);
+    }
   });
 
   it("resets the validation counter after a successful tool result for the same tool", async () => {

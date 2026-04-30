@@ -6,7 +6,19 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionMetadata } from "./types.js";
 
-export type SessionOptions = SDKSessionOptions;
+type SessionSystemPrompt =
+  | string
+  | string[]
+  | {
+      type: "preset";
+      preset: "claude_code";
+      append?: string;
+      excludeDynamicSections?: boolean;
+    };
+
+export type SessionOptions = SDKSessionOptions & {
+  systemPrompt?: SessionSystemPrompt;
+};
 export type SessionLike = SDKSession;
 
 export type SessionFactory = {
@@ -137,6 +149,7 @@ function createOptionSignature(options: SessionOptions): string {
     settingSources: options.settingSources ?? [],
     permissionMode: options.permissionMode,
     allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
+    systemPrompt: options.systemPrompt,
     env: options.env ?? {},
     disallowedTools: options.disallowedTools ?? []
   });

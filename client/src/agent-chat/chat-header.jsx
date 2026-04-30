@@ -7,7 +7,6 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  MinusOutlined,
   MoreOutlined
 } from "@ant-design/icons";
 import { getAvatarThemeFromLabel } from "./chat-ui-utils.js";
@@ -25,13 +24,11 @@ export default function ChatHeader({
   currentUserDisplayLabel,
   onLogout,
   onClose,
-  onMinimize,
   onExportSession,
   onOpenHistory,
   canExportSession,
   dragHandleProps,
-  status,
-  isMinimized
+  status
 }) {
   const menuItems = [
     {
@@ -124,13 +121,6 @@ export default function ChatHeader({
             title="More"
           />
         </Dropdown>
-        <Button
-          size="small"
-          type="text"
-          icon={<MinusOutlined />}
-          aria-label={isMinimized ? "Restore chat" : "Minimize chat"}
-          onClick={onMinimize}
-        />
         <Button
           size="small"
           type="text"

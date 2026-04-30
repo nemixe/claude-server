@@ -103,11 +103,6 @@ body {
   min-height: min(420px, calc(100vh - 24px));
 }
 
-.ai-chat-floating.is-minimized {
-  height: auto;
-  min-height: 0;
-}
-
 .ai-chat-card {
   display: flex;
   flex-direction: column;
@@ -2209,14 +2204,16 @@ body {
   .ai-chat-floating {
     top: 0 !important;
     left: 0 !important;
-    width: 100vw;
-    height: 100vh;
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .ai-chat-floating.is-minimized {
-    height: auto;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    width: 100dvw !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
   }
 
   .ai-chat-card {

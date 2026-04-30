@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgentService, buildSessionOptions, type AgentSdkAdapter } from "../src/agent-service.js";
@@ -44,6 +45,37 @@ describe("buildSessionOptions", () => {
     expect(() => buildSessionOptions(missingModelConfig, session, { prompt: "hello" })).toThrow(/CLAUDE_MODEL/);
   });
 
+  it("appends project rules from .claude/rules to the Claude Code system prompt", async () => {
+    const config = await createTempConfig();
+    const rulesDir = path.join(config.projectRoot, ".claude", "rules");
+    await fs.mkdir(path.join(rulesDir, "nested"), { recursive: true });
+    await fs.writeFile(path.join(rulesDir, "02-component.md"), "Use existing components.", "utf8");
+    await fs.writeFile(path.join(rulesDir, "01-development.md"), "Follow project conventions.", "utf8");
+    await fs.writeFile(path.join(rulesDir, "nested", "03-api.txt"), "Keep API routes stable.", "utf8");
+    await fs.writeFile(path.join(rulesDir, "ignore.json"), "Do not include this.", "utf8");
+    const session = metadata(config.workspaceDir);
+
+    const options = buildSessionOptions(config, session, { prompt: "hello" });
+
+    expect(options.systemPrompt).toEqual(
+      expect.objectContaining({
+        type: "preset",
+        preset: "claude_code"
+      })
+    );
+    const systemPrompt = options.systemPrompt;
+    if (!systemPrompt || typeof systemPrompt !== "object" || !("append" in systemPrompt)) {
+      throw new Error("Expected appended system prompt");
+    }
+    expect(systemPrompt.append).toContain("Project-specific rules loaded from `.claude/rules`");
+    expect(systemPrompt.append).toContain("## 01-development.md");
+    expect(systemPrompt.append).toContain("Follow project conventions.");
+    expect(systemPrompt.append).toContain("## 02-component.md");
+    expect(systemPrompt.append).toContain("## nested/03-api.txt");
+    expect(systemPrompt.append).not.toContain("ignore.json");
+    expect(systemPrompt.append.indexOf("01-development.md")).toBeLessThan(systemPrompt.append.indexOf("02-component.md"));
+  });
+
   it("reads persisted messages from the configured project root", async () => {
     const config = await createTempConfig();
     let seenOptions: { dir?: string; limit?: number; offset?: number } | undefined;
@@ -83,6 +115,25 @@ describe("AgentService with V2 sessions", () => {
     expect(mockSession.send).toHaveBeenNthCalledWith(2, "again");
   });
 
+  it("sends project rules in the prompt body so resumed sessions receive them", async () => {
+    const config = await createTempConfig();
+    const rulesDir = path.join(config.projectRoot, ".claude", "rules");
+    await fs.mkdir(rulesDir, { recursive: true });
+    await fs.writeFile(path.join(rulesDir, "01-development.md"), "Always inspect the existing module pattern first.", "utf8");
+    const mockSession = createMockSession("claude-rules", () => resultStream("claude-rules"));
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => mockSession),
+      resumeSession: vi.fn(() => createMockSession("unused", () => resultStream("unused")))
+    };
+    const service = new AgentService(config, undefined, factory);
+
+    await collect(service.stream({ session: metadata(config.workspaceDir), request: { prompt: "Create a product module" } }));
+
+    expect(mockSession.send).toHaveBeenCalledWith(expect.stringContaining("<project_rules>"));
+    expect(mockSession.send).toHaveBeenCalledWith(expect.stringContaining("Always inspect the existing module pattern first."));
+    expect(mockSession.send).toHaveBeenCalledWith(expect.stringContaining("User request:\nCreate a product module"));
+  });
+
   it("cold-resumes with persisted Claude session ID", async () => {
     const config = await createTempConfig();
     const resumed = createMockSession("claude-resume", () => resultStream("claude-resume"));
@@ -97,6 +148,34 @@ describe("AgentService with V2 sessions", () => {
 
     expect(factory.resumeSession).toHaveBeenCalledWith("claude-resume", expect.any(Object));
     expect(resumed.send).toHaveBeenCalledWith("continue");
+  });
+
+  it("includes project rules when cold-resuming a persisted Claude session", async () => {
+    const config = await createTempConfig();
+    const rulesDir = path.join(config.projectRoot, ".claude", "rules");
+    await fs.mkdir(rulesDir, { recursive: true });
+    await fs.writeFile(path.join(rulesDir, "01-development.md"), "Keep generated modules consistent.", "utf8");
+    const resumed = createMockSession("claude-rules-resume", () => resultStream("claude-rules-resume"));
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => createMockSession("unused", () => resultStream("unused"))),
+      resumeSession: vi.fn(() => resumed)
+    };
+    const service = new AgentService(config, undefined, factory);
+    const session = metadata(config.workspaceDir, { hasRun: true, claudeSessionId: "claude-rules-resume" });
+
+    await collect(service.stream({ session, request: { prompt: "continue product module" } }));
+
+    expect(factory.resumeSession).toHaveBeenCalledWith(
+      "claude-rules-resume",
+      expect.objectContaining({
+        systemPrompt: expect.objectContaining({
+          append: expect.stringContaining("Keep generated modules consistent.")
+        })
+      })
+    );
+    expect(resumed.send).toHaveBeenCalledWith(expect.stringContaining("<project_rules>"));
+    expect(resumed.send).toHaveBeenCalledWith(expect.stringContaining("Keep generated modules consistent."));
+    expect(resumed.send).toHaveBeenCalledWith(expect.stringContaining("User request:\ncontinue product module"));
   });
 
   it("throws missing_claude_session_id for already-run sessions without Claude ID", async () => {

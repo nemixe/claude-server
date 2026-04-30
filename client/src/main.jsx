@@ -48,6 +48,8 @@ import {
 
 const storageKey = "claude-test-client:last-session";
 const identityStorageKey = "claude-test-client:user-identity";
+const chatFrameStorageKey = "claude-test-client:chat-frame:v1";
+const sidebarWidthStorageKey = "claude-test-client:sidebar-width:v1";
 const imageMediaTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const maxImages = 5;
 const maxImageBytes = 5 * 1024 * 1024;
@@ -55,6 +57,7 @@ const USER_LABEL_MAX_LENGTH = 40;
 const GUEST_USER_NAME = "Guest";
 const SESSION_PAGE_SIZE = 30;
 const MESSAGE_PAGE_SIZE = 200;
+const NARROW_VIEWPORT_MAX_WIDTH = 768;
 
 const modeLabel = {
   plan: "Plan",
@@ -73,9 +76,8 @@ function App() {
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [creatorFilter, setCreatorFilter] = useState("");
   const [activePanelView, setActivePanelView] = useState("chat");
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => !isNarrowViewport());
   const [isClosed, setIsClosed] = useState(false);
-  const [isMinimized, setIsMinimized] = useState(false);
   const [mode, setMode] = useState("bypass");
   const [maxTurns, setMaxTurns] = useState(30);
   const [maxConcurrentRuns, setMaxConcurrentRuns] = useState(null);
@@ -96,8 +98,8 @@ function App() {
   const [isObservedRunning, setIsObservedRunning] = useState(false);
   const [historyCopyLabel, setHistoryCopyLabel] = useState("Copy JSON");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [chatFrame, setChatFrame] = useState(initialChatFrame);
-  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [chatFrame, setChatFrame] = useState(readSavedChatFrame);
+  const [sidebarWidth, setSidebarWidth] = useState(readSavedSidebarWidth);
   const [hasGrabContext, setHasGrabContext] = useState(false);
   const [isAnnotating, setIsAnnotating] = useState(false);
   const [latestAnnotation, setLatestAnnotation] = useState(null);
@@ -123,6 +125,7 @@ function App() {
   const streamFrameRef = useRef(null);
   const streamTimeoutRef = useRef(null);
   const dragFrameRef = useRef(null);
+  const wasNarrowViewportRef = useRef(isNarrowViewport());
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -163,8 +166,23 @@ function App() {
 
   useEffect(() => {
     const onResize = () => {
-      setChatFrame((current) => clampChatFrame(current));
-      setSidebarWidth((current) => clampSidebarWidth(current, chatRef.current));
+      const isNarrow = isNarrowViewport();
+      if (isNarrow !== wasNarrowViewportRef.current) {
+        wasNarrowViewportRef.current = isNarrow;
+        setIsSidebarOpen(!isNarrow);
+        if (!isNarrow) {
+          const restoredFrame = readSavedChatFrame();
+          const restoredSidebarWidth = readSavedSidebarWidth();
+          chatFrameRef.current = restoredFrame;
+          sidebarWidthRef.current = restoredSidebarWidth;
+          setChatFrame(restoredFrame);
+          setSidebarWidth(restoredSidebarWidth);
+        }
+        return;
+      }
+      if (isNarrow) return;
+      updateChatFrame(chatFrameRef.current, { persist: true });
+      updateSidebarWidth(sidebarWidthRef.current, { persist: true });
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -1035,6 +1053,65 @@ function App() {
     appendEntry("client", { annotation: null });
   }
 
+  function beginPointerInteraction(event, restoreVisualState) {
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    let restored = false;
+
+    if (target && typeof target.setPointerCapture === "function" && typeof pointerId === "number") {
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {
+        /* Pointer capture can fail if the pointer is already released. */
+      }
+    }
+
+    return () => {
+      if (restored) return;
+      restored = true;
+      if (target && typeof target.releasePointerCapture === "function" && typeof pointerId === "number") {
+        try {
+          if (typeof target.hasPointerCapture !== "function" || target.hasPointerCapture(pointerId)) {
+            target.releasePointerCapture(pointerId);
+          }
+        } catch {
+          /* Ignore release failures from already-cancelled pointers. */
+        }
+      }
+      restoreVisualState();
+    };
+  }
+
+  function bindPointerInteractionEnd(target, stop) {
+    window.addEventListener("pointerup", stop, { once: true });
+    window.addEventListener("pointercancel", stop, { once: true });
+    window.addEventListener("blur", stop, { once: true });
+    target?.addEventListener?.("lostpointercapture", stop, { once: true });
+
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      window.removeEventListener("blur", stop);
+      target?.removeEventListener?.("lostpointercapture", stop);
+    };
+  }
+
+  function updateChatFrame(frame, options = {}) {
+    const nextFrame = clampChatFrame(frame);
+    chatFrameRef.current = nextFrame;
+    setChatFrame(nextFrame);
+    if (options.persist && !isNarrowViewport()) writeSavedChatFrame(nextFrame);
+    return nextFrame;
+  }
+
+  function updateSidebarWidth(width, options = {}) {
+    const nextWidth = clampSidebarWidth(width, chatRef.current);
+    sidebarWidthRef.current = nextWidth;
+    setSidebarWidth(nextWidth);
+    if (options.persist && !isNarrowViewport()) writeSavedSidebarWidth(nextWidth);
+    return nextWidth;
+  }
+
   function startDrag(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (window.innerWidth <= 768) return;
@@ -1050,7 +1127,9 @@ function App() {
     };
     let nextFrame = origin;
     let pendingOffset = { x: 0, y: 0 };
-    const restoreInteraction = beginDragInteraction();
+    const restoreInteraction = beginPointerInteraction(event, beginDragInteraction());
+    let stopped = false;
+    let removeEndListeners = () => {};
 
     function applyPendingOffset() {
       dragFrameRef.current = null;
@@ -1059,6 +1138,10 @@ function App() {
     }
 
     function move(pointerEvent) {
+      if (pointerEvent.buttons === 0) {
+        stop();
+        return;
+      }
       nextFrame = clampChatFrame({
         ...origin,
         x: dragStart.originX + pointerEvent.clientX - dragStart.pointerX,
@@ -1074,6 +1157,8 @@ function App() {
     }
 
     function stop() {
+      if (stopped) return;
+      stopped = true;
       if (dragFrameRef.current) {
         window.cancelAnimationFrame(dragFrameRef.current);
         dragFrameRef.current = null;
@@ -1084,15 +1169,13 @@ function App() {
         dragNode.style.transform = "";
       }
       restoreInteraction();
-      setChatFrame(nextFrame);
+      updateChatFrame(nextFrame, { persist: true });
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointercancel", stop);
-      window.removeEventListener("pointerup", stop);
+      removeEndListeners();
     }
 
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
+    removeEndListeners = bindPointerInteractionEnd(event.currentTarget, stop);
   }
 
   function startWindowResize(event, direction) {
@@ -1108,29 +1191,38 @@ function App() {
       height: origin.height
     };
     const cursor = direction === "south" ? "ns-resize" : direction === "east" ? "ew-resize" : "nwse-resize";
-    const restoreInteraction = beginResizeInteraction(cursor);
+    const restoreInteraction = beginPointerInteraction(event, beginResizeInteraction(cursor));
+    let nextFrame = origin;
+    let stopped = false;
+    let removeEndListeners = () => {};
 
     function move(pointerEvent) {
+      if (pointerEvent.buttons === 0) {
+        stop();
+        return;
+      }
       const deltaX = pointerEvent.clientX - resizeStart.pointerX;
       const deltaY = pointerEvent.clientY - resizeStart.pointerY;
-      setChatFrame((current) =>
-        clampChatFrame({
-          ...current,
-          width: direction === "south" ? resizeStart.width : resizeStart.width + deltaX,
-          height: direction === "east" ? resizeStart.height : resizeStart.height + deltaY
-        })
-      );
-      setSidebarWidth((current) => clampSidebarWidth(current, chatRef.current));
+      nextFrame = updateChatFrame({
+        ...origin,
+        width: direction === "south" ? resizeStart.width : resizeStart.width + deltaX,
+        height: direction === "east" ? resizeStart.height : resizeStart.height + deltaY
+      });
+      updateSidebarWidth(sidebarWidthRef.current);
     }
 
     function stop() {
+      if (stopped) return;
+      stopped = true;
+      writeSavedChatFrame(nextFrame);
+      writeSavedSidebarWidth(sidebarWidthRef.current);
       restoreInteraction();
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
+      removeEndListeners();
     }
 
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
+    removeEndListeners = bindPointerInteractionEnd(event.currentTarget, stop);
   }
 
   function startSidebarResize(event) {
@@ -1142,20 +1234,30 @@ function App() {
       pointerX: event.clientX,
       width: sidebarWidthRef.current
     };
-    const restoreInteraction = beginResizeInteraction("col-resize");
+    const restoreInteraction = beginPointerInteraction(event, beginResizeInteraction("col-resize"));
+    let nextWidth = resizeStart.width;
+    let stopped = false;
+    let removeEndListeners = () => {};
 
     function move(pointerEvent) {
-      setSidebarWidth(clampSidebarWidth(resizeStart.width + pointerEvent.clientX - resizeStart.pointerX, chatRef.current));
+      if (pointerEvent.buttons === 0) {
+        stop();
+        return;
+      }
+      nextWidth = updateSidebarWidth(resizeStart.width + pointerEvent.clientX - resizeStart.pointerX);
     }
 
     function stop() {
+      if (stopped) return;
+      stopped = true;
+      writeSavedSidebarWidth(nextWidth);
       restoreInteraction();
       window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
+      removeEndListeners();
     }
 
     window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
+    removeEndListeners = bindPointerInteractionEnd(event.currentTarget, stop);
   }
 
   const chatHeader = (
@@ -1172,13 +1274,11 @@ function App() {
       currentUserDisplayLabel={getDisplayLabel(userName || GUEST_USER_NAME)}
       onLogout={logoutIdentity}
       onClose={() => setIsClosed(true)}
-      onMinimize={() => setIsMinimized((value) => !value)}
       onExportSession={copySessionHistoryJson}
       onOpenHistory={() => setIsHistoryOpen(true)}
       canExportSession={events.length > 0}
       dragHandleProps={{ onPointerDown: startDrag }}
       status={busy ? "Generating" : status}
-      isMinimized={isMinimized}
     />
   );
 
@@ -1190,7 +1290,6 @@ function App() {
           className="ai-chat-launcher"
           onClick={() => {
             setIsClosed(false);
-            setIsMinimized(false);
           }}
         >
           <span>AI Assistant</span>
@@ -1204,18 +1303,16 @@ function App() {
     <div className="client-stage">
       <div
         ref={chatRef}
-        className={["ai-chat-floating", isMinimized ? "is-minimized" : ""].filter(Boolean).join(" ")}
+        className="ai-chat-floating"
         style={{
           left: chatFrame.x,
           top: chatFrame.y,
           width: chatFrame.width,
-          ...(isMinimized ? {} : { height: chatFrame.height })
+          height: chatFrame.height
         }}
       >
         <div className="ai-chat-card" style={accentStyle}>
-          {isMinimized ? (
-            chatHeader
-          ) : !userName ? (
+          {!userName ? (
             <main className="ai-chat-main-column">
               {chatHeader}
               <ChatIdentityOnboarding
@@ -1295,7 +1392,7 @@ function App() {
                       bubbleItems={bubbleItems}
                       bubbleRoles={bubbleRoles}
                       isStreaming={isStreamingActiveSession}
-                      open={!isClosed && !isMinimized}
+                      open={!isClosed}
                       scrollResetKey={sessionId || "new"}
                       hasMoreBefore={historyPageInfo.hasMoreBefore}
                       isLoadingBefore={isHistoryLoading}
@@ -1345,31 +1442,27 @@ function App() {
             </div>
           )}
         </div>
-        {!isMinimized ? (
-          <>
-            <button
-              type="button"
-              className="ai-chat-window-resize-handle ai-chat-window-resize-east"
-              aria-label="Resize chat width"
-              title="Resize width"
-              onPointerDown={(event) => startWindowResize(event, "east")}
-            />
-            <button
-              type="button"
-              className="ai-chat-window-resize-handle ai-chat-window-resize-south"
-              aria-label="Resize chat height"
-              title="Resize height"
-              onPointerDown={(event) => startWindowResize(event, "south")}
-            />
-            <button
-              type="button"
-              className="ai-chat-window-resize-handle ai-chat-window-resize-southeast"
-              aria-label="Resize chat window"
-              title="Resize window"
-              onPointerDown={(event) => startWindowResize(event, "southeast")}
-            />
-          </>
-        ) : null}
+        <button
+          type="button"
+          className="ai-chat-window-resize-handle ai-chat-window-resize-east"
+          aria-label="Resize chat width"
+          title="Resize width"
+          onPointerDown={(event) => startWindowResize(event, "east")}
+        />
+        <button
+          type="button"
+          className="ai-chat-window-resize-handle ai-chat-window-resize-south"
+          aria-label="Resize chat height"
+          title="Resize height"
+          onPointerDown={(event) => startWindowResize(event, "south")}
+        />
+        <button
+          type="button"
+          className="ai-chat-window-resize-handle ai-chat-window-resize-southeast"
+          aria-label="Resize chat window"
+          title="Resize window"
+          onPointerDown={(event) => startWindowResize(event, "southeast")}
+        />
       </div>
       <Drawer
         title="Session History"
@@ -1442,6 +1535,65 @@ function createHistoryPageInfo(result) {
 
 function getSessionUserName(session) {
   return getDisplayLabel(session?.userName || GUEST_USER_NAME);
+}
+
+function isNarrowViewport() {
+  return typeof window !== "undefined" && window.innerWidth <= NARROW_VIEWPORT_MAX_WIDTH;
+}
+
+function readSavedChatFrame() {
+  const savedFrame = readStorageJson(chatFrameStorageKey);
+  if (!isChatFrame(savedFrame)) return initialChatFrame();
+  return clampChatFrame(savedFrame);
+}
+
+function writeSavedChatFrame(frame) {
+  if (!isChatFrame(frame)) return;
+  writeStorageJson(chatFrameStorageKey, {
+    x: Math.round(frame.x),
+    y: Math.round(frame.y),
+    width: Math.round(frame.width),
+    height: Math.round(frame.height)
+  });
+}
+
+function readSavedSidebarWidth() {
+  const saved = readStorageJson(sidebarWidthStorageKey);
+  const width = typeof saved === "number" ? saved : saved?.width;
+  return Number.isFinite(width) ? clampSidebarWidth(width) : DEFAULT_SIDEBAR_WIDTH;
+}
+
+function writeSavedSidebarWidth(width) {
+  if (!Number.isFinite(width)) return;
+  writeStorageJson(sidebarWidthStorageKey, { width: Math.round(width) });
+}
+
+function isChatFrame(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    Number.isFinite(value.x) &&
+    Number.isFinite(value.y) &&
+    Number.isFinite(value.width) &&
+    Number.isFinite(value.height)
+  );
+}
+
+function readStorageJson(key) {
+  try {
+    const raw = window.localStorage?.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStorageJson(key, value) {
+  try {
+    window.localStorage?.setItem(key, JSON.stringify(value));
+  } catch {
+    /* Storage can be unavailable or full; layout persistence is best effort. */
+  }
 }
 
 function readSavedIdentity() {

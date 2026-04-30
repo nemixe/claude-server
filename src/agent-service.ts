@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getSessionMessages, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AppConfig } from "./config.js";
 import { buildSafeAgentEnv } from "./sandbox.js";
@@ -48,6 +50,8 @@ export type ToolOutcome =
 export const MAX_CONSECUTIVE_VALIDATION_ERRORS = 3;
 
 const TOOL_USE_ERROR_PATTERN = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/i;
+const CLAUDE_RULES_DIR = ".claude/rules";
+const CLAUDE_RULE_FILE_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
 
 export type ControlSignal =
   | {
@@ -270,7 +274,7 @@ export class AgentService {
       { closeOnFinish: false, closeOnError: true }
     );
 
-    await sendPrompt(sdkSession, buildAgentPrompt(input.request));
+    await sendPrompt(sdkSession, buildAgentPrompt(input.request, projectRulesPromptFromOptions(options)));
     const toolLedger: ToolLedger = new Map();
     const validationCounters = new Map<string, number>();
 
@@ -371,14 +375,16 @@ export class AgentService {
 
       if (outcome.kind === "success") {
         entry.status = "completed";
-        validationCounters.delete(entry.toolName);
+        validationCounters.clear();
         continue;
       }
 
       if (outcome.kind === "validation_error") {
         entry.status = "failed";
-        const attempts = (validationCounters.get(entry.toolName) ?? 0) + 1;
-        validationCounters.set(entry.toolName, attempts);
+        const counterKey = validationCounterKey(toolCall);
+        const attempts = (validationCounters.get(counterKey) ?? 0) + 1;
+        validationCounters.clear();
+        validationCounters.set(counterKey, attempts);
         validation.push({
           type: "tool_validation_error",
           data: {
@@ -398,11 +404,11 @@ export class AgentService {
 
       if (outcome.kind === "real_error") {
         entry.status = "failed";
-        validationCounters.delete(entry.toolName);
+        validationCounters.clear();
         continue;
       }
 
-      validationCounters.delete(entry.toolName);
+      validationCounters.clear();
       const interrupt = interruptFromControl(toolCall, outcome.control);
       entry.status = "interrupted";
       entry.interrupt = interrupt;
@@ -489,6 +495,7 @@ export function buildSessionOptions(config: AppConfig, session: SessionMetadata,
   if (!model) {
     throw new Error("CLAUDE_MODEL must be set or the stream request must include model");
   }
+  const rulesPrompt = loadClaudeRulesPrompt(config.projectRoot);
 
   return {
     model,
@@ -496,19 +503,74 @@ export function buildSessionOptions(config: AppConfig, session: SessionMetadata,
     settingSources: ["project"],
     permissionMode: permissionModeFor(mode),
     allowDangerouslySkipPermissions: mode === "bypass",
+    ...(rulesPrompt
+      ? {
+          systemPrompt: {
+            type: "preset" as const,
+            preset: "claude_code" as const,
+            append: rulesPrompt
+          }
+        }
+      : {}),
     env: buildSafeAgentEnv(),
     disallowedTools: disallowedToolsFor(mode)
   };
 }
 
-export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
-  if (request.toolResult) {
-    if (request.toolResult.kind === "approval") return buildApprovalResultPrompt(request, request.toolResult);
-    return buildQuestionAnswerPrompt(request, request.toolResult);
+export function loadClaudeRulesPrompt(projectRoot: string): string | undefined {
+  const rulesDir = path.join(projectRoot, CLAUDE_RULES_DIR);
+  const files = collectClaudeRuleFiles(rulesDir, rulesDir).sort((left, right) => left.localeCompare(right));
+  const sections = files
+    .map((filePath) => {
+      const content = fs.readFileSync(filePath, "utf8").trim();
+      if (!content) return "";
+      const relativePath = path.relative(rulesDir, filePath).split(path.sep).join("/");
+      return `## ${relativePath}\n\n${content}`;
+    })
+    .filter(Boolean);
+
+  if (sections.length === 0) return undefined;
+
+  return [
+    `Project-specific rules loaded from \`${CLAUDE_RULES_DIR}\`. Follow these rules when working in this repository.`,
+    ...sections
+  ].join("\n\n");
+}
+
+function collectClaudeRuleFiles(directory: string, root: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
   }
 
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectClaudeRuleFiles(entryPath, root));
+      continue;
+    }
+    if (entry.isFile() && CLAUDE_RULE_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      files.push(entryPath);
+    }
+  }
+  return files.map((filePath) => path.resolve(root, path.relative(root, filePath)));
+}
+
+export function buildAgentPrompt(request: StreamMessageRequest, projectRulesPrompt?: string): AgentPrompt {
+  if (request.toolResult) {
+    if (request.toolResult.kind === "approval") return buildApprovalResultPrompt(request, request.toolResult, projectRulesPrompt);
+    return buildQuestionAnswerPrompt(request, request.toolResult, projectRulesPrompt);
+  }
+
+  const text = prependProjectRulesToPrompt(request.prompt, projectRulesPrompt);
   if (!request.images || request.images.length === 0) {
-    return request.prompt;
+    return text;
   }
 
   const message: SDKUserMessage = {
@@ -516,7 +578,7 @@ export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
     message: {
       role: "user",
       content: [
-        { type: "text", text: request.prompt },
+        { type: "text", text },
         ...request.images.map((image) => ({
           type: "image" as const,
           source: {
@@ -533,7 +595,11 @@ export function buildAgentPrompt(request: StreamMessageRequest): AgentPrompt {
   return singleMessagePrompt(message);
 }
 
-function buildApprovalResultPrompt(request: StreamMessageRequest, toolResult: NonNullable<StreamMessageRequest["toolResult"]>): AgentPrompt {
+function buildApprovalResultPrompt(
+  request: StreamMessageRequest,
+  toolResult: NonNullable<StreamMessageRequest["toolResult"]>,
+  projectRulesPrompt?: string
+): AgentPrompt {
   const parsed = parseJsonRecord(toolResult.content);
   const approved = toolResult.approved ?? (typeof parsed?.approved === "boolean" ? parsed.approved : false);
   const feedback = typeof parsed?.feedback === "string" && parsed.feedback.trim() ? parsed.feedback.trim() : "";
@@ -552,9 +618,10 @@ function buildApprovalResultPrompt(request: StreamMessageRequest, toolResult: No
     .filter((part) => part !== "")
     .join("\n")
     .trim();
+  const promptText = prependProjectRulesToPrompt(text, projectRulesPrompt);
 
   if (!request.images || request.images.length === 0) {
-    return text;
+    return promptText;
   }
 
   const message: SDKUserMessage = {
@@ -562,7 +629,7 @@ function buildApprovalResultPrompt(request: StreamMessageRequest, toolResult: No
     message: {
       role: "user",
       content: [
-        { type: "text", text },
+        { type: "text", text: promptText },
         ...request.images.map((image) => ({
           type: "image" as const,
           source: {
@@ -579,7 +646,11 @@ function buildApprovalResultPrompt(request: StreamMessageRequest, toolResult: No
   return singleMessagePrompt(message);
 }
 
-function buildQuestionAnswerPrompt(request: StreamMessageRequest, toolResult: NonNullable<StreamMessageRequest["toolResult"]>): AgentPrompt {
+function buildQuestionAnswerPrompt(
+  request: StreamMessageRequest,
+  toolResult: NonNullable<StreamMessageRequest["toolResult"]>,
+  projectRulesPrompt?: string
+): AgentPrompt {
   const text = [
     "The user answered the AskUserQuestion form. Use these selections and continue the task.",
     "Do not ask the same questions again unless a required detail is still missing.",
@@ -591,9 +662,10 @@ function buildQuestionAnswerPrompt(request: StreamMessageRequest, toolResult: No
   ]
     .join("\n")
     .trim();
+  const promptText = prependProjectRulesToPrompt(text, projectRulesPrompt);
 
   if (!request.images || request.images.length === 0) {
-    return text;
+    return promptText;
   }
 
   const message: SDKUserMessage = {
@@ -601,7 +673,7 @@ function buildQuestionAnswerPrompt(request: StreamMessageRequest, toolResult: No
     message: {
       role: "user",
       content: [
-        { type: "text", text },
+        { type: "text", text: promptText },
         ...request.images.map((image) => ({
           type: "image" as const,
           source: {
@@ -616,6 +688,28 @@ function buildQuestionAnswerPrompt(request: StreamMessageRequest, toolResult: No
   };
 
   return singleMessagePrompt(message);
+}
+
+function projectRulesPromptFromOptions(options: SessionOptions): string | undefined {
+  const systemPrompt = options.systemPrompt;
+  if (!systemPrompt || typeof systemPrompt !== "object" || Array.isArray(systemPrompt)) return undefined;
+  if (!("append" in systemPrompt) || typeof systemPrompt.append !== "string") return undefined;
+  return systemPrompt.append;
+}
+
+function prependProjectRulesToPrompt(prompt: string, projectRulesPrompt?: string): string {
+  const rules = projectRulesPrompt?.trim();
+  if (!rules) return prompt;
+  return [
+    "The following project rules are loaded from `.claude/rules` and apply to this request. Treat them as authoritative repository instructions.",
+    "",
+    "<project_rules>",
+    rules,
+    "</project_rules>",
+    "",
+    "User request:",
+    prompt
+  ].join("\n");
 }
 
 function formatQuestionAnswers(content: string): string | undefined {
@@ -773,6 +867,30 @@ function recordToolUses(message: unknown, toolLedger: ToolLedger): void {
       interrupt: existing?.interrupt
     });
   }
+}
+
+function validationCounterKey(toolCall: ToolCallRecord): string {
+  return `${toolCall.name}\0${stableToolInputKey(toolCall.input)}`;
+}
+
+function stableToolInputKey(input: unknown): string {
+  try {
+    return JSON.stringify(sortToolInputValue(input)) ?? String(input);
+  } catch {
+    return String(input);
+  }
+}
+
+function sortToolInputValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortToolInputValue);
+  if (!isRecord(value)) return value;
+
+  return Object.keys(value)
+    .sort()
+    .reduce<Record<string, unknown>>((sorted, key) => {
+      sorted[key] = sortToolInputValue(value[key]);
+      return sorted;
+    }, {});
 }
 
 function getToolUseBlocksFromEvent(event: unknown): ToolCallRecord[] {
