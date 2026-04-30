@@ -67,14 +67,15 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
   const force = flags.booleans.has("force");
   const bindHost = flags.values.get("bind-host") ?? "0.0.0.0";
   const allowedHostnames = parseCsv(flags.values.get("allowed-hostnames") ?? DEFAULT_ALLOWED_HOSTNAMES.join(","));
-  const dataPrefix = `.data/claude-server/${name}`;
+  const mainAppUrl = flags.values.get("main-app-url") ?? flags.values.get("app-url");
+  const dataPrefix = `.data/bottle/${name}`;
   const sessionDir = `${dataPrefix}/sessions`;
   const workspaceDir = `${dataPrefix}/workspaces`;
-  const configPath = path.join(outputDir, "claude-server.config.mjs");
-  const envPath = path.join(outputDir, `.env.claude-server.${name}`);
+  const configPath = path.join(outputDir, "bottle.config.mjs");
+  const envPath = path.join(outputDir, `.env.bottle.${name}`);
   const scriptsDir = path.join(outputDir, "scripts");
-  const startScriptPath = path.join(scriptsDir, `start-claude-server-${name}.mjs`);
-  const docsPath = path.join(outputDir, "CLAUDE_SERVER_INTEGRATION.md");
+  const startScriptPath = path.join(scriptsDir, `start-bottle-${name}.mjs`);
+  const docsPath = path.join(outputDir, "BOTTLE_INTEGRATION.md");
 
   await fs.mkdir(outputDir, { recursive: true });
   await fs.mkdir(scriptsDir, { recursive: true });
@@ -88,6 +89,7 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
       bindHost,
       projectRoot,
       allowedHostnames,
+      mainAppUrl,
       sessionDir,
       workspaceDir
     }),
@@ -101,6 +103,7 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
       bindHost,
       projectRoot,
       allowedHostnames,
+      mainAppUrl,
       sessionDir,
       workspaceDir
     }),
@@ -114,6 +117,7 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
       name,
       port,
       projectRoot,
+      mainAppUrl,
       configPath: path.relative(outputDir, configPath),
       envPath: path.relative(outputDir, envPath),
       startScriptPath: path.relative(outputDir, startScriptPath)
@@ -121,7 +125,7 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
     "utf8"
   );
 
-  writeLine(options.stdout, `Created Claude server integration for ${name}`);
+  writeLine(options.stdout, `Created Bottle integration for ${name}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, configPath)}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, envPath)}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, startScriptPath)}`);
@@ -136,7 +140,7 @@ async function startCommand(args: string[], options: { cwd: string; env: NodeJS.
     : loadConfig(options.env, options.cwd);
   const running = await startClaudeServer(config, {
     onListen(info) {
-      writeLine(options.stdout, `Claude server listening on http://${info.address}:${info.port}`);
+      writeLine(options.stdout, `Bottle listening on http://${info.address}:${info.port}`);
     }
   });
   installShutdownHandlers(running);
@@ -228,18 +232,21 @@ function renderConfigFile(input: {
   bindHost: string;
   projectRoot: string;
   allowedHostnames: string[];
+  mainAppUrl?: string;
   sessionDir: string;
   workspaceDir: string;
 }): string {
-  return `import { defineClaudeServerConfig } from "claude-server/config";
+  return `import { defineBottleConfig } from "bottle/config";
 
-export default defineClaudeServerConfig(${JSON.stringify(
+export default defineBottleConfig(${JSON.stringify(
     {
-      name: input.name,
+      bottleName: input.name,
       port: input.port,
       bindHost: input.bindHost,
       projectRoot: input.projectRoot,
       allowedHostnames: input.allowedHostnames,
+      ...(input.mainAppUrl ? { mainAppUrl: input.mainAppUrl } : {}),
+      clientOrigins: ["http://localhost:5173", "http://127.0.0.1:5173"],
       sessionDir: input.sessionDir,
       workspaceDir: input.workspaceDir,
       maxConcurrentRuns: 4,
@@ -258,14 +265,19 @@ function renderEnvFile(input: {
   bindHost: string;
   projectRoot: string;
   allowedHostnames: string[];
+  mainAppUrl?: string;
   sessionDir: string;
   workspaceDir: string;
 }): string {
-  return `CLAUDE_SERVER_INSTANCE=${input.name}
+  return `BOTTLE_NAME=${input.name}
 PORT=${input.port}
 BIND_HOST=${input.bindHost}
 ALLOWED_HOSTNAMES=${input.allowedHostnames.join(",")}
 TRUST_PROXY=false
+CLIENT_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+MAIN_APP_URL=${input.mainAppUrl ?? ""}
+BOTTLE_API_TOKEN=
+BOTTLE_API_TOKEN_REQUIRED=false
 PROJECT_ROOT=${input.projectRoot}
 SESSION_DIR=${input.sessionDir}
 WORKSPACE_DIR=${input.workspaceDir}
@@ -282,8 +294,8 @@ SESSION_IDLE_TTL_MS=300000
 function renderStartScript(relativeConfigPath: string): string {
   const normalizedConfigPath = relativeConfigPath.split(path.sep).join("/");
   return `#!/usr/bin/env node
-import { loadConfigFromFile } from "claude-server/config";
-import { installShutdownHandlers, startClaudeServer } from "claude-server/server";
+import { loadConfigFromFile } from "bottle/config";
+import { installShutdownHandlers, startClaudeServer } from "bottle/server";
 
 const config = await loadConfigFromFile(new URL(${JSON.stringify(normalizedConfigPath)}, import.meta.url));
 const running = await startClaudeServer(config);
@@ -295,11 +307,12 @@ function renderIntegrationDocs(input: {
   name: string;
   port: number;
   projectRoot: string;
+  mainAppUrl?: string;
   configPath: string;
   envPath: string;
   startScriptPath: string;
 }): string {
-  return `# Claude Server Integration
+  return `# Bottle Integration
 
 Instance: ${input.name}
 
@@ -308,7 +321,7 @@ Instance: ${input.name}
 \`\`\`bash
 node ${input.startScriptPath}
 # or
-claude-server start --config ${input.configPath}
+bottle start --config ${input.configPath}
 \`\`\`
 
 ## Generated Files
@@ -325,24 +338,30 @@ Proxy the standard API to this instance:
 /v1/* -> http://127.0.0.1:${input.port}/v1/*
 \`\`\`
 
-Use \`createClaudeClient({ baseUrl })\` from \`claude-server/client\` in AI tools. The configured project root is:
+Main app URL advertised to the AI client:
+
+\`\`\`txt
+${input.mainAppUrl ?? "(not configured)"}
+\`\`\`
+
+Use \`createClaudeClient({ baseUrl })\` from the copied Bottle client contract in AI tools. The configured project root is:
 
 \`\`\`txt
 ${input.projectRoot}
 \`\`\`
 
-For multiple prototypes on the same VPS, repeat \`claude-server init\` with a different \`--name\`, \`--port\`, and \`--project-root\`.
+For multiple prototypes on the same VPS, repeat \`bottle init\` with a different \`--name\`, \`--port\`, and \`--project-root\`.
 `;
 }
 
 function helpText(): string {
   return `Usage:
-  claude-server init --name prototype-a --port 3001 --project-root /srv/prototype-a
-  claude-server start --config ./claude-server.config.mjs
+  bottle init --name prototype-a --port 3001 --project-root /srv/prototype-a --main-app-url http://localhost:3000
+  bottle start --config ./bottle.config.mjs
 
 Commands:
   init     Generate config, env, start script, and integration notes
-  start    Start the standard /v1 Claude server
+  start    Start the standard /v1 Bottle server
 `;
 }
 

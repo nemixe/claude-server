@@ -64,7 +64,7 @@ export function buildSafeAgentEnv(env: NodeJS.ProcessEnv = process.env): Record<
     SHELL: env.SHELL,
     LANG: env.LANG,
     LC_ALL: env.LC_ALL,
-    CLAUDE_AGENT_SDK_CLIENT_APP: "claude-server-hono"
+    CLAUDE_AGENT_SDK_CLIENT_APP: "bottle-hono"
   };
 }
 

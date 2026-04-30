@@ -1,0 +1,117 @@
+{
+  "protocolVersion": 1,
+  "bottleInfo": {
+    "protocolVersion": 1,
+    "name": "prototype-a",
+    "apiBaseUrl": "http://localhost:3001",
+    "appUrl": "http://localhost:3000",
+    "features": {
+      "mainApp": true,
+      "iframeBridge": true,
+      "sessions": true,
+      "streaming": true,
+      "settings": true,
+      "claudeCommands": true,
+      "workspaceSearch": true,
+      "authToken": false
+    }
+  },
+  "createSessionResponse": {
+    "id": "session-1",
+    "sessionId": "session-1",
+    "title": "Prototype edit",
+    "userName": "Ada",
+    "mode": "plan",
+    "status": "planning",
+    "createdAt": "2026-04-30T00:00:00.000Z",
+    "updatedAt": "2026-04-30T00:00:00.000Z",
+    "hasRun": false
+  },
+  "listSessionsResponse": {
+    "sessions": [
+      {
+        "id": "session-1",
+        "sessionId": "session-1",
+        "title": "Prototype edit",
+        "mode": "plan",
+        "createdAt": "2026-04-30T00:00:00.000Z",
+        "updatedAt": "2026-04-30T00:00:00.000Z",
+        "hasRun": true
+      }
+    ],
+    "limit": 30,
+    "offset": 0,
+    "hasMore": false
+  },
+  "streamEvents": [
+    {
+      "event": "message",
+      "data": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "content": "Done."
+        }
+      }
+    },
+    {
+      "event": "result",
+      "data": {
+        "type": "result",
+        "is_error": false,
+        "total_cost_usd": 0.01
+      }
+    },
+    {
+      "event": "done",
+      "data": {
+        "ok": true,
+        "waitingForUserQuestion": false,
+        "waitingForApproval": false
+      }
+    }
+  ],
+  "pendingUserInputEvent": {
+    "event": "question_pending",
+    "data": {
+      "waitingForUserQuestion": true,
+      "toolUseId": "toolu_question",
+      "input": {
+        "questions": [
+          {
+            "question": "Which section should change?"
+          }
+        ]
+      }
+    }
+  },
+  "pendingApprovalEvent": {
+    "event": "approval_pending",
+    "data": {
+      "waitingForApproval": true,
+      "toolUseId": "toolu_plan",
+      "plan": "Update the dashboard empty state."
+    }
+  },
+  "errorResponse": {
+    "error": {
+      "code": "validation_error",
+      "message": "Provide title or mode"
+    }
+  },
+  "streamMessageRequestWithContext": {
+    "prompt": "Improve this page",
+    "mode": "plan",
+    "context": {
+      "url": "http://localhost:3000/reports",
+      "route": "/reports",
+      "title": "Reports",
+      "selectedText": "Monthly revenue",
+      "selectedElement": "button",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    }
+  }
+}

@@ -95,6 +95,25 @@ describe("browser client", () => {
     );
   });
 
+  it("loads Bottle discovery metadata", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ protocolVersion: 1, name: "prototype-a", apiBaseUrl: "https://api.example.com", features: { mainApp: false, iframeBridge: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await expect(client.getBottle()).resolves.toMatchObject({ protocolVersion: 1, name: "prototype-a" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/bottle",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+  });
+
   it("adds pagination parameters when loading session messages", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response(JSON.stringify({ messages: [], offset: 800, limit: 200, total: 1000, hasMoreBefore: true, hasMoreAfter: false }), {

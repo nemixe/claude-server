@@ -1,16 +1,21 @@
 import { Hono } from "hono";
-import { serveStatic } from "@hono/node-server/serve-static";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { AgentService, ConcurrencyLimitError, isPendingInterruptPayloadValid, ValidationErrorLimitError } from "./agent-service.js";
+import {
+  bottleInfoForRequest,
+  createBottleAuthMiddleware,
+  createClientAccessMiddleware,
+  registerBottleRoutes
+} from "./bottle.js";
 import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { createSessionFactory, MissingClaudeSessionIdError } from "./session-adapter.js";
 import { SessionStore } from "./session-store.js";
 import { SettingsStore } from "./settings-store.js";
-import { renderTestClient } from "./test-client.js";
 import {
   CLAUDE_MODES,
+  type BottleWebAppContext,
   type ListMessagesResponse,
   type ListSessionsResponse,
   type PendingInterrupt,
@@ -66,9 +71,26 @@ const promptImageSchema = z
     return normalized.image;
   });
 
+const bottleContextSchema: z.ZodType<BottleWebAppContext> = z
+  .object({
+    url: z.string().max(2_000).optional(),
+    route: z.string().max(2_000).optional(),
+    title: z.string().max(500).optional(),
+    selectedText: z.string().max(8_000).optional(),
+    selectedElement: z.string().max(500).optional(),
+    viewport: z
+      .object({
+        width: z.number().finite().nonnegative(),
+        height: z.number().finite().nonnegative()
+      })
+      .optional()
+  })
+  .passthrough();
+
 const streamMessageSchema = z.object({
   prompt: z.string().min(1),
   images: z.array(promptImageSchema).max(MAX_PROMPT_IMAGES).optional(),
+  context: bottleContextSchema.optional(),
   toolResult: z
     .object({
       toolUseId: z.string().min(1),
@@ -130,10 +152,16 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   agentService.setMaxTurns(persisted.maxTurns);
 
   app.use("*", createHostnameGate(dependencies.config));
-  app.use("/client/assets/*", serveStatic({ root: "./dist" }));
+  app.use("*", createClientAccessMiddleware(dependencies.config));
+  app.use("/v1/*", createBottleAuthMiddleware(dependencies.config));
+  registerBottleRoutes(app);
 
   app.get("/health", (c) => {
-    return c.json({ ok: true, service: "claude-server", timestamp: new Date().toISOString() });
+    return c.json({ ok: true, service: "bottle", timestamp: new Date().toISOString() });
+  });
+
+  app.get("/v1/bottle", (c) => {
+    return c.json(bottleInfoForRequest(dependencies.config, c.req.url));
   });
 
   app.get("/v1/settings", (c) => {
@@ -175,10 +203,6 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
       maxConcurrentRuns: settings.maxConcurrentRuns,
       maxTurns: settings.maxTurns
     });
-  });
-
-  app.get("/client", (c) => {
-    return c.html(renderTestClient());
   });
 
   app.post("/v1/sessions", async (c) => {

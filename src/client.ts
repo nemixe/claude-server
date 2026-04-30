@@ -1,4 +1,5 @@
 import type {
+  BottleInfoResponse,
   ClaudeCommand,
   ClaudeCommandInput,
   ClaudeMode,
@@ -116,6 +117,10 @@ export function createClaudeClient(options: ClaudeClientOptions) {
 
     getRoot(): Promise<RootInfoResponse> {
       return requestJson<RootInfoResponse>("/v1/root");
+    },
+
+    getBottle(): Promise<BottleInfoResponse> {
+      return requestJson<BottleInfoResponse>("/v1/bottle");
     },
 
     getMessages(sessionId: string, options: ListMessagesOptions = {}): Promise<ListMessagesResponse> {

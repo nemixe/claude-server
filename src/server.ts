@@ -33,7 +33,7 @@ export async function startClaudeServer(
     },
     options.onListen ??
       ((info) => {
-        console.log(`Claude server listening on http://${info.address}:${info.port}`);
+        console.log(`Bottle listening on http://${info.address}:${info.port}`);
       })
   );
 

@@ -1,4 +1,5 @@
 export const CLAUDE_MODES = ["plan", "edit", "bypass"] as const;
+export const BOTTLE_PROTOCOL_VERSION = 1 as const;
 
 export type ClaudeMode = (typeof CLAUDE_MODES)[number];
 
@@ -48,6 +49,36 @@ export type WorkspaceSearchResult = {
 export type RootInfoResponse = {
   projectRoot: string;
   claudeCommandsDir: string;
+};
+
+export type BottleWebAppContext = {
+  url?: string;
+  route?: string;
+  title?: string;
+  selectedText?: string;
+  selectedElement?: string;
+  viewport?: {
+    width: number;
+    height: number;
+  };
+  [key: string]: unknown;
+};
+
+export type BottleInfoResponse = {
+  protocolVersion: typeof BOTTLE_PROTOCOL_VERSION;
+  name: string;
+  apiBaseUrl: string;
+  appUrl?: string;
+  features: {
+    mainApp: boolean;
+    iframeBridge: boolean;
+    sessions: boolean;
+    streaming: boolean;
+    settings: boolean;
+    claudeCommands: boolean;
+    workspaceSearch: boolean;
+    authToken: boolean;
+  };
 };
 
 export type PromptImage = {
@@ -112,6 +143,7 @@ export type NormalizedAgentEvent = {
 export type StreamMessageRequest = {
   prompt: string;
   images?: PromptImage[];
+  context?: BottleWebAppContext;
   toolResult?: {
     toolUseId: string;
     content: string;

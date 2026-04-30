@@ -9,23 +9,28 @@ import { SettingsStore } from "../src/settings-store.js";
 import { createTempConfig } from "./helpers.js";
 
 describe("Hono API", () => {
-  it("serves the browser test client behind the hostname gate", async () => {
-    const config = await createTempConfig();
+  it("exposes Bottle discovery metadata behind the hostname gate", async () => {
+    const config = await createTempConfig({ BOTTLE_NAME: "prototype-a", MAIN_APP_URL: "http://localhost:5173" });
     const app = await createApp({ config });
 
-    const response = await app.request("http://localhost/client", {
+    const response = await app.request("http://localhost/v1/bottle", {
       headers: { host: "localhost" }
     });
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("text/html");
-    const html = await response.text();
-    expect(html).toContain("Claude AI Chat");
-    expect(html).toContain('id="root"');
-    expect(html).toContain('rel="stylesheet" href="/client/assets/index.css"');
-    expect(html).toContain('type="module" src="/client/assets/client.js"');
-    expect(html).not.toContain("cdn.jsdelivr.net");
-    expect(html).not.toContain("unpkg.com");
+    await expect(response.json()).resolves.toMatchObject({
+      protocolVersion: 1,
+      name: "prototype-a",
+      apiBaseUrl: "http://localhost",
+      appUrl: "http://localhost:5173",
+      features: {
+        mainApp: true,
+        iframeBridge: true,
+        sessions: true,
+        streaming: true,
+        authToken: false
+      }
+    });
   });
 
   it("exposes configured project root information", async () => {
@@ -41,6 +46,62 @@ describe("Hono API", () => {
       projectRoot: config.projectRoot,
       claudeCommandsDir: config.claudeCommandsDir
     });
+  });
+
+  it("serves the optional iframe bridge without hosting the main app", async () => {
+    const config = await createTempConfig({ MAIN_APP_URL: "http://localhost:5173", CLIENT_ORIGINS: "http://localhost:5174" });
+    const app = await createApp({ config });
+
+    const infoResponse = await app.request("http://localhost/v1/bottle", {
+      headers: { host: "localhost" }
+    });
+    await expect(infoResponse.json()).resolves.toMatchObject({
+      appUrl: "http://localhost:5173",
+      features: { mainApp: true }
+    });
+
+    const bridgeResponse = await app.request("http://localhost/bottle-bridge.js", {
+      headers: { host: "localhost" }
+    });
+    expect(bridgeResponse.status).toBe(200);
+    expect(await bridgeResponse.text()).toContain("ai-client:request-context");
+
+    const removedAppHostingResponse = await app.request("http://localhost/app/", {
+      headers: { host: "localhost" }
+    });
+    expect(removedAppHostingResponse.status).toBe(404);
+  });
+
+  it("applies AI client CORS, frame headers, and optional Bottle API token auth", async () => {
+    const config = await createTempConfig({
+      CLIENT_ORIGINS: "http://localhost:5173",
+      BOTTLE_API_TOKEN: "secret",
+      BOTTLE_API_TOKEN_REQUIRED: "true"
+    });
+    const app = await createApp({ config });
+
+    const preflightResponse = await app.request("http://localhost/v1/sessions", {
+      method: "OPTIONS",
+      headers: {
+        host: "localhost",
+        origin: "http://localhost:5173",
+        "access-control-request-method": "POST"
+      }
+    });
+    expect(preflightResponse.status).toBe(204);
+    expect(preflightResponse.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+
+    const unauthorizedResponse = await app.request("http://localhost/v1/root", {
+      headers: { host: "localhost" }
+    });
+    expect(unauthorizedResponse.status).toBe(401);
+
+    const authorizedResponse = await app.request("http://localhost/v1/root", {
+      headers: { host: "localhost", authorization: "Bearer secret", origin: "http://localhost:5173" }
+    });
+    expect(authorizedResponse.status).toBe(200);
+    expect(authorizedResponse.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+    expect(authorizedResponse.headers.get("content-security-policy")).toContain("frame-ancestors 'self' http://localhost:5173");
   });
 
   it("creates sessions and streams normalized events", async () => {
@@ -513,6 +574,49 @@ describe("Hono API", () => {
       },
       parent_tool_use_id: null
     }));
+  });
+
+  it("passes Bottle iframe context into text prompts", async () => {
+    const config = await createTempConfig();
+    const sdkSession = createMockSdkSession("claude-context", async function* () {
+      yield { type: "result", session_id: "claude-context", result: "done" };
+    });
+    const factory: SessionFactory = {
+      createSession: vi.fn(() => sdkSession),
+      resumeSession: vi.fn(() => sdkSession)
+    };
+    const app = await createApp({
+      config,
+      sessionStore: new SessionStore(config),
+      agentService: new AgentService(config, undefined, factory)
+    });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Context" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "improve this page",
+        context: {
+          title: "Dashboard",
+          route: "/reports?tab=monthly",
+          selectedText: "Revenue card",
+          viewport: { width: 1440, height: 900 }
+        }
+      })
+    });
+
+    expect(streamResponse.status).toBe(200);
+    await streamResponse.text();
+    expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("Bottle main app context:"));
+    expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("Dashboard"));
+    expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("User prompt:\nimprove this page"));
   });
 
   it("rejects invalid image prompt requests", async () => {

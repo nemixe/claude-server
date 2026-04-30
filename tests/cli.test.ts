@@ -21,7 +21,7 @@ function createBufferedStream() {
 
 describe("CLI", () => {
   it("generates plug-and-play integration files for a custom instance", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-cli-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cli-"));
     const projectRoot = path.join(cwd, "prototype-a");
     await fs.mkdir(projectRoot);
     const stdout = createBufferedStream();
@@ -34,19 +34,19 @@ describe("CLI", () => {
 
     expect(code).toBe(0);
     expect(stderr.text).toBe("");
-    await expect(fs.readFile(path.join(cwd, "claude-server.config.mjs"), "utf8")).resolves.toContain('"port": 3001');
-    await expect(fs.readFile(path.join(cwd, ".env.claude-server.prototype-a"), "utf8")).resolves.toContain("PORT=3001");
-    await expect(fs.readFile(path.join(cwd, "scripts", "start-claude-server-prototype-a.mjs"), "utf8")).resolves.toContain(
-      "claude-server/server"
+    await expect(fs.readFile(path.join(cwd, "bottle.config.mjs"), "utf8")).resolves.toContain('"port": 3001');
+    await expect(fs.readFile(path.join(cwd, ".env.bottle.prototype-a"), "utf8")).resolves.toContain("PORT=3001");
+    await expect(fs.readFile(path.join(cwd, "scripts", "start-bottle-prototype-a.mjs"), "utf8")).resolves.toContain(
+      "bottle/server"
     );
-    await expect(fs.readFile(path.join(cwd, "CLAUDE_SERVER_INTEGRATION.md"), "utf8")).resolves.toContain(
+    await expect(fs.readFile(path.join(cwd, "BOTTLE_INTEGRATION.md"), "utf8")).resolves.toContain(
       "/v1/* -> http://127.0.0.1:3001/v1/*"
     );
-    expect(stdout.text).toContain("Created Claude server integration for prototype-a");
+    expect(stdout.text).toContain("Created Bottle integration for prototype-a");
   });
 
   it("does not overwrite generated files unless forced", async () => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-cli-overwrite-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cli-overwrite-"));
     const stdout = createBufferedStream();
     const stderr = createBufferedStream();
 

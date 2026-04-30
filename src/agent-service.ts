@@ -568,7 +568,7 @@ export function buildAgentPrompt(request: StreamMessageRequest, projectRulesProm
     return buildQuestionAnswerPrompt(request, request.toolResult, projectRulesPrompt);
   }
 
-  const text = prependProjectRulesToPrompt(request.prompt, projectRulesPrompt);
+  const text = prependProjectRulesToPrompt(prependBottleContextToPrompt(request.prompt, request.context), projectRulesPrompt);
   if (!request.images || request.images.length === 0) {
     return text;
   }
@@ -593,6 +593,40 @@ export function buildAgentPrompt(request: StreamMessageRequest, projectRulesProm
   };
 
   return singleMessagePrompt(message);
+}
+
+function prependBottleContextToPrompt(prompt: string, context: StreamMessageRequest["context"]): string {
+  if (!context || typeof context !== "object") return prompt;
+
+  const lines = ["Bottle main app context:"];
+  const title = truncateContextValue(context.title, 300);
+  const route = truncateContextValue(context.route, 1_000);
+  const url = truncateContextValue(context.url, 1_000);
+  const selectedText = truncateContextValue(context.selectedText, 4_000);
+  const selectedElement = truncateContextValue(context.selectedElement, 300);
+  const viewport =
+    context.viewport &&
+    Number.isFinite(context.viewport.width) &&
+    Number.isFinite(context.viewport.height)
+      ? `${Math.round(context.viewport.width)}x${Math.round(context.viewport.height)}`
+      : undefined;
+
+  if (title) lines.push(`- Title: ${title}`);
+  if (route) lines.push(`- Route: ${route}`);
+  if (url) lines.push(`- URL: ${url}`);
+  if (selectedElement) lines.push(`- Selected element: ${selectedElement}`);
+  if (viewport) lines.push(`- Viewport: ${viewport}`);
+  if (selectedText) lines.push(`- Selected text:\n${selectedText}`);
+
+  if (lines.length === 1) return prompt;
+  return `${lines.join("\n")}\n\nUser prompt:\n${prompt}`;
+}
+
+function truncateContextValue(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}...` : trimmed;
 }
 
 function buildApprovalResultPrompt(

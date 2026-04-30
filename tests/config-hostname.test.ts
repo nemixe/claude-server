@@ -8,13 +8,19 @@ import { isAllowedHost, parseAllowedHostList, parseHostLike, parseOrigin } from 
 describe("config and hostname parsing", () => {
   it("loads .env style configuration with normalized allowed hosts", () => {
     const config = loadConfig({
+      BOTTLE_NAME: "prototype-a",
       ALLOWED_HOSTNAMES: "LOCALHOST,example.com,app.example.com:8443",
       TRUST_PROXY: "true",
-      MAX_CONCURRENT_RUNS: "7"
+      MAX_CONCURRENT_RUNS: "7",
+      CLIENT_ORIGINS: "http://localhost:5173,https://client.example.com",
+      MAIN_APP_URL: "http://localhost:3000"
     });
 
+    expect(config.bottleName).toBe("prototype-a");
     expect(config.trustProxy).toBe(true);
     expect(config.maxConcurrentRuns).toBe(7);
+    expect(config.clientOrigins).toEqual(["http://localhost:5173", "https://client.example.com"]);
+    expect(config.mainAppUrl).toBe("http://localhost:3000");
     expect(config.allowedHosts).toEqual([
       { hostname: "localhost" },
       { hostname: "example.com" },
@@ -37,6 +43,29 @@ describe("config and hostname parsing", () => {
     expect(config.claudeCommandsDir).toBe(path.join(root, ".claude", "commands"));
     expect(config.workspaceDir).toBe(path.join(root, ".data", "workspaces"));
     expect(config.sessionDir).toBe(path.join(root, ".data", "sessions"));
+  });
+
+  it("loads main app URL and token configuration", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-config-root-"));
+    const config = loadConfig(
+      {
+        PROJECT_ROOT: root,
+        MAIN_APP_URL: "http://localhost:3000/api",
+        BOTTLE_API_TOKEN: "secret",
+        BOTTLE_API_TOKEN_REQUIRED: "true"
+      },
+      process.cwd()
+    );
+
+    expect(config.mainAppUrl).toBe("http://localhost:3000/api");
+    expect(config.bottleApiToken).toBe("secret");
+    expect(config.bottleApiTokenRequired).toBe(true);
+  });
+
+  it("requires a Bottle API token when production token auth is enabled", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-token-root-"));
+
+    expect(() => loadConfig({ PROJECT_ROOT: root, NODE_ENV: "production" }, process.cwd())).toThrow(/BOTTLE_API_TOKEN is required/);
   });
 
   it("loads custom multi-instance port and isolated data directories", async () => {

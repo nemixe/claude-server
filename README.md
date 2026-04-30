@@ -1,6 +1,6 @@
-# Claude Server
+# Bottle
 
-Hono-based API and browser client SDK for Claude Code-like Agent SDK sessions.
+Hono-based Bottle runtime for Claude Agent SDK sessions. Bottle exposes a stable `/v1/*` HTTP/SSE API, advertises the existing main app URL, and serves an optional iframe bridge that lets a separate AI client send live app context with assistant prompts.
 
 ## Setup
 
@@ -10,60 +10,48 @@ cp .env.example .env
 npm run dev
 ```
 
-The API only responds when the request hostname and browser origin match `ALLOWED_HOSTNAMES`.
-Open `http://localhost:3000/client` for a minimal browser client that creates sessions and shows streaming events.
-The test client defaults to `30` max turns; lower or raise the server cap with `MAX_TURNS`.
-The browser client also supports local PNG, JPEG, GIF, and WebP image prompts. Sent images are passed to Claude as base64 image content blocks and previewed from session history when available.
-Set `PROJECT_ROOT` to control the project directory Claude runs in, where `.claude/commands` is read from, and where `@` file mentions search.
+The API only responds when the request hostname and browser origin match `ALLOWED_HOSTNAMES`. Set `PROJECT_ROOT` to the repository or app workspace Claude should operate on.
 
-## Plug-and-play integration
+## Bottle + AI Client Integration
 
-Use the CLI to generate a backend instance for any prototype repository:
+Run a Bottle instance for any app or prototype:
 
 ```bash
-npx claude-server init --name prototype-a --port 3001 --project-root /srv/prototype-a
-claude-server start --config ./claude-server.config.mjs
+npx bottle init --name prototype-a --port 3001 --project-root /srv/prototype-a --main-app-url http://localhost:3000
+bottle start --config ./bottle.config.mjs
 ```
 
 The generated config uses isolated data paths:
 
 ```txt
-SESSION_DIR=.data/claude-server/prototype-a/sessions
-WORKSPACE_DIR=.data/claude-server/prototype-a/workspaces
+SESSION_DIR=.data/bottle/prototype-a/sessions
+WORKSPACE_DIR=.data/bottle/prototype-a/workspaces
 ```
 
-For several prototypes on the same VPS, repeat `init` with a unique `--name`, `--port`, and `--project-root`.
-Point each frontend proxy at the matching backend, for example `/v1/* -> http://127.0.0.1:3001/v1/*`.
+Point the AI client at the Bottle base URL, for example `http://localhost:3001`. The AI client discovers the main app URL through `GET /v1/bottle` and loads that URL directly, so the app keeps its own port.
 
-You can also embed the server in an existing Hono/Node backend:
+For browser access from a separate AI client origin, set:
 
-```ts
-import { createApp } from "claude-server";
-import { loadConfig } from "claude-server/config";
+```txt
+CLIENT_ORIGINS=http://localhost:5173,https://ai-client.example.com
+MAIN_APP_URL=http://localhost:3000
+BOTTLE_API_TOKEN=optional-shared-token
 ```
 
-AI tools should use the standard client:
-
-```ts
-import { createClaudeClient } from "claude-server/client";
-
-const client = createClaudeClient({ baseUrl: "http://localhost:3001" });
-const session = await client.createSession({ mode: "plan", title: "Prototype edit" });
-
-await client.streamMessage(session.sessionId, { prompt: "Improve the dashboard empty state" }, {
-  onMessage(message) {
-    console.log(message);
-  }
-});
-```
+If `BOTTLE_API_TOKEN` is set, `/v1/*` requests must include either `Authorization: Bearer <token>` or `x-bottle-api-token: <token>`. In production, `BOTTLE_API_TOKEN_REQUIRED` defaults to `true`.
 
 ## Endpoints
 
 - `GET /health`
-- `GET /client`
+- `GET /v1/bottle`
+- `GET /bottle-bridge.js`
 - `GET /v1/root`
+- `GET /v1/settings`
+- `PATCH /v1/settings`
 - `POST /v1/sessions`
 - `GET /v1/sessions`
+- `GET /v1/sessions/:sessionId`
+- `PATCH /v1/sessions/:sessionId`
 - `GET /v1/sessions/:sessionId/messages`
 - `GET /v1/sessions/:sessionId/files:search?q=button&limit=50`
 - `GET /v1/claude-commands`
@@ -75,79 +63,22 @@ await client.streamMessage(session.sessionId, { prompt: "Improve the dashboard e
 - `DELETE /v1/sessions/:sessionId`
 
 Modes are `plan`, `edit`, and `bypass`. Tool execution runs from the configured project root with Agent SDK sandboxing enabled. Session metadata remains under `SESSION_DIR`.
-The `/v1/*` routes are the standard integration contract; `/api/agent/*` routes are intentionally not provided by this package.
 
-## Image prompts
+## Iframe Bridge
 
-```ts
-await client.streamMessage(sessionId, {
-  prompt: "What is shown in this screenshot?",
-  images: [
-    {
-      name: "screenshot.png",
-      mediaType: "image/png",
-      dataBase64: "iVBORw0KGgoAAAANSUhEUgAA..."
-    }
-  ],
-  maxTurns: 30
-});
+Bottle serves `/bottle-bridge.js` for web apps that want richer iframe context. Include it from the main app when useful; API-only apps can ignore it. The bridge responds to AI client messages:
+
+```js
+{ type: "ai-client:hello", protocolVersion: 1 }
+{ type: "ai-client:request-context", requestId: "..." }
 ```
 
-The API accepts up to 5 images per prompt, 5 MB decoded per image, using `image/jpeg`, `image/png`, `image/gif`, or `image/webp`.
+The iframe replies with:
 
-## Project search
-
-Search file and folder paths inside the configured project root with fuzzy matching:
-
-```ts
-const { results } = await client.searchFiles(sessionId, "cmpbtn", { limit: 10 });
+```js
+{ type: "bottle:ready", protocolVersion: 1, appName: "..." }
+{ type: "bottle:context", requestId: "...", context: { url, route, title, selectedText, selectedElement, viewport } }
+{ type: "bottle:navigation", url, title }
 ```
 
-Each result includes `path`, `name`, `type`, `score`, `updatedAt`, and `size` for files. Results are relative to the configured project root. Generated directories such as `.data`, `.git`, `dist`, and `node_modules` are skipped.
-
-## Claude commands
-
-Custom Claude slash commands are stored under `<PROJECT_ROOT>/.claude/commands`. Command paths are normalized relative to that directory and must be Markdown files.
-
-```ts
-await client.saveClaudeCommand(sessionId, {
-  path: "review/fix.md",
-  content: "Review the selected code and propose a focused fix."
-});
-
-const { commands } = await client.listClaudeCommands(sessionId);
-const { command } = await client.getClaudeCommand(sessionId, "review/fix.md");
-await client.deleteClaudeCommand(sessionId, "review/fix.md");
-```
-
-The API also accepts `.claude/commands/review/fix.md` as input, but persisted command paths are returned as `review/fix.md`.
-
-## Web chat contract
-
-Use `claude-server/chat-contract` when integrating with a chat UI that expects normal chat messages instead of raw Agent SDK events.
-
-```ts
-import { createClaudeWebChatContract } from "claude-server/chat-contract";
-
-const chat = createClaudeWebChatContract({ baseUrl: "http://localhost:3000" });
-
-const { session, messages, runResult } = await chat.sendMessage(
-  {
-    prompt: "Describe this screenshot",
-    mode: "plan",
-    images: [{ name: "screenshot.png", mediaType: "image/png", dataBase64: "..." }]
-  },
-  {
-    onMessage(message) {
-      // Append user/assistant messages to your chat transcript.
-      console.log(message.role, message.text, message.images);
-    },
-    onRunResult(result) {
-      // Store cost/usage/terminal metadata outside the chat transcript.
-      console.log(result.totalCostUsd, result.terminalReason);
-    }
-  }
-);
-```
-
-The contract maps persisted history from `GET /v1/sessions/:sessionId/messages` into `{ role, text, images }` chat messages. Live SDK `result` events are exposed as `runResult` metadata so they do not duplicate the final assistant answer in the chat transcript.
+`POST /v1/sessions/:sessionId/messages:stream` accepts an optional `context` object. Bottle prepends that main app context to the agent prompt before streaming.

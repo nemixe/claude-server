@@ -16,7 +16,7 @@ const server = serve(
     hostname: config.bindHost
   },
   (info) => {
-    console.log(`Claude server listening on http://${info.address}:${info.port}`);
+    console.log(`Bottle listening on http://${info.address}:${info.port}`);
   }
 );
 

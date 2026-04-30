@@ -4,11 +4,16 @@ import { z } from "zod";
 import { type AllowedHostRule, parseAllowedHostList } from "./hostname.js";
 
 export type AppConfig = {
+  bottleName: string;
+  mainAppUrl?: string;
   projectRoot: string;
   port: number;
   bindHost: string;
   allowedHosts: AllowedHostRule[];
   trustProxy: boolean;
+  clientOrigins: string[];
+  bottleApiToken?: string;
+  bottleApiTokenRequired: boolean;
   claudeCommandsDir: string;
   workspaceDir: string;
   sessionDir: string;
@@ -27,11 +32,19 @@ export type LoadConfigOptions = {
 };
 
 const RawEnvSchema = z.object({
+  BOTTLE_NAME: z.string().optional(),
+  CLAUDE_SERVER_INSTANCE: z.string().optional(),
   PROJECT_ROOT: z.string().optional(),
   PORT: z.string().optional(),
   BIND_HOST: z.string().optional(),
   ALLOWED_HOSTNAMES: z.string().optional(),
   TRUST_PROXY: z.string().optional(),
+  CLIENT_ORIGINS: z.string().optional(),
+  MAIN_APP_URL: z.string().optional(),
+  APP_URL: z.string().optional(),
+  BOTTLE_API_TOKEN: z.string().optional(),
+  BOTTLE_API_TOKEN_REQUIRED: z.string().optional(),
+  NODE_ENV: z.string().optional(),
   WORKSPACE_DIR: z.string().optional(),
   SESSION_DIR: z.string().optional(),
   MAX_CONCURRENT_RUNS: z.string().optional(),
@@ -57,13 +70,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
   if (allowedHosts.length === 0) {
     throw new Error("ALLOWED_HOSTNAMES must contain at least one hostname");
   }
+  const bottleApiToken = normalizeOptionalString(raw.BOTTLE_API_TOKEN);
+  const bottleApiTokenRequired = parseBoolean(raw.BOTTLE_API_TOKEN_REQUIRED, raw.NODE_ENV === "production", "BOTTLE_API_TOKEN_REQUIRED");
+  if (bottleApiTokenRequired && !bottleApiToken) {
+    throw new Error("BOTTLE_API_TOKEN is required when BOTTLE_API_TOKEN_REQUIRED is true");
+  }
 
   return {
+    bottleName: normalizeOptionalString(raw.BOTTLE_NAME) ?? normalizeOptionalString(raw.CLAUDE_SERVER_INSTANCE) ?? "bottle",
+    mainAppUrl: normalizeOptionalUrl(raw.MAIN_APP_URL ?? raw.APP_URL, "MAIN_APP_URL"),
     projectRoot,
-    port: parseInteger(raw.PORT, 3000, "PORT"),
+    port: parseInteger(raw.PORT, 3001, "PORT"),
     bindHost: raw.BIND_HOST ?? "0.0.0.0",
     allowedHosts,
     trustProxy: parseBoolean(raw.TRUST_PROXY, false, "TRUST_PROXY"),
+    clientOrigins: parseOrigins(raw.CLIENT_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173"),
+    bottleApiToken,
+    bottleApiTokenRequired,
     claudeCommandsDir: resolveFromRoot(".claude/commands", projectRoot),
     workspaceDir: resolveFromRoot(raw.WORKSPACE_DIR ?? ".data/workspaces", projectRoot),
     sessionDir: resolveFromRoot(raw.SESSION_DIR ?? ".data/sessions", projectRoot),
@@ -105,6 +128,26 @@ function parseCsv(value: string): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function parseOrigins(value: string): string[] {
+  return parseCsv(value).map((entry) => {
+    try {
+      return new URL(entry).origin;
+    } catch {
+      throw new Error(`CLIENT_ORIGINS contains an invalid origin: ${entry}`);
+    }
+  });
+}
+
+function normalizeOptionalUrl(value: string | undefined, name: string): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) return undefined;
+  try {
+    return new URL(normalized).href.replace(/\/$/, "");
+  } catch {
+    throw new Error(`${name} must be an absolute URL`);
+  }
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean, name: string): boolean {

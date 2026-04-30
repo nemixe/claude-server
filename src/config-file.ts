@@ -7,10 +7,16 @@ export type { AppConfig };
 
 export type ClaudeServerConfigInput = {
   name?: string;
+  bottleName?: string;
   port?: number;
   bindHost?: string;
   allowedHostnames?: string | string[];
   trustProxy?: boolean;
+  clientOrigins?: string | string[];
+  mainAppUrl?: string;
+  appUrl?: string;
+  bottleApiToken?: string;
+  bottleApiTokenRequired?: boolean;
   projectRoot?: string;
   workspaceDir?: string;
   sessionDir?: string;
@@ -38,6 +44,10 @@ type ConfigModuleExport =
     };
 
 export function defineClaudeServerConfig(config: ClaudeServerConfigInput): ClaudeServerConfigInput {
+  return config;
+}
+
+export function defineBottleConfig(config: ClaudeServerConfigInput): ClaudeServerConfigInput {
   return config;
 }
 
@@ -69,11 +79,16 @@ export async function loadConfigFromFile(
 
 export function configInputToEnv(input: ClaudeServerConfigInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
+  setEnv(env, "BOTTLE_NAME", input.bottleName ?? input.name);
   setEnv(env, "PROJECT_ROOT", input.projectRoot);
   setEnv(env, "PORT", input.port);
   setEnv(env, "BIND_HOST", input.bindHost);
   setEnv(env, "ALLOWED_HOSTNAMES", csv(input.allowedHostnames));
   setEnv(env, "TRUST_PROXY", input.trustProxy);
+  setEnv(env, "CLIENT_ORIGINS", csv(input.clientOrigins));
+  setEnv(env, "MAIN_APP_URL", input.mainAppUrl ?? input.appUrl);
+  setEnv(env, "BOTTLE_API_TOKEN", input.bottleApiToken);
+  setEnv(env, "BOTTLE_API_TOKEN_REQUIRED", input.bottleApiTokenRequired);
   setEnv(env, "WORKSPACE_DIR", input.workspaceDir);
   setEnv(env, "SESSION_DIR", input.sessionDir);
   setEnv(env, "MAX_CONCURRENT_RUNS", input.maxConcurrentRuns);
