@@ -30,6 +30,12 @@ import {
   mergeEventEntries
 } from "./agent-chat/event-state-utils.js";
 import {
+  buildSessionExportFilename,
+  buildSessionExportPayload,
+  downloadJsonFile,
+  serializeHistoryEvents
+} from "./agent-chat/export-utils.js";
+import {
   eventsToBubbleItems,
   findFirstUserPrompt,
   getActiveAskUserQuestion,
@@ -1001,12 +1007,7 @@ function App() {
   }
 
   async function copySessionHistoryJson() {
-    const payload = events.map((entry) => ({
-      time: entry.time,
-      timestamp: entry.timestamp || "",
-      type: entry.type,
-      data: entry.data
-    }));
+    const payload = serializeHistoryEvents(events);
 
     try {
       await writeClipboard(JSON.stringify(payload, null, 2));
@@ -1019,6 +1020,30 @@ function App() {
     historyCopyTimeoutRef.current = window.setTimeout(() => {
       setHistoryCopyLabel("Copy JSON");
     }, 1600);
+  }
+
+  async function exportSessionHistoryJson() {
+    const id = sessionIdRef.current;
+    const session = activeSession || (id ? { id } : null);
+    let messages = [];
+
+    if (id) {
+      try {
+        const result = await fetchSessionMessagesPage(id);
+        messages = Array.isArray(result.messages) ? result.messages : [];
+      } catch (error) {
+        appendEntry("client_error", "Could not export session JSON: " + errorMessage(error));
+        return;
+      }
+    }
+
+    try {
+      const exportedAt = new Date().toISOString();
+      const payload = buildSessionExportPayload({ session, events, messages, exportedAt });
+      downloadJsonFile(buildSessionExportFilename(session, exportedAt), payload);
+    } catch (error) {
+      appendEntry("client_error", "Could not export session JSON: " + errorMessage(error));
+    }
   }
 
   function activateInspect() {
@@ -1274,9 +1299,9 @@ function App() {
       currentUserDisplayLabel={getDisplayLabel(userName || GUEST_USER_NAME)}
       onLogout={logoutIdentity}
       onClose={() => setIsClosed(true)}
-      onExportSession={copySessionHistoryJson}
+      onExportSession={exportSessionHistoryJson}
       onOpenHistory={() => setIsHistoryOpen(true)}
-      canExportSession={events.length > 0}
+      canExportSession={events.length > 0 || Boolean(sessionId)}
       dragHandleProps={{ onPointerDown: startDrag }}
       status={busy ? "Generating" : status}
     />
