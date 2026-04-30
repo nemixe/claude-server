@@ -11,6 +11,10 @@ import {
 } from "./chat-ui-utils.js";
 
 const GUEST_USER_NAME = "Guest";
+const SESSION_ROW_HEIGHT = 62;
+const CREATE_ROW_HEIGHT = 70;
+const STATUS_ROW_HEIGHT = 44;
+const LOAD_MORE_ROW_HEIGHT = 52;
 
 export default function SessionSidebar({
   filteredSessions,
@@ -45,7 +49,8 @@ export default function SessionSidebar({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => 62,
+    getItemKey: (index) => rows[index]?.key ?? index,
+    estimateSize: (index) => rowHeight(rows[index]),
     overscan: 8
   });
 
@@ -109,12 +114,12 @@ export default function SessionSidebar({
               <div
                 key={row.key}
                 data-index={virtualRow.index}
-                ref={virtualizer.measureElement}
                 style={{
                   position: "absolute",
                   top: 0,
                   left: 0,
                   width: "100%",
+                  height: virtualRow.size,
                   transform: `translateY(${virtualRow.start}px)`,
                   paddingBottom: 4
                 }}
@@ -155,6 +160,13 @@ export default function SessionSidebar({
       </div>
     </>
   );
+}
+
+function rowHeight(row) {
+  if (row?.type === "create") return CREATE_ROW_HEIGHT;
+  if (row?.type === "load-more") return LOAD_MORE_ROW_HEIGHT;
+  if (row?.type === "empty" || row?.type === "loading") return STATUS_ROW_HEIGHT;
+  return SESSION_ROW_HEIGHT;
 }
 
 function SessionRow({ session, activeSessionKey, onSessionSelect }) {

@@ -596,14 +596,12 @@ body {
 }
 
 .ai-chat-sessions-list {
-  display: flex;
   flex: 1 1 auto;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 130px;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0 10px var(--ai-chat-space-md);
+  position: relative;
 }
 
 .ai-chat-sessions-empty {
