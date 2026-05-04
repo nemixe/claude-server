@@ -1,7 +1,9 @@
 export const CLAUDE_MODES = ["plan", "edit", "bypass"] as const;
+export const AGENT_PROVIDERS = ["claude", "codex"] as const;
 export const BOTTLE_PROTOCOL_VERSION = 1 as const;
 
 export type ClaudeMode = (typeof CLAUDE_MODES)[number];
+export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
 
 export type AgentStatus =
   | "planning"
@@ -69,6 +71,8 @@ export type BottleInfoResponse = {
   name: string;
   apiBaseUrl: string;
   appUrl?: string;
+  defaultAgentProvider: AgentProvider;
+  availableAgentProviders: AgentProvider[];
   features: {
     mainApp: boolean;
     iframeBridge: boolean;
@@ -91,6 +95,7 @@ export type SessionMetadata = {
   id: string;
   title?: string;
   userName?: string;
+  provider: AgentProvider;
   mode: ClaudeMode;
   status?: AgentStatus;
   pendingInterrupt?: PendingInterrupt;
@@ -98,6 +103,7 @@ export type SessionMetadata = {
   createdAt: string;
   updatedAt: string;
   hasRun: boolean;
+  agentSessionId?: string;
   claudeSessionId?: string;
   costUsd?: number;
 };
@@ -107,6 +113,7 @@ export type PublicSession = {
   sessionId: string;
   title?: string;
   userName?: string;
+  provider: AgentProvider;
   mode: ClaudeMode;
   status?: AgentStatus;
   pendingInterrupt?: PendingInterrupt;

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { AgentService, type AgentSdkAdapter } from "../src/agent-service.js";
+import { AgentService, type AgentSdkAdapter, type CodexSdkAdapter, type CodexThreadLike } from "../src/agent-service.js";
 import { createApp } from "../src/app.js";
 import type { SessionFactory, SessionLike } from "../src/session-adapter.js";
 import { SessionStore } from "../src/session-store.js";
@@ -23,6 +23,8 @@ describe("Hono API", () => {
       name: "prototype-a",
       apiBaseUrl: "http://localhost",
       appUrl: "http://localhost:5173",
+      defaultAgentProvider: "claude",
+      availableAgentProviders: ["claude", "codex"],
       features: {
         mainApp: true,
         iframeBridge: true,
@@ -168,6 +170,193 @@ describe("Hono API", () => {
     const observeText = await observeResponse.text();
     expect(observeText).toContain("event: status");
     expect(observeText).toContain('"running":false');
+  });
+
+  it("creates Codex sessions, streams normalized events, and caches messages", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const codexThread = createMockCodexThread("codex-app-1", "Codex done.");
+    const codexAdapter: CodexSdkAdapter = {
+      startThread: vi.fn(() => codexThread),
+      resumeThread: vi.fn(() => codexThread)
+    };
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, undefined, undefined, () => codexAdapter)
+    });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "bypass", provider: "codex", title: "Codex" })
+    });
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()) as { sessionId: string; provider: string };
+    expect(created.provider).toBe("codex");
+
+    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "hello codex" })
+    });
+
+    expect(streamResponse.status).toBe(200);
+    const streamText = await streamResponse.text();
+    expect(streamText).toContain("event: codex_event");
+    expect(streamText).toContain("event: message");
+    expect(streamText).toContain("event: result");
+    await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({
+      provider: "codex",
+      hasRun: true,
+      agentSessionId: "codex-app-1"
+    });
+
+    const messagesResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages`, {
+      headers: { host: "localhost" }
+    });
+    const messagesBody = (await messagesResponse.json()) as { messages: unknown[] };
+    expect(messagesBody.messages).toHaveLength(2);
+    expect(messagesBody.messages[0]).toMatchObject({ message: { role: "user", content: "hello codex" } });
+    expect(messagesBody.messages[1]).toMatchObject({ message: { role: "assistant", content: "Codex done." } });
+  });
+
+  it("streams Codex assistant questions as pending user input", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const codexThread = createMockCodexThread(
+      "codex-question-app",
+      [
+        "What fields should `Product` have?",
+        "",
+        "```txt",
+        "name: string, required",
+        "price: decimal, required",
+        "```"
+      ].join("\n")
+    );
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, undefined, undefined, () => ({
+        startThread: vi.fn(() => codexThread),
+        resumeThread: vi.fn(() => codexThread)
+      }))
+    });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", provider: "codex", title: "Codex question" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Create crud feature product ask me the fields" })
+    });
+
+    expect(streamResponse.status).toBe(200);
+    const streamText = await streamResponse.text();
+    expect(streamText).toContain("event: question_pending");
+    expect(streamText).toContain('"waitingForUserQuestion":true');
+    expect(streamText).toContain('"What fields should `Product` have?"');
+    expect(streamText).toContain('"label":"name: string, required"');
+    expect(streamText).toContain('"multiSelect":true');
+    await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({
+      status: "awaiting_user_input",
+      pendingInterrupt: {
+        type: "user_input",
+        toolCallId: "codex-question:item-1",
+        toolName: "AskUserQuestion"
+      }
+    });
+  });
+
+  it("streams Codex plan approvals, replays them, and resumes in edit mode after approval", async () => {
+    const config = await createTempConfig();
+    const sessionStore = new SessionStore(config);
+    const codexThread = createMockCodexThread(
+      "codex-plan-app",
+      "<proposed_plan>\n# Product CRUD\n\n- Add a product store.\n- Add /v1/products routes.\n</proposed_plan>"
+    );
+    const codexAdapter: CodexSdkAdapter = {
+      startThread: vi.fn(() => codexThread),
+      resumeThread: vi.fn(() => codexThread)
+    };
+    const app = await createApp({
+      config,
+      sessionStore,
+      agentService: new AgentService(config, undefined, undefined, () => codexAdapter)
+    });
+
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", provider: "codex", title: "Codex plan approval" })
+    });
+    const created = (await createResponse.json()) as { sessionId: string };
+
+    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "Create product CRUD" })
+    });
+    const streamText = await streamResponse.text();
+
+    expect(streamResponse.status).toBe(200);
+    expect(streamText).toContain("event: approval_pending");
+    expect(streamText).toContain('"waitingForApproval":true');
+    expect(streamText).toContain("# Product CRUD");
+    await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({
+      status: "awaiting_approval",
+      pendingInterrupt: {
+        type: "approval",
+        toolCallId: "codex-plan:item-1",
+        toolName: "ExitPlanMode"
+      }
+    });
+    expect(codexAdapter.startThread).toHaveBeenCalledTimes(1);
+    expect(codexThread.runStreamed).toHaveBeenCalledTimes(1);
+
+    const replayResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "continue" })
+    });
+    const replayText = await replayResponse.text();
+
+    expect(replayResponse.status).toBe(200);
+    expect(replayText).toContain("event: approval_pending");
+    expect(replayText).toContain('"waitingForApproval":true');
+    expect(codexThread.runStreamed).toHaveBeenCalledTimes(1);
+
+    const approvedResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "Approved. Continue.",
+        toolResult: {
+          toolUseId: "codex-plan:item-1",
+          kind: "approval",
+          approved: true,
+          content: JSON.stringify({ approved: true, plan: "# Product CRUD\n\n- Add a product store." })
+        }
+      })
+    });
+    const approvedText = await approvedResponse.text();
+
+    expect(approvedResponse.status).toBe(200);
+    expect(approvedText).toContain("event: result");
+    expect(codexAdapter.resumeThread).toHaveBeenCalledTimes(1);
+    expect(codexThread.runStreamed).toHaveBeenCalledTimes(2);
+    const updated = await sessionStore.get(created.sessionId);
+    expect(updated).toMatchObject({
+      mode: "edit",
+      status: "done"
+    });
+    expect(updated).not.toHaveProperty("pendingInterrupt");
   });
 
   it("persists and exposes optional session user names", async () => {
@@ -849,4 +1038,22 @@ function createMockSdkSession(id: string, stream: () => AsyncGenerator<unknown>)
     close: vi.fn(),
     [Symbol.asyncDispose]: vi.fn()
   } as unknown as SessionLike;
+}
+
+function createMockCodexThread(threadId: string, text: string): CodexThreadLike {
+  return {
+    id: null,
+    runStreamed: vi.fn(async () => ({
+      events: codexResultStream(threadId, text)
+    }))
+  };
+}
+
+async function* codexResultStream(threadId: string, text: string): AsyncGenerator<unknown> {
+  yield { type: "thread.started", thread_id: threadId };
+  yield { type: "item.completed", item: { id: "item-1", type: "agent_message", text } };
+  yield {
+    type: "turn.completed",
+    usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0 }
+  };
 }

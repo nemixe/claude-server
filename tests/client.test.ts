@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createClaudeClient, readSseStream } from "../src/client.js";
+import { createBottleClient, createClaudeClient, readSseStream } from "../src/client.js";
 
 describe("browser client", () => {
   it("parses SSE events and dispatches typed handlers", async () => {
@@ -34,6 +34,25 @@ describe("browser client", () => {
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ mode: "plan", userName: "Ada" })
+      })
+    );
+  });
+
+  it("exports createBottleClient as a non-breaking neutral alias", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ id: "s1", sessionId: "s1", provider: "codex", mode: "plan", createdAt: "now", updatedAt: "now", hasRun: false }), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await expect(client.createSession({ provider: "codex", mode: "plan" })).resolves.toMatchObject({ provider: "codex" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/sessions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ provider: "codex", mode: "plan" })
       })
     );
   });

@@ -27,5 +27,6 @@ function shutdown(): void {
   forcedExit.unref();
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.once(signal, shutdown);
+}

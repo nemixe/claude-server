@@ -14,7 +14,9 @@ import { createSessionFactory, MissingClaudeSessionIdError } from "./session-ada
 import { SessionStore } from "./session-store.js";
 import { SettingsStore } from "./settings-store.js";
 import {
+  AGENT_PROVIDERS,
   CLAUDE_MODES,
+  type AgentProvider,
   type BottleWebAppContext,
   type ListMessagesResponse,
   type ListSessionsResponse,
@@ -39,6 +41,7 @@ export type AppDependencies = {
 
 const createSessionSchema = z.object({
   mode: z.enum(CLAUDE_MODES).default("bypass"),
+  provider: z.enum(AGENT_PROVIDERS).optional(),
   title: z.string().min(1).max(200).optional(),
   userName: z.string().trim().min(1).max(40).optional(),
   files: z
@@ -242,7 +245,10 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
       offset: c.req.query("offset"),
       tail: c.req.query("tail")
     });
-    const messages = await agentService.getMessages(session);
+    const messages =
+      providerForSession(dependencies.config, session) === "codex"
+        ? await sessionStore.readAgentMessages(session.id)
+        : await agentService.getMessages(session);
     return c.json(pageMessages(messages, query));
   });
 
@@ -343,18 +349,22 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
 
     return streamSSE(c, async (stream) => {
       let sessionMarkedAsRun = false;
-      let persistedClaudeSessionId = session.claudeSessionId;
+      let persistedAgentSessionId = session.agentSessionId ?? session.claudeSessionId;
       let waitingForUserQuestion = false;
       let waitingForApproval = false;
+      if (providerForSession(dependencies.config, session) === "codex") {
+        await sessionStore.appendAgentMessages(session.id, [userMessageFromRequest(session, request)]);
+      }
       try {
         for await (const event of agentService.stream({
           session,
           request,
-          onClaudeSessionId: async (claudeSessionId) => {
-            if (persistedClaudeSessionId === claudeSessionId) return;
-            await sessionStore.setClaudeSessionId(session.id, claudeSessionId);
-            session.claudeSessionId = claudeSessionId;
-            persistedClaudeSessionId = claudeSessionId;
+          onAgentSessionId: async (agentSessionId) => {
+            if (persistedAgentSessionId === agentSessionId) return;
+            await sessionStore.setAgentSessionId(session.id, agentSessionId);
+            session.agentSessionId = agentSessionId;
+            if (providerForSession(dependencies.config, session) === "claude") session.claudeSessionId = agentSessionId;
+            persistedAgentSessionId = agentSessionId;
           }
         })) {
           if (!sessionMarkedAsRun) {
@@ -373,6 +383,9 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
           }
           if (event.type === "question_pending" || event.type === "approval_pending") {
             await sessionStore.save(session);
+          }
+          if (providerForSession(dependencies.config, session) === "codex" && event.type === "message") {
+            await sessionStore.appendAgentMessages(session.id, [event.data]);
           }
 
           await stream.writeSSE({
@@ -561,6 +574,7 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     sessionId: session.id,
     title: session.title,
     userName: session.userName,
+    provider: session.provider,
     mode: session.mode,
     status: session.status,
     pendingInterrupt: session.pendingInterrupt,
@@ -568,6 +582,37 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     updatedAt: session.updatedAt,
     hasRun: session.hasRun,
     costUsd: session.costUsd
+  };
+}
+
+function providerForSession(config: AppConfig, session: Partial<SessionMetadata>): AgentProvider {
+  return session.provider ?? config.defaultAgentProvider;
+}
+
+function userMessageFromRequest(session: SessionMetadata, request: StreamMessageRequest): unknown {
+  const content =
+    request.images && request.images.length > 0
+      ? [
+          { type: "text", text: request.prompt },
+          ...request.images.map((image) => ({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: image.mediaType,
+              data: image.dataBase64
+            }
+          }))
+        ]
+      : request.prompt;
+
+  return {
+    type: "user",
+    session_id: session.agentSessionId ?? session.id,
+    timestamp: new Date().toISOString(),
+    message: {
+      role: "user",
+      content
+    }
   };
 }
 

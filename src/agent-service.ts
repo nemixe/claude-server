@@ -1,6 +1,17 @@
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { getSessionMessages, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  Codex,
+  type CodexOptions,
+  type Input as CodexInput,
+  type ModelReasoningEffort,
+  type SandboxMode,
+  type ThreadEvent,
+  type ThreadOptions
+} from "@openai/codex-sdk";
 import type { AppConfig } from "./config.js";
 import { buildSafeAgentEnv } from "./sandbox.js";
 import {
@@ -11,7 +22,7 @@ import {
   type SessionLike,
   type SessionOptions
 } from "./session-adapter.js";
-import type { AgentStatus, ClaudeMode, NormalizedAgentEvent, PendingInterrupt, SessionMetadata, StreamMessageRequest } from "./types.js";
+import type { AgentProvider, AgentStatus, ClaudeMode, NormalizedAgentEvent, PendingInterrupt, SessionMetadata, StreamMessageRequest } from "./types.js";
 
 export type AgentPrompt = string | AsyncIterable<SDKUserMessage>;
 
@@ -22,8 +33,21 @@ export type AgentSdkAdapter = {
 export type AgentRunInput = {
   session: SessionMetadata;
   request: StreamMessageRequest;
+  onAgentSessionId?: (agentSessionId: string) => void | Promise<void>;
   onClaudeSessionId?: (claudeSessionId: string) => void | Promise<void>;
 };
+
+export type CodexThreadLike = {
+  readonly id: string | null;
+  runStreamed: (input: CodexInput, options?: { signal?: AbortSignal }) => Promise<{ events: AsyncGenerator<ThreadEvent> }>;
+};
+
+export type CodexSdkAdapter = {
+  startThread: (options?: ThreadOptions) => CodexThreadLike;
+  resumeThread: (id: string, options?: ThreadOptions) => CodexThreadLike;
+};
+
+export type CodexSdkFactory = (options: CodexOptions) => CodexSdkAdapter;
 
 export type ToolCallRecord = {
   id: string;
@@ -85,6 +109,8 @@ export const defaultAgentSdkAdapter: AgentSdkAdapter = {
   getSessionMessages: (sessionId, options) => getSessionMessages(sessionId, options) as Promise<unknown[]>
 };
 
+export const defaultCodexSdkFactory: CodexSdkFactory = (options) => new Codex(options);
+
 export class ConcurrencyLimitError extends Error {
   constructor() {
     super("Too many active Claude runs");
@@ -114,7 +140,8 @@ export class AgentService {
   constructor(
     private readonly config: AppConfig,
     private readonly adapter: AgentSdkAdapter = defaultAgentSdkAdapter,
-    sessionFactory: SessionFactory = createSessionFactory()
+    sessionFactory: SessionFactory = createSessionFactory(),
+    private readonly codexFactory: CodexSdkFactory = defaultCodexSdkFactory
   ) {
     this.maxConcurrentRuns = config.maxConcurrentRuns;
     this.maxTurns = config.maxTurns;
@@ -173,7 +200,11 @@ export class AgentService {
         return activeRun;
       };
 
-      yield* this.streamWithSession(input, register);
+      if (agentProviderForSession(this.config, input.session) === "codex") {
+        yield* this.streamWithCodex(input, register);
+      } else {
+        yield* this.streamWithSession(input, register);
+      }
     } catch (error) {
       if (activeRun) {
         if (activeRun.closeOnError) activeRun.handle.close();
@@ -243,12 +274,16 @@ export class AgentService {
   }
 
   async getMessages(session: SessionMetadata, limit?: number, offset?: number): Promise<unknown[]> {
-    if (session.hasRun && !session.claudeSessionId) {
+    if (agentProviderForSession(this.config, session) === "codex") {
+      return [];
+    }
+
+    const sessionId = session.agentSessionId ?? session.claudeSessionId;
+    if (session.hasRun && !sessionId) {
       throw new MissingClaudeSessionIdError(session.id);
     }
 
-    const sessionId = session.claudeSessionId ?? session.id;
-    return this.adapter.getSessionMessages(sessionId, {
+    return this.adapter.getSessionMessages(sessionId ?? session.id, {
       dir: this.config.projectRoot,
       limit,
       offset
@@ -281,6 +316,7 @@ export class AgentService {
     for await (const message of sdkSession.stream()) {
       const claudeSessionId = getSessionIdFromEvent(message);
       if (claudeSessionId) {
+        await input.onAgentSessionId?.(claudeSessionId);
         await input.onClaudeSessionId?.(claudeSessionId);
       }
 
@@ -315,6 +351,78 @@ export class AgentService {
     }
 
     this.pool.touch(input.session.id);
+  }
+
+  private async *streamWithCodex(
+    input: AgentRunInput,
+    register: (handle: ActiveRunHandle, options: { closeOnFinish: boolean; closeOnError: boolean }) => ActiveRun
+  ): AsyncGenerator<NormalizedAgentEvent> {
+    const threadOptions = buildCodexThreadOptions(this.config, input.session, input.request);
+    const codex = this.codexFactory(buildCodexClientOptions(this.config));
+    const persistedThreadId = input.session.agentSessionId;
+    const thread =
+      input.session.hasRun && persistedThreadId
+        ? codex.resumeThread(persistedThreadId, threadOptions)
+        : codex.startThread(threadOptions);
+
+    let activeRun!: ActiveRun;
+    activeRun = register(
+      {
+        close: () => activeRun.abortController.abort(),
+        interrupt: async () => {
+          activeRun.abortController.abort();
+        }
+      },
+      { closeOnFinish: false, closeOnError: false }
+    );
+
+    const effectiveMode = input.request.mode ?? input.session.mode;
+    const codexInput = await buildCodexInput(input.request, projectRulesPromptFromCodexOptions(this.config), effectiveMode);
+    let lastAgentText = "";
+    let lastAgentItemId = "";
+
+    try {
+      const streamed = await thread.runStreamed(codexInput.input, { signal: activeRun.abortController.signal });
+      for await (const event of streamed.events) {
+        if (event.type === "thread.started") {
+          input.session.agentSessionId = event.thread_id;
+          await input.onAgentSessionId?.(event.thread_id);
+        }
+
+        const isTerminalError = event.type === "turn.failed" || event.type === "error";
+        const normalized = isTerminalError
+          ? [{ type: "codex_event", data: event }]
+          : normalizeCodexEvent(event, input.session.agentSessionId ?? thread.id ?? input.session.id, lastAgentText);
+        if (event.type === "item.completed" && event.item.type === "agent_message") {
+          lastAgentText = event.item.text;
+          lastAgentItemId = event.item.id;
+        }
+
+        for (const outputEvent of normalized) {
+          yield this.emitEvent(activeRun, outputEvent);
+        }
+
+        if (event.type === "turn.completed") {
+          const interrupt =
+            codexQuestionInterruptFromAgentMessage(lastAgentText, lastAgentItemId) ??
+            codexPlanInterruptFromAgentMessage(lastAgentText, lastAgentItemId, effectiveMode);
+          if (interrupt) {
+            input.session.pendingInterrupt = interrupt;
+            input.session.status = statusForInterrupt(interrupt);
+            yield this.emitEvent(activeRun, pendingEventFromInterrupt(interrupt));
+          }
+        }
+
+        if (event.type === "turn.failed") {
+          throw new Error(event.error.message);
+        }
+        if (event.type === "error") {
+          throw new Error(event.message);
+        }
+      }
+    } finally {
+      await codexInput.cleanup();
+    }
   }
 
   private emitEvent(activeRun: ActiveRun, event: NormalizedAgentEvent): NormalizedAgentEvent {
@@ -487,6 +595,29 @@ function closeObservers(activeRun: ActiveRun): void {
 
 async function* emptyEvents(): AsyncGenerator<NormalizedAgentEvent> {
   return;
+}
+
+export function buildCodexClientOptions(config: AppConfig): CodexOptions {
+  return {
+    ...(config.codexPath ? { codexPathOverride: config.codexPath } : {}),
+    ...(config.codexBaseUrl ? { baseUrl: config.codexBaseUrl } : {}),
+    ...(config.codexApiKey ? { apiKey: config.codexApiKey } : {})
+  };
+}
+
+export function buildCodexThreadOptions(config: AppConfig, session: SessionMetadata, request: StreamMessageRequest): ThreadOptions {
+  const mode = request.mode ?? session.mode;
+  const options: ThreadOptions = {
+    workingDirectory: config.projectRoot,
+    sandboxMode: codexSandboxModeFor(mode),
+    approvalPolicy: "never",
+    skipGitRepoCheck: config.codexSkipGitRepoCheck
+  };
+  const model = request.model ?? config.codexModel;
+  if (model) options.model = model;
+  if (config.codexReasoningEffort) options.modelReasoningEffort = config.codexReasoningEffort as ModelReasoningEffort;
+  if (config.codexNetworkAccess !== undefined) options.networkAccessEnabled = config.codexNetworkAccess;
+  return options;
 }
 
 export function buildSessionOptions(config: AppConfig, session: SessionMetadata, request: StreamMessageRequest): SessionOptions {
@@ -792,16 +923,373 @@ async function sendPrompt(session: SessionLike, prompt: AgentPrompt): Promise<vo
   }
 }
 
+async function buildCodexInput(
+  request: StreamMessageRequest,
+  projectRulesPrompt?: string,
+  mode?: ClaudeMode
+): Promise<{ input: CodexInput; cleanup: () => Promise<void> }> {
+  const text = buildCodexPromptText(request, projectRulesPrompt, mode);
+  if (!request.images || request.images.length === 0) {
+    return { input: text, cleanup: async () => undefined };
+  }
+
+  const directory = await fsPromises.mkdtemp(path.join(os.tmpdir(), "bottle-codex-images-"));
+  const imageInputs = await Promise.all(
+    request.images.map(async (image, index) => {
+      const filePath = path.join(directory, `${index + 1}-${sanitizeImageFileName(image.name, image.mediaType)}`);
+      await fsPromises.writeFile(filePath, Buffer.from(image.dataBase64, "base64"));
+      return { type: "local_image" as const, path: filePath };
+    })
+  );
+
+  return {
+    input: [{ type: "text", text }, ...imageInputs],
+    cleanup: async () => {
+      await fsPromises.rm(directory, { recursive: true, force: true });
+    }
+  };
+}
+
+function buildCodexPromptText(request: StreamMessageRequest, projectRulesPrompt?: string, mode?: ClaudeMode): string {
+  if (request.toolResult) {
+    const text =
+      request.toolResult.kind === "approval"
+        ? buildApprovalResultText(request, request.toolResult)
+        : buildQuestionAnswerText(request, request.toolResult);
+    return prependProjectRulesToPrompt(prependCodexPlanGuidanceToPrompt(text, mode, request.toolResult.kind), projectRulesPrompt);
+  }
+
+  const text = prependBottleContextToPrompt(request.prompt, request.context);
+  return prependProjectRulesToPrompt(prependCodexPlanGuidanceToPrompt(text, mode), projectRulesPrompt);
+}
+
+function buildApprovalResultText(
+  request: StreamMessageRequest,
+  toolResult: NonNullable<StreamMessageRequest["toolResult"]>
+): string {
+  const parsed = parseJsonRecord(toolResult.content);
+  const approved = toolResult.approved ?? (typeof parsed?.approved === "boolean" ? parsed.approved : false);
+  const feedback = typeof parsed?.feedback === "string" && parsed.feedback.trim() ? parsed.feedback.trim() : "";
+  const plan = typeof parsed?.plan === "string" && parsed.plan.trim() ? parsed.plan.trim() : "";
+
+  return [
+    approved
+      ? "User approved exiting plan mode. Continue in execution mode."
+      : "User declined exiting plan mode. Continue in plan mode.",
+    plan ? `Plan:\n${plan}` : "",
+    feedback ? `User feedback:\n${feedback}` : "",
+    "",
+    "User answer summary:",
+    request.prompt
+  ]
+    .filter((part) => part !== "")
+    .join("\n")
+    .trim();
+}
+
+function buildQuestionAnswerText(
+  request: StreamMessageRequest,
+  toolResult: NonNullable<StreamMessageRequest["toolResult"]>
+): string {
+  return [
+    "The user answered the AskUserQuestion form. Use these selections and continue the task.",
+    "Do not ask the same questions again unless a required detail is still missing.",
+    "",
+    formatQuestionAnswers(toolResult.content) ?? `Answer payload:\n${toolResult.content}`,
+    "",
+    "User answer summary:",
+    request.prompt
+  ]
+    .join("\n")
+    .trim();
+}
+
+function prependCodexPlanGuidanceToPrompt(
+  prompt: string,
+  mode?: ClaudeMode,
+  toolResultKind?: NonNullable<StreamMessageRequest["toolResult"]>["kind"]
+): string {
+  if (mode !== "plan" || toolResultKind === "approval") return prompt;
+
+  return [
+    "Bottle plan mode guidance:",
+    "You are in plan mode. Inspect/read only. Do not modify files.",
+    "Present an implementation plan and stop; Bottle will ask the user for approval before edit mode.",
+    "",
+    prompt
+  ].join("\n");
+}
+
+function sanitizeImageFileName(name: string | undefined, mediaType: NonNullable<StreamMessageRequest["images"]>[number]["mediaType"]): string {
+  const fallback = `image.${extensionForMediaType(mediaType)}`;
+  const base = (name ?? fallback)
+    .replace(/[/\\]/g, "-")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return base || fallback;
+}
+
+function extensionForMediaType(mediaType: NonNullable<StreamMessageRequest["images"]>[number]["mediaType"]): string {
+  if (mediaType === "image/jpeg") return "jpg";
+  if (mediaType === "image/gif") return "gif";
+  if (mediaType === "image/webp") return "webp";
+  return "png";
+}
+
 function permissionModeFor(mode: ClaudeMode): "plan" | "bypassPermissions" | "acceptEdits" {
   if (mode === "plan") return "plan";
   if (mode === "bypass") return "bypassPermissions";
   return "acceptEdits";
 }
 
+function codexSandboxModeFor(mode: ClaudeMode): SandboxMode {
+  if (mode === "plan") return "read-only";
+  if (mode === "bypass") return "danger-full-access";
+  return "workspace-write";
+}
+
 function disallowedToolsFor(mode: ClaudeMode): string[] {
   // Claude Code plan mode still needs Write available for the generated plan file.
   // The built-in plan permission mode owns the read-only guard for implementation files.
   return mode === "plan" ? ["Bash"] : [];
+}
+
+function projectRulesPromptFromCodexOptions(config: AppConfig): string | undefined {
+  return loadClaudeRulesPrompt(config.projectRoot);
+}
+
+function agentProviderForSession(config: AppConfig, session: Partial<SessionMetadata>): AgentProvider {
+  return session.provider ?? config.defaultAgentProvider;
+}
+
+function codexQuestionInterruptFromAgentMessage(text: string, itemId: string): PendingInterrupt | undefined {
+  const questions = extractCodexUserQuestions(text);
+  if (questions.length === 0) return undefined;
+
+  const toolCallId = `codex-question:${itemId || "agent-message"}`;
+  return {
+    id: `interrupt:${toolCallId}`,
+    type: "user_input",
+    toolCallId,
+    toolName: "AskUserQuestion",
+    prompt: questions[0]?.question ?? "Answer the Codex question.",
+    payload: {
+      input: {
+        questions,
+        source: "codex_agent_message",
+        message: text
+      }
+    }
+  };
+}
+
+function codexPlanInterruptFromAgentMessage(text: string, itemId: string, mode: ClaudeMode): PendingInterrupt | undefined {
+  if (mode !== "plan") return undefined;
+  const plan = normalizeCodexPlanText(text);
+  if (!plan) return undefined;
+
+  const toolCallId = `codex-plan:${itemId || "agent-message"}`;
+  return {
+    id: `interrupt:${toolCallId}`,
+    type: "approval",
+    toolCallId,
+    toolName: "ExitPlanMode",
+    prompt: "Exit plan mode?",
+    payload: {
+      input: {
+        plan,
+        source: "codex_agent_message",
+        message: text
+      },
+      plan,
+      action: "exit_plan_mode",
+      source: "codex_agent_message"
+    }
+  };
+}
+
+function normalizeCodexPlanText(text: string): string {
+  const proposedPlan = text.match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i)?.[1]?.trim();
+  if (proposedPlan) return proposedPlan;
+
+  let normalized = text.trim();
+  const blockedPattern =
+    /^Blocked by the current sandbox:[\s\S]*?(?=\n\s*(?:I inspected the repo\.|The .+ should be added as:|- |\d+[.)] |#{1,6}\s|\*\*))/i;
+  normalized = normalized.replace(blockedPattern, "").trim();
+
+  const trailingPatterns = [
+    /\n\s*I wasn[’']t able to run tests[\s\S]*$/i,
+    /\n\s*Re-run this with write access[\s\S]*$/i,
+    /\n\s*I couldn[’']t modify files[\s\S]*$/i
+  ];
+  for (const pattern of trailingPatterns) {
+    normalized = normalized.replace(pattern, "").trim();
+  }
+
+  return normalized;
+}
+
+function extractCodexUserQuestions(
+  text: string
+): Array<{ id: string; question: string; multiSelect?: boolean; options: Array<{ label: string; description: string }> }> {
+  const cleaned = stripFencedCodeBlocks(text);
+  const candidates: string[] = [];
+  const options = extractCodexQuestionOptions(text);
+
+  for (const rawLine of cleaned.split(/\r?\n/)) {
+    const line = rawLine
+      .replace(/^[\s>*-]*(?:\d+[.)]\s*)?/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!line.includes("?")) continue;
+
+    for (const match of line.match(/[^?]+?\?/g) ?? []) {
+      const question = match.trim();
+      if (question.length < 8 || isClosingQuestion(question)) continue;
+      candidates.push(question);
+    }
+  }
+
+  if (candidates.length === 0) {
+    const imperative = firstImperativeUserInputRequest(cleaned);
+    if (imperative) candidates.push(imperative);
+  }
+
+  return Array.from(new Set(candidates)).slice(0, 3).map((question, index) => {
+    const questionOptions = index === 0 ? options : [];
+    return {
+      id: `codex-question-${index + 1}`,
+      question,
+      ...(questionOptions.length > 1 ? { multiSelect: true } : {}),
+      options: questionOptions
+    };
+  });
+}
+
+function stripFencedCodeBlocks(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, " ");
+}
+
+function extractCodexQuestionOptions(text: string): Array<{ label: string; description: string }> {
+  const labels: string[] = [];
+  const fencedBlockPattern = /```[^\n\r]*(?:\r?\n)([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = fencedBlockPattern.exec(text)) !== null) {
+    labels.push(...extractOptionLabelsFromLines(match[1] ?? ""));
+  }
+
+  if (labels.length === 0) {
+    labels.push(...extractOptionLabelsFromLines(text));
+  }
+
+  return Array.from(new Set(labels)).slice(0, 12).map((label) => ({
+    label,
+    description: ""
+  }));
+}
+
+function extractOptionLabelsFromLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .replace(/^[\s>*-]*(?:\d+[.)]\s*)?/, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    )
+    .filter((line) => isUsefulCodexOptionLabel(line));
+}
+
+function isUsefulCodexOptionLabel(line: string): boolean {
+  if (line.length < 3 || line.length > 140) return false;
+  if (line.includes("?")) return false;
+  if (/^(```|example:?|please\b|i['’]ll\b|unless\b)/i.test(line)) return false;
+  return /[:,=]|\b(required|optional|default|true|false|yes|no|enable|disable)\b/i.test(line);
+}
+
+function firstImperativeUserInputRequest(text: string): string | undefined {
+  const line = text
+    .split(/\r?\n/)
+    .map((value) => value.replace(/^[\s>*-]*(?:\d+[.)]\s*)?/, "").replace(/\s+/g, " ").trim())
+    .find(Boolean);
+  if (!line) return undefined;
+  if (!/^(please\s+)?(provide|share|tell me|choose|select|confirm|list|send)\b/i.test(line)) return undefined;
+  return line.endsWith(".") ? line.slice(0, -1) : line;
+}
+
+function isClosingQuestion(question: string): boolean {
+  return /^(anything else|any other questions|can i help with anything else|would you like anything else)\??$/i.test(question);
+}
+
+export function normalizeCodexEvent(event: ThreadEvent, sessionId: string, finalText: string): NormalizedAgentEvent[] {
+  const rawEvent = { type: "codex_event", data: event };
+
+  if (event.type === "item.completed" && event.item.type === "agent_message") {
+    return [
+      {
+        type: "message",
+        data: {
+          type: "assistant",
+          session_id: sessionId,
+          message: {
+            role: "assistant",
+            content: event.item.text
+          },
+          codex_item: event.item
+        }
+      },
+      rawEvent
+    ];
+  }
+
+  if (event.type === "item.completed" && event.item.type === "error") {
+    return [
+      {
+        type: "error",
+        data: { error: { code: "codex_item_error", message: event.item.message }, codex_item: event.item }
+      },
+      rawEvent
+    ];
+  }
+
+  if (event.type === "turn.completed") {
+    return [
+      {
+        type: "result",
+        data: {
+          session_id: sessionId,
+          is_error: false,
+          result: finalText,
+          usage: event.usage,
+          codex_event: event
+        }
+      },
+      rawEvent
+    ];
+  }
+
+  if (event.type === "turn.failed") {
+    return [
+      {
+        type: "error",
+        data: { error: { code: "codex_turn_failed", message: event.error.message }, codex_event: event }
+      },
+      rawEvent
+    ];
+  }
+
+  if (event.type === "error") {
+    return [
+      {
+        type: "error",
+        data: { error: { code: "codex_error", message: event.message }, codex_event: event }
+      },
+      rawEvent
+    ];
+  }
+
+  return [rawEvent];
 }
 
 export function normalizeAgentMessage(message: unknown): NormalizedAgentEvent {

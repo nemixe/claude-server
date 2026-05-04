@@ -1,6 +1,6 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import type { AppConfig } from "./config.js";
-import { BOTTLE_PROTOCOL_VERSION, type BottleInfoResponse } from "./types.js";
+import { AGENT_PROVIDERS, BOTTLE_PROTOCOL_VERSION, type BottleInfoResponse } from "./types.js";
 
 const BRIDGE_PATH = "/bottle-bridge.js";
 
@@ -53,6 +53,8 @@ export function bottleInfoForRequest(config: AppConfig, requestUrl: string): Bot
     name: config.bottleName,
     apiBaseUrl: origin,
     ...(appUrl ? { appUrl } : {}),
+    defaultAgentProvider: config.defaultAgentProvider,
+    availableAgentProviders: [...AGENT_PROVIDERS],
     features: {
       mainApp: Boolean(config.mainAppUrl),
       iframeBridge: true,

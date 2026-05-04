@@ -21,12 +21,35 @@ describe("config and hostname parsing", () => {
     expect(config.maxConcurrentRuns).toBe(7);
     expect(config.clientOrigins).toEqual(["http://localhost:5173", "https://client.example.com"]);
     expect(config.mainAppUrl).toBe("http://localhost:3000");
+    expect(config.defaultAgentProvider).toBe("claude");
     expect(config.allowedHosts).toEqual([
       { hostname: "localhost" },
       { hostname: "example.com" },
       { hostname: "app.example.com", port: "8443" }
     ]);
     expect(config).not.toHaveProperty("useSessionApi");
+  });
+
+  it("loads Codex provider configuration", () => {
+    const config = loadConfig({
+      AGENT_PROVIDER: "codex",
+      CODEX_MODEL: "gpt-5.5",
+      CODEX_API_KEY: "secret",
+      CODEX_BASE_URL: "https://api.example.com",
+      CODEX_PATH: "/usr/local/bin/codex",
+      CODEX_REASONING_EFFORT: "high",
+      CODEX_NETWORK_ACCESS: "true",
+      CODEX_SKIP_GIT_REPO_CHECK: "false"
+    });
+
+    expect(config.defaultAgentProvider).toBe("codex");
+    expect(config.codexModel).toBe("gpt-5.5");
+    expect(config.codexApiKey).toBe("secret");
+    expect(config.codexBaseUrl).toBe("https://api.example.com");
+    expect(config.codexPath).toBe("/usr/local/bin/codex");
+    expect(config.codexReasoningEffort).toBe("high");
+    expect(config.codexNetworkAccess).toBe(true);
+    expect(config.codexSkipGitRepoCheck).toBe(false);
   });
 
   it("ignores removed ENABLE_SESSION_API values", () => {

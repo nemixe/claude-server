@@ -1,4 +1,5 @@
 import type {
+  AgentProvider,
   BottleInfoResponse,
   ClaudeCommand,
   ClaudeCommandInput,
@@ -19,6 +20,7 @@ export type ClaudeClientOptions = {
 
 export type CreateClientSessionRequest = {
   mode: ClaudeMode;
+  provider?: AgentProvider;
   title?: string;
   userName?: string;
   files?: UploadedFile[];
@@ -180,6 +182,8 @@ export function createClaudeClient(options: ClaudeClientOptions) {
     }
   };
 }
+
+export const createBottleClient = createClaudeClient;
 
 export async function readSseStream(body: ReadableStream<Uint8Array>, handlers: StreamHandlers): Promise<void> {
   const reader = body.getReader();

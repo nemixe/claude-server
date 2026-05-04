@@ -2,7 +2,17 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import { CLAUDE_MODES, type ClaudeCommand, type ClaudeCommandInput, type ClaudeMode, type SessionMetadata, type UploadedFile, type WorkspaceSearchResult } from "./types.js";
+import {
+  AGENT_PROVIDERS,
+  CLAUDE_MODES,
+  type AgentProvider,
+  type ClaudeCommand,
+  type ClaudeCommandInput,
+  type ClaudeMode,
+  type SessionMetadata,
+  type UploadedFile,
+  type WorkspaceSearchResult
+} from "./types.js";
 
 const CLAUDE_COMMANDS_DIR = ".claude/commands";
 const DEFAULT_WORKSPACE_SEARCH_LIMIT = 50;
@@ -11,6 +21,7 @@ const PROJECT_SEARCH_IGNORED_DIRS = new Set([".data", ".git", "dist", "node_modu
 
 export type CreateSessionInput = {
   mode: ClaudeMode;
+  provider?: AgentProvider;
   title?: string;
   userName?: string;
   files?: UploadedFile[];
@@ -44,6 +55,7 @@ export class SessionStore {
       id,
       title: input.title,
       ...(input.userName ? { userName: input.userName } : {}),
+      provider: input.provider ?? this.config.defaultAgentProvider,
       mode: input.mode,
       workspacePath,
       createdAt: now,
@@ -118,7 +130,36 @@ export class SessionStore {
   async setClaudeSessionId(id: string, claudeSessionId: string): Promise<void> {
     const metadata = await this.get(id);
     if (!metadata || metadata.claudeSessionId === claudeSessionId) return;
-    await this.save({ ...metadata, claudeSessionId });
+    await this.save({ ...metadata, agentSessionId: claudeSessionId, claudeSessionId });
+  }
+
+  async setAgentSessionId(id: string, agentSessionId: string): Promise<void> {
+    const metadata = await this.get(id);
+    if (!metadata || metadata.agentSessionId === agentSessionId) return;
+    await this.save({
+      ...metadata,
+      agentSessionId,
+      ...(metadata.provider === "claude" ? { claudeSessionId: agentSessionId } : {})
+    });
+  }
+
+  async readAgentMessages(id: string): Promise<unknown[]> {
+    try {
+      const raw = await fs.readFile(this.messagesPath(id), "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async appendAgentMessages(id: string, messages: unknown[]): Promise<void> {
+    if (messages.length === 0) return;
+    await fs.mkdir(this.config.sessionDir, { recursive: true });
+    const existing = await this.readAgentMessages(id);
+    await fs.writeFile(this.messagesPath(id), `${JSON.stringify([...existing, ...messages], null, 2)}\n`, "utf8");
   }
 
   async setCost(id: string, costUsd: number): Promise<void> {
@@ -144,7 +185,7 @@ export class SessionStore {
     const metadata = await this.get(id);
     if (!metadata) return false;
 
-    const cleanupTasks: Promise<unknown>[] = [fs.rm(this.metadataPath(id), { force: true })];
+    const cleanupTasks: Promise<unknown>[] = [fs.rm(this.metadataPath(id), { force: true }), fs.rm(this.messagesPath(id), { force: true })];
     if (shouldDeleteLegacyWorkspace(metadata.workspacePath, this.config)) {
       cleanupTasks.push(fs.rm(metadata.workspacePath, { recursive: true, force: true }));
     }
@@ -237,7 +278,7 @@ export class SessionStore {
     try {
       const raw = await fs.readFile(filePath, "utf8");
       const parsed = JSON.parse(raw);
-      return isSessionMetadata(parsed) ? parsed : undefined;
+      return normalizeSessionMetadata(parsed);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT") return undefined;
@@ -247,6 +288,10 @@ export class SessionStore {
 
   private metadataPath(id: string): string {
     return path.join(this.config.sessionDir, `${id}.json`);
+  }
+
+  private messagesPath(id: string): string {
+    return path.join(this.config.sessionDir, `${id}.messages.json`);
   }
 
   private async writeUploadedFiles(workspacePath: string, files: UploadedFile[]): Promise<void> {
@@ -282,10 +327,10 @@ export class SessionStore {
   }
 }
 
-function isSessionMetadata(value: unknown): value is SessionMetadata {
-  if (!value || typeof value !== "object") return false;
+function normalizeSessionMetadata(value: unknown): SessionMetadata | undefined {
+  if (!value || typeof value !== "object") return undefined;
   const metadata = value as Partial<SessionMetadata>;
-  return (
+  const valid =
     typeof metadata.id === "string" &&
     metadata.id.trim().length > 0 &&
     typeof metadata.workspacePath === "string" &&
@@ -296,8 +341,19 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     metadata.updatedAt.trim().length > 0 &&
     typeof metadata.hasRun === "boolean" &&
     typeof metadata.mode === "string" &&
-    (CLAUDE_MODES as readonly string[]).includes(metadata.mode)
-  );
+    (CLAUDE_MODES as readonly string[]).includes(metadata.mode);
+
+  if (!valid) return undefined;
+  const provider = isAgentProvider(metadata.provider) ? metadata.provider : "claude";
+  return {
+    ...metadata,
+    provider,
+    agentSessionId: metadata.agentSessionId ?? metadata.claudeSessionId
+  } as SessionMetadata;
+}
+
+function isAgentProvider(value: unknown): value is AgentProvider {
+  return typeof value === "string" && (AGENT_PROVIDERS as readonly string[]).includes(value);
 }
 
 function shouldDeleteLegacyWorkspace(workspacePath: string, config: AppConfig): boolean {

@@ -10,6 +10,7 @@ describe("config file loading", () => {
       configInputToEnv(
         defineBottleConfig({
           bottleName: "prototype-a",
+          agentProvider: "codex",
           port: 3003,
           bindHost: "127.0.0.1",
           allowedHostnames: ["app.example.com", "localhost"],
@@ -23,12 +24,17 @@ describe("config file loading", () => {
           workspaceDir: ".data/bottle/app/workspaces",
           maxConcurrentRuns: 5,
           maxTurns: 40,
-          claudeModel: "claude-sonnet-4-6"
+          claudeModel: "claude-sonnet-4-6",
+          codexModel: "gpt-5.5",
+          codexReasoningEffort: "high",
+          codexNetworkAccess: true,
+          codexSkipGitRepoCheck: false
         })
       )
     ).toMatchObject({
       PORT: "3003",
       BIND_HOST: "127.0.0.1",
+      AGENT_PROVIDER: "codex",
       ALLOWED_HOSTNAMES: "app.example.com,localhost",
       TRUST_PROXY: "true",
       BOTTLE_NAME: "prototype-a",
@@ -41,7 +47,11 @@ describe("config file loading", () => {
       WORKSPACE_DIR: ".data/bottle/app/workspaces",
       MAX_CONCURRENT_RUNS: "5",
       MAX_TURNS: "40",
-      CLAUDE_MODEL: "claude-sonnet-4-6"
+      CLAUDE_MODEL: "claude-sonnet-4-6",
+      CODEX_MODEL: "gpt-5.5",
+      CODEX_REASONING_EFFORT: "high",
+      CODEX_NETWORK_ACCESS: "true",
+      CODEX_SKIP_GIT_REPO_CHECK: "false"
     });
   });
 

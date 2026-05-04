@@ -1,6 +1,6 @@
 # Bottle
 
-Hono-based Bottle runtime for Claude Agent SDK sessions. Bottle exposes a stable `/v1/*` HTTP/SSE API, advertises the existing main app URL, and serves an optional iframe bridge that lets a separate AI client send live app context with assistant prompts.
+Hono-based Bottle runtime for Claude Agent SDK or Codex SDK sessions. Bottle exposes a stable `/v1/*` HTTP/SSE API, advertises the existing main app URL, and serves an optional iframe bridge that lets a separate AI client send live app context with assistant prompts.
 
 ## Setup
 
@@ -10,25 +10,47 @@ cp .env.example .env
 npm run dev
 ```
 
-The API only responds when the request hostname and browser origin match `ALLOWED_HOSTNAMES`. Set `PROJECT_ROOT` to the repository or app workspace Claude should operate on.
+The API only responds when the request hostname and browser origin match `ALLOWED_HOSTNAMES`. Set `PROJECT_ROOT` to the repository or app workspace the selected agent should operate on. New Bottle bundles advertise both Claude and Codex; choose the provider per session with `provider: "claude"` or `provider: "codex"` in `POST /v1/sessions`. If omitted, Claude remains the backward-compatible fallback.
 
 ## Bottle + AI Client Integration
 
-Run a Bottle instance for any app or prototype:
+Create a portable Bottle bundle for any app or prototype:
 
 ```bash
-npx bottle init --name prototype-a --port 3001 --project-root /srv/prototype-a --main-app-url http://localhost:3000
-bottle start --config ./bottle.config.mjs
+mkdir prototype-a-bundle
+cd prototype-a-bundle
+npx bottle init --name prototype-a --copy-from /srv/prototype-a --main-app-url http://localhost:3000
+bottle start
 ```
 
-The generated config uses isolated data paths:
+The default bundle shape is:
 
 ```txt
-SESSION_DIR=.data/bottle/prototype-a/sessions
-WORKSPACE_DIR=.data/bottle/prototype-a/workspaces
+bottle-app/
+  app/        # copied existing project
+  .bottle/    # Bottle config, env, and sessions
 ```
 
-Point the AI client at the Bottle base URL, for example `http://localhost:3001`. The AI client discovers the main app URL through `GET /v1/bottle` and loads that URL directly, so the app keeps its own port.
+The generated Bottle env uses relative paths:
+
+```txt
+PROJECT_ROOT=../app
+SESSION_DIR=../.bottle/sessions
+```
+
+Point the AI client at the Bottle base URL, for example `http://localhost:3001`. The AI client discovers the main app URL and available agent providers through `GET /v1/bottle`, then loads the app URL directly, so the app keeps its own port.
+
+For Codex-backed sessions, configure optional SDK settings:
+
+```txt
+CODEX_MODEL=
+CODEX_API_KEY=
+CODEX_BASE_URL=
+CODEX_PATH=
+CODEX_REASONING_EFFORT=
+CODEX_NETWORK_ACCESS=false
+CODEX_SKIP_GIT_REPO_CHECK=true
+```
 
 For browser access from a separate AI client origin, set:
 
@@ -62,7 +84,7 @@ If `BOTTLE_API_TOKEN` is set, `/v1/*` requests must include either `Authorizatio
 - `POST /v1/sessions/:sessionId/interrupt`
 - `DELETE /v1/sessions/:sessionId`
 
-Modes are `plan`, `edit`, and `bypass`. Tool execution runs from the configured project root with Agent SDK sandboxing enabled. Session metadata remains under `SESSION_DIR`.
+Modes are `plan`, `edit`, and `bypass`. Tool execution runs from the configured project root with the selected provider's sandbox settings. Session metadata remains under `SESSION_DIR`.
 
 ## Iframe Bridge
 

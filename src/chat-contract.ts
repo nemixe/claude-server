@@ -1,5 +1,5 @@
 import { createClaudeClient, type ClaudeClientOptions, type ClientSseEvent } from "./client.js";
-import type { ClaudeMode, PromptImage, PublicSession, StreamMessageRequest, UploadedFile } from "./types.js";
+import type { AgentProvider, ClaudeMode, PromptImage, PublicSession, StreamMessageRequest, UploadedFile } from "./types.js";
 
 export type WebChatRole = "user" | "assistant" | "system" | "tool";
 
@@ -43,6 +43,7 @@ export type WebChatEvent =
   | { type: "raw"; raw: ClientSseEvent };
 
 export type CreateWebChatSessionRequest = {
+  provider?: AgentProvider;
   mode?: ClaudeMode;
   title?: string;
   files?: UploadedFile[];
@@ -53,6 +54,7 @@ export type SendWebChatMessageRequest = {
   title?: string;
   prompt: string;
   images?: PromptImage[];
+  provider?: AgentProvider;
   mode?: ClaudeMode;
   model?: string;
   maxTurns?: number;
@@ -84,6 +86,7 @@ export function createClaudeWebChatContract(options: ClaudeClientOptions) {
   async function createSession(request: CreateWebChatSessionRequest = {}): Promise<PublicSession> {
     return client.createSession({
       mode: request.mode ?? "bypass",
+      provider: request.provider,
       title: request.title,
       files: request.files
     });
@@ -107,7 +110,7 @@ export function createClaudeWebChatContract(options: ClaudeClientOptions) {
     async sendMessage(request: SendWebChatMessageRequest, handlers: WebChatHandlers = {}): Promise<WebChatSendResult> {
       const session = request.sessionId
         ? await findSession(client, request.sessionId)
-        : await createSession({ mode: request.mode, title: request.title });
+        : await createSession({ provider: request.provider, mode: request.mode, title: request.title });
       const sessionId = session.sessionId;
       const messages: WebChatMessage[] = [];
       let runResult: WebChatRunResult | undefined;

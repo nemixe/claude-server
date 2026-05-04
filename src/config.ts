@@ -2,9 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { type AllowedHostRule, parseAllowedHostList } from "./hostname.js";
+import { AGENT_PROVIDERS, type AgentProvider } from "./types.js";
+
+export const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
 
 export type AppConfig = {
   bottleName: string;
+  defaultAgentProvider: AgentProvider;
   mainAppUrl?: string;
   projectRoot: string;
   port: number;
@@ -24,6 +29,13 @@ export type AppConfig = {
   sandboxAllowedDomains: string[];
   sessionIdleTtlMs: number;
   defaultModel?: string;
+  codexModel?: string;
+  codexApiKey?: string;
+  codexBaseUrl?: string;
+  codexPath?: string;
+  codexReasoningEffort?: CodexReasoningEffort;
+  codexNetworkAccess?: boolean;
+  codexSkipGitRepoCheck: boolean;
 };
 
 export type LoadConfigOptions = {
@@ -34,6 +46,7 @@ export type LoadConfigOptions = {
 const RawEnvSchema = z.object({
   BOTTLE_NAME: z.string().optional(),
   CLAUDE_SERVER_INSTANCE: z.string().optional(),
+  AGENT_PROVIDER: z.string().optional(),
   PROJECT_ROOT: z.string().optional(),
   PORT: z.string().optional(),
   BIND_HOST: z.string().optional(),
@@ -53,7 +66,14 @@ const RawEnvSchema = z.object({
   RUN_TIMEOUT_MS: z.string().optional(),
   SANDBOX_ALLOWED_DOMAINS: z.string().optional(),
   SESSION_IDLE_TTL_MS: z.string().optional(),
-  CLAUDE_MODEL: z.string().optional()
+  CLAUDE_MODEL: z.string().optional(),
+  CODEX_MODEL: z.string().optional(),
+  CODEX_API_KEY: z.string().optional(),
+  CODEX_BASE_URL: z.string().optional(),
+  CODEX_PATH: z.string().optional(),
+  CODEX_REASONING_EFFORT: z.string().optional(),
+  CODEX_NETWORK_ACCESS: z.string().optional(),
+  CODEX_SKIP_GIT_REPO_CHECK: z.string().optional()
 });
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string | LoadConfigOptions = process.cwd()): AppConfig {
@@ -78,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
 
   return {
     bottleName: normalizeOptionalString(raw.BOTTLE_NAME) ?? normalizeOptionalString(raw.CLAUDE_SERVER_INSTANCE) ?? "bottle",
+    defaultAgentProvider: parseAgentProvider(raw.AGENT_PROVIDER),
     mainAppUrl: normalizeOptionalUrl(raw.MAIN_APP_URL ?? raw.APP_URL, "MAIN_APP_URL"),
     projectRoot,
     port: parseInteger(raw.PORT, 3001, "PORT"),
@@ -96,8 +117,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
     runTimeoutMs: parseInteger(raw.RUN_TIMEOUT_MS, 600_000, "RUN_TIMEOUT_MS"),
     sandboxAllowedDomains: parseCsv(raw.SANDBOX_ALLOWED_DOMAINS ?? "api.anthropic.com,claude.ai,statsig.anthropic.com"),
     sessionIdleTtlMs: parsePositiveInteger(raw.SESSION_IDLE_TTL_MS, 300_000, "SESSION_IDLE_TTL_MS"),
-    defaultModel: normalizeOptionalString(raw.CLAUDE_MODEL)
+    defaultModel: normalizeOptionalString(raw.CLAUDE_MODEL),
+    codexModel: normalizeOptionalString(raw.CODEX_MODEL),
+    codexApiKey: normalizeOptionalString(raw.CODEX_API_KEY),
+    codexBaseUrl: normalizeOptionalUrl(raw.CODEX_BASE_URL, "CODEX_BASE_URL"),
+    codexPath: normalizeOptionalString(raw.CODEX_PATH),
+    codexReasoningEffort: parseCodexReasoningEffort(raw.CODEX_REASONING_EFFORT),
+    codexNetworkAccess: parseOptionalBoolean(raw.CODEX_NETWORK_ACCESS, "CODEX_NETWORK_ACCESS"),
+    codexSkipGitRepoCheck: parseBoolean(raw.CODEX_SKIP_GIT_REPO_CHECK, true, "CODEX_SKIP_GIT_REPO_CHECK")
   };
+}
+
+function parseAgentProvider(value: string | undefined): AgentProvider {
+  const normalized = normalizeOptionalString(value) ?? "claude";
+  if ((AGENT_PROVIDERS as readonly string[]).includes(normalized)) return normalized as AgentProvider;
+  throw new Error(`AGENT_PROVIDER must be one of: ${AGENT_PROVIDERS.join(", ")}`);
+}
+
+function parseCodexReasoningEffort(value: string | undefined): CodexReasoningEffort | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) return undefined;
+  if ((CODEX_REASONING_EFFORTS as readonly string[]).includes(normalized)) return normalized as CodexReasoningEffort;
+  throw new Error(`CODEX_REASONING_EFFORT must be one of: ${CODEX_REASONING_EFFORTS.join(", ")}`);
 }
 
 function resolveExistingProjectRoot(value: string, cwd: string): string {
@@ -155,6 +196,11 @@ function parseBoolean(value: string | undefined, fallback: boolean, name: string
   if (/^(true|1|yes)$/i.test(value)) return true;
   if (/^(false|0|no)$/i.test(value)) return false;
   throw new Error(`${name} must be a boolean`);
+}
+
+function parseOptionalBoolean(value: string | undefined, name: string): boolean | undefined {
+  if (value === undefined || value === "") return undefined;
+  return parseBoolean(value, false, name);
 }
 
 function parseInteger(value: string | undefined, fallback: number, name: string): number {

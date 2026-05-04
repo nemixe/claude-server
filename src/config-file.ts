@@ -1,6 +1,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { loadConfig, type AppConfig } from "./config.js";
+import { loadConfig, type AppConfig, type CodexReasoningEffort } from "./config.js";
+import type { AgentProvider } from "./types.js";
 
 export { loadConfig };
 export type { AppConfig };
@@ -8,6 +9,7 @@ export type { AppConfig };
 export type ClaudeServerConfigInput = {
   name?: string;
   bottleName?: string;
+  agentProvider?: AgentProvider;
   port?: number;
   bindHost?: string;
   allowedHostnames?: string | string[];
@@ -28,6 +30,13 @@ export type ClaudeServerConfigInput = {
   sessionIdleTtlMs?: number;
   claudeModel?: string;
   defaultModel?: string;
+  codexModel?: string;
+  codexApiKey?: string;
+  codexBaseUrl?: string;
+  codexPath?: string;
+  codexReasoningEffort?: CodexReasoningEffort;
+  codexNetworkAccess?: boolean;
+  codexSkipGitRepoCheck?: boolean;
 };
 
 export type ClaudeServerConfigFactory = (context: {
@@ -80,6 +89,7 @@ export async function loadConfigFromFile(
 export function configInputToEnv(input: ClaudeServerConfigInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   setEnv(env, "BOTTLE_NAME", input.bottleName ?? input.name);
+  setEnv(env, "AGENT_PROVIDER", input.agentProvider);
   setEnv(env, "PROJECT_ROOT", input.projectRoot);
   setEnv(env, "PORT", input.port);
   setEnv(env, "BIND_HOST", input.bindHost);
@@ -98,6 +108,13 @@ export function configInputToEnv(input: ClaudeServerConfigInput): NodeJS.Process
   setEnv(env, "SANDBOX_ALLOWED_DOMAINS", csv(input.sandboxAllowedDomains));
   setEnv(env, "SESSION_IDLE_TTL_MS", input.sessionIdleTtlMs);
   setEnv(env, "CLAUDE_MODEL", input.claudeModel ?? input.defaultModel);
+  setEnv(env, "CODEX_MODEL", input.codexModel);
+  setEnv(env, "CODEX_API_KEY", input.codexApiKey);
+  setEnv(env, "CODEX_BASE_URL", input.codexBaseUrl);
+  setEnv(env, "CODEX_PATH", input.codexPath);
+  setEnv(env, "CODEX_REASONING_EFFORT", input.codexReasoningEffort);
+  setEnv(env, "CODEX_NETWORK_ACCESS", input.codexNetworkAccess);
+  setEnv(env, "CODEX_SKIP_GIT_REPO_CHECK", input.codexSkipGitRepoCheck);
   return env;
 }
 

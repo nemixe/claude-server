@@ -128,10 +128,11 @@ export class SessionPool {
   }
 
   private resume(metadata: SessionMetadata, options: SessionOptions): SessionLike {
-    if (!metadata.claudeSessionId) {
+    const sessionId = metadata.agentSessionId ?? metadata.claudeSessionId;
+    if (!sessionId) {
       throw new MissingClaudeSessionIdError(metadata.id);
     }
-    return this.factory.resumeSession(metadata.claudeSessionId, options);
+    return this.factory.resumeSession(sessionId, options);
   }
 }
 
