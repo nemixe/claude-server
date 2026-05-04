@@ -144,6 +144,12 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       );
     },
 
+    searchProjectFiles(query: string, options: { limit?: number } = {}): Promise<{ results: WorkspaceSearchResult[] }> {
+      const params = new URLSearchParams({ q: query });
+      if (options.limit !== undefined) params.set("limit", String(options.limit));
+      return requestJson<{ results: WorkspaceSearchResult[] }>(`/v1/files:search?${params.toString()}`);
+    },
+
     listClaudeCommands(_sessionId?: string): Promise<{ commands: ClaudeCommand[] }> {
       return requestJson<{ commands: ClaudeCommand[] }>("/v1/claude-commands");
     },

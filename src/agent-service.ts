@@ -1015,6 +1015,7 @@ function prependCodexPlanGuidanceToPrompt(
     "Bottle plan mode guidance:",
     "You are in plan mode. Inspect/read only. Do not modify files.",
     "Present an implementation plan and stop; Bottle will ask the user for approval before edit mode.",
+    "If you need user input before planning, ask one direct question and include 2-4 concise suggested options as simple bullet lines when reasonable.",
     "",
     prompt
   ].join("\n");
@@ -1156,14 +1157,43 @@ function extractCodexUserQuestions(
   }
 
   return Array.from(new Set(candidates)).slice(0, 3).map((question, index) => {
-    const questionOptions = index === 0 ? options : [];
+    const extractedOptions = index === 0 ? options : [];
+    const questionOptions =
+      extractedOptions.length > 0
+        ? extractedOptions
+        : index === 0
+          ? fallbackCodexQuestionOptions(question)
+          : [];
     return {
       id: `codex-question-${index + 1}`,
       question,
-      ...(questionOptions.length > 1 ? { multiSelect: true } : {}),
+      ...(extractedOptions.length > 1 ? { multiSelect: true } : {}),
       options: questionOptions
     };
   });
+}
+
+function fallbackCodexQuestionOptions(question: string): Array<{ label: string; description: string }> {
+  if (!/\bwhat\b[\s\S]*\b(work on|build|do|help with)\b/i.test(question)) return [];
+
+  return [
+    {
+      label: "Build a feature",
+      description: "Describe the feature or workflow to add."
+    },
+    {
+      label: "Fix a bug",
+      description: "Describe the broken behavior and expected result."
+    },
+    {
+      label: "Review code",
+      description: "Name the file, change, or area to review."
+    },
+    {
+      label: "Explain code",
+      description: "Ask about a file, flow, or error."
+    }
+  ];
 }
 
 function stripFencedCodeBlocks(text: string): string {

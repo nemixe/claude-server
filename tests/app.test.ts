@@ -920,6 +920,17 @@ describe("Hono API", () => {
       path: "docs",
       score: 0
     });
+
+    const rootSearchResponse = await app.request("http://localhost/v1/files:search?q=cmpbtn&limit=3", {
+      headers: { host: "localhost" }
+    });
+    expect(rootSearchResponse.status).toBe(200);
+    const rootSearchBody = (await rootSearchResponse.json()) as { results: Array<Record<string, unknown>> };
+    expect(rootSearchBody.results[0]).toMatchObject({
+      path: "src/components/Button.tsx",
+      name: "Button.tsx",
+      type: "file"
+    });
   });
 
   it("stores Claude commands only under the configured project root", async () => {

@@ -130,6 +130,39 @@ describe("Codex AgentService runtime", () => {
     expect(events.map((event) => event.type)).not.toContain("approval_pending");
   });
 
+  it("adds fallback choices for generic Codex user questions", async () => {
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
+    const thread = createMockThread(() =>
+      codexResultStream(
+        "codex-greeting-question",
+        "Hi. What would you like me to work on? I’m in plan mode, so I’ll inspect/read only and give you an implementation plan before any edits."
+      )
+    );
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+    const session = metadata(config.workspaceDir);
+
+    const events = await collect(service.stream({ session, request: { prompt: "Hello", mode: "plan" } }));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "question_pending",
+      data: {
+        input: {
+          questions: [
+            {
+              question: "Hi. What would you like me to work on?",
+              options: [
+                { label: "Build a feature", description: "Describe the feature or workflow to add." },
+                { label: "Fix a bug", description: "Describe the broken behavior and expected result." },
+                { label: "Review code", description: "Name the file, change, or area to review." },
+                { label: "Explain code", description: "Ask about a file, flow, or error." }
+              ]
+            }
+          ]
+        }
+      }
+    });
+  });
+
   it("turns final Codex plan-mode messages into ExitPlanMode approval events", async () => {
     const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
     let promptText = "";
@@ -159,6 +192,7 @@ describe("Codex AgentService runtime", () => {
     const events = await collect(service.stream({ session, request: { prompt: "Create product CRUD", mode: "plan" } }));
 
     expect(promptText).toContain("You are in plan mode. Inspect/read only. Do not modify files.");
+    expect(promptText).toContain("include 2-4 concise suggested options as simple bullet lines");
     expect(events.map((event) => event.type)).toEqual([
       "codex_event",
       "message",

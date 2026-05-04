@@ -182,6 +182,15 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json(rootInfo);
   });
 
+  app.get("/v1/files:search", async (c) => {
+    const query = workspaceSearchSchema.parse({
+      q: c.req.query("q"),
+      limit: c.req.query("limit")
+    });
+    const results = await sessionStore.searchProjectFiles(query.q, query.limit);
+    return c.json({ results });
+  });
+
   app.patch("/v1/settings", async (c) => {
     const body = z
       .object({

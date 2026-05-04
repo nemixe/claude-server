@@ -235,6 +235,17 @@ describe("browser client", () => {
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
     );
+
+    await expect(client.searchProjectFiles("sat", { limit: 5 })).resolves.toMatchObject({
+      results: [{ path: "src/app.ts", type: "file" }]
+    });
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/v1/files:search?q=sat&limit=5",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
   });
 
   it("uses only standard /v1 routes for AI tool operations", async () => {
