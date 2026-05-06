@@ -20,7 +20,7 @@ Create a portable Bottle bundle for any app or prototype:
 mkdir prototype-a-bundle
 cd prototype-a-bundle
 npx bottle init --name prototype-a --copy-from /srv/prototype-a --main-app-url http://localhost:3000
-bottle start
+node .bottle/scripts/start-bottle.mjs
 ```
 
 The default bundle shape is:
@@ -28,7 +28,7 @@ The default bundle shape is:
 ```txt
 bottle-app/
   app/        # copied existing project
-  .bottle/    # Bottle config, env, and sessions
+  .bottle/    # Bottle config, vendored runtime, env, and sessions
 ```
 
 The generated Bottle env uses relative paths:
@@ -37,6 +37,8 @@ The generated Bottle env uses relative paths:
 PROJECT_ROOT=../app
 SESSION_DIR=../.bottle/sessions
 ```
+
+`bottle init` vendors a self-contained Bottle runtime into `.bottle/runtime` by default. After initialization, the bundle only needs Node.js to run; it does not need `bottle` installed globally on the target machine. Use `bottle init --no-vendor-runtime` if you prefer the old lightweight bundle that shells out to a global `bottle start`.
 
 Point the AI client at the Bottle base URL, for example `http://localhost:3001`. The AI client discovers the main app URL and available agent providers through `GET /v1/bottle`, then loads the app URL directly, so the app keeps its own port.
 

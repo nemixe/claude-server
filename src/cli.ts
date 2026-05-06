@@ -28,6 +28,8 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_APP_DIR = "app";
 const DEFAULT_BOTTLE_DIR = ".bottle";
 const DEFAULT_MAIN_APP_URL = "http://localhost:3000";
+const RUNTIME_DIR_NAME = "runtime";
+const RUNTIME_SOURCE_ENV = "BOTTLE_RUNTIME_SOURCE_DIR";
 
 export async function runCli(argv = process.argv.slice(2), options: CliOptions = {}): Promise<number> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
@@ -43,7 +45,7 @@ export async function runCli(argv = process.argv.slice(2), options: CliOptions =
     }
 
     if (command === "init") {
-      await initCommand(args, { cwd, stdout, stderr });
+      await initCommand(args, { cwd, env, stdout, stderr });
       return 0;
     }
 
@@ -61,12 +63,13 @@ export async function runCli(argv = process.argv.slice(2), options: CliOptions =
   }
 }
 
-async function initCommand(args: string[], options: { cwd: string; stdout: Writable; stderr: Writable }): Promise<void> {
+async function initCommand(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; stdout: Writable; stderr: Writable }): Promise<void> {
   const flags = parseFlags(args);
   const name = normalizeInstanceName(flags.values.get("name") ?? "prototype");
   const port = parsePort(flags.values.get("port") ?? "3001");
   const bundleRoot = path.resolve(options.cwd, flags.values.get("output-dir") ?? ".");
   const bottleDir = path.resolve(bundleRoot, flags.values.get("bottle-dir") ?? DEFAULT_BOTTLE_DIR);
+  const runtimeDir = path.join(bottleDir, RUNTIME_DIR_NAME);
   const appDir = path.resolve(bundleRoot, flags.values.get("app-dir") ?? DEFAULT_APP_DIR);
   const projectRoot = flags.values.has("project-root")
     ? path.resolve(options.cwd, flags.values.get("project-root") as string)
@@ -76,6 +79,8 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
   const bindHost = flags.values.get("bind-host") ?? "0.0.0.0";
   const allowedHostnames = parseCsv(flags.values.get("allowed-hostnames") ?? DEFAULT_ALLOWED_HOSTNAMES.join(","));
   const mainAppUrl = flags.values.get("main-app-url") ?? flags.values.get("app-url") ?? DEFAULT_MAIN_APP_URL;
+  const vendorRuntime = !flags.booleans.has("no-vendor-runtime");
+  const runtimeSourceRoot = runtimeSourceRootFromEnv(options.env);
   const projectRootConfigValue = relativePath(bottleDir, projectRoot);
   const sessionDir = relativePath(projectRoot, path.join(bottleDir, "sessions"));
   const configPath = path.join(bottleDir, "bottle.config.mjs");
@@ -89,7 +94,10 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
   await prepareProjectRoot(projectRoot, copyFrom, force);
   await fs.mkdir(bottleDir, { recursive: true });
   await fs.mkdir(scriptsDir, { recursive: true });
-  await ensureCanWrite([configPath, envPath, appEnvPath, startScriptPath, docsPath], force);
+  await ensureCanWrite([configPath, envPath, appEnvPath, startScriptPath, docsPath, ...(vendorRuntime ? [runtimeDir] : [])], force);
+  if (vendorRuntime) {
+    await vendorBottleRuntime(runtimeSourceRoot, runtimeDir, force);
+  }
 
   await fs.writeFile(
     configPath,
@@ -118,7 +126,14 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
     "utf8"
   );
   await fs.writeFile(appEnvPath, renderAppEnvFile(), "utf8");
-  await fs.writeFile(startScriptPath, renderStartScript(path.relative(scriptsDir, configPath)), "utf8");
+  await fs.writeFile(
+    startScriptPath,
+    renderStartScript({
+      configPath: path.relative(scriptsDir, configPath),
+      runtimeCliPath: vendorRuntime ? path.relative(scriptsDir, path.join(runtimeDir, "dist", "cli.js")) : undefined
+    }),
+    "utf8"
+  );
   await fs.chmod(startScriptPath, 0o755);
   await fs.writeFile(
     docsPath,
@@ -130,7 +145,8 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
       configPath: path.relative(bundleRoot, configPath),
       envPath: path.relative(bundleRoot, envPath),
       appEnvPath: path.relative(bundleRoot, appEnvPath),
-      startScriptPath: path.relative(bundleRoot, startScriptPath)
+      startScriptPath: path.relative(bundleRoot, startScriptPath),
+      runtimePath: vendorRuntime ? path.relative(bundleRoot, runtimeDir) : undefined
     }),
     "utf8"
   );
@@ -141,6 +157,7 @@ async function initCommand(args: string[], options: { cwd: string; stdout: Writa
   writeLine(options.stdout, `- ${path.relative(options.cwd, appEnvPath)}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, startScriptPath)}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, docsPath)}`);
+  if (vendorRuntime) writeLine(options.stdout, `- ${path.relative(options.cwd, runtimeDir)}`);
 }
 
 async function startCommand(args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; stdout: Writable }): Promise<void> {
@@ -275,6 +292,138 @@ function shouldSkipCopiedPath(root: string, sourcePath: string): boolean {
   return segments.some((segment) => segment === ".git" || segment === "node_modules" || segment === ".data");
 }
 
+function runtimeSourceRootFromEnv(env: NodeJS.ProcessEnv): string {
+  const override = env[RUNTIME_SOURCE_ENV];
+  return override ? path.resolve(override) : currentPackageRoot();
+}
+
+function currentPackageRoot(): string {
+  const modulePath = fileURLToPath(import.meta.url);
+  const moduleDir = path.dirname(modulePath);
+  const parent = path.dirname(moduleDir);
+  if (path.basename(moduleDir) === "dist" || path.basename(moduleDir) === "src") return parent;
+  return moduleDir;
+}
+
+async function vendorBottleRuntime(sourceRoot: string, runtimeDir: string, force: boolean): Promise<void> {
+  const distDir = path.join(sourceRoot, "dist");
+  const packageJsonPath = path.join(sourceRoot, "package.json");
+  const nodeModulesDir = path.join(sourceRoot, "node_modules");
+
+  await assertRuntimeSourceFile(path.join(distDir, "cli.js"), "Bottle runtime requires dist/cli.js. Run `npm run build` before `bottle init` from a source checkout.");
+  await assertRuntimeSourceFile(packageJsonPath, "Bottle runtime requires package.json.");
+
+  if (force) await fs.rm(runtimeDir, { recursive: true, force: true });
+  await fs.mkdir(runtimeDir, { recursive: true });
+  await fs.cp(distDir, path.join(runtimeDir, "dist"), {
+    recursive: true,
+    force: true,
+    dereference: true,
+    filter: runtimeCopyFilter
+  });
+  await fs.copyFile(packageJsonPath, path.join(runtimeDir, "package.json"));
+  await copyRuntimeMetadataFile(sourceRoot, runtimeDir, "README.md");
+  await copyRuntimeMetadataFile(sourceRoot, runtimeDir, ".env.example");
+
+  const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string> };
+  const dependencyNames = Object.keys(packageJson.dependencies ?? {});
+  if (dependencyNames.length === 0) return;
+
+  await assertRuntimeSourceFile(nodeModulesDir, "Bottle runtime dependencies are not installed. Run `npm install` before `bottle init` from a source checkout.");
+  await fs.mkdir(path.join(runtimeDir, "node_modules"), { recursive: true });
+
+  const copied = new Set<string>();
+  for (const dependencyName of dependencyNames) {
+    await copyRuntimeDependency(dependencyName, sourceRoot, sourceRoot, runtimeDir, copied);
+  }
+}
+
+async function assertRuntimeSourceFile(filePath: string, message: string): Promise<void> {
+  try {
+    await fs.access(filePath);
+  } catch {
+    throw new Error(message);
+  }
+}
+
+async function copyRuntimeMetadataFile(sourceRoot: string, runtimeDir: string, filename: string): Promise<void> {
+  try {
+    await fs.copyFile(path.join(sourceRoot, filename), path.join(runtimeDir, filename));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw error;
+  }
+}
+
+async function copyRuntimeDependency(
+  dependencyName: string,
+  importerDir: string,
+  sourceRoot: string,
+  runtimeDir: string,
+  copied: Set<string>
+): Promise<void> {
+  const dependencyDir = await findInstalledDependencyDir(dependencyName, importerDir);
+  if (!dependencyDir) return;
+
+  const realDependencyDir = await fs.realpath(dependencyDir);
+  if (copied.has(realDependencyDir)) return;
+  copied.add(realDependencyDir);
+
+  const relativeDependencyDir = path.relative(sourceRoot, dependencyDir);
+  if (relativeDependencyDir.startsWith("..") || path.isAbsolute(relativeDependencyDir)) return;
+
+  const targetDir = path.join(runtimeDir, relativeDependencyDir);
+  await fs.mkdir(path.dirname(targetDir), { recursive: true });
+  await fs.cp(dependencyDir, targetDir, {
+    recursive: true,
+    force: true,
+    dereference: true,
+    filter: runtimeCopyFilter
+  });
+
+  const packageJsonPath = path.join(dependencyDir, "package.json");
+  let dependencyPackage: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+  try {
+    dependencyPackage = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
+  } catch {
+    return;
+  }
+
+  const childDependencies = Object.keys({
+    ...(dependencyPackage.dependencies ?? {}),
+    ...(dependencyPackage.optionalDependencies ?? {})
+  });
+  for (const childDependencyName of childDependencies) {
+    await copyRuntimeDependency(childDependencyName, dependencyDir, sourceRoot, runtimeDir, copied);
+  }
+}
+
+async function findInstalledDependencyDir(dependencyName: string, importerDir: string): Promise<string | undefined> {
+  let directory = importerDir;
+  while (true) {
+    const candidate = path.join(directory, "node_modules", ...dependencyName.split("/"));
+    try {
+      const stat = await fs.stat(path.join(candidate, "package.json"));
+      if (stat.isFile()) return candidate;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
+
+    const next = path.dirname(directory);
+    if (next === directory) return undefined;
+    directory = next;
+  }
+}
+
+function runtimeCopyFilter(sourcePath: string): boolean {
+  const name = path.basename(sourcePath);
+  if (name === ".git" || name === ".cache" || name === ".DS_Store") return false;
+  if (name === "test" || name === "tests" || name === "__tests__" || name === "coverage") return false;
+  if (sourcePath.endsWith(".map")) return false;
+  return true;
+}
+
 function findDefaultConfigPath(cwd: string): string | undefined {
   const candidates = [path.join(cwd, DEFAULT_BOTTLE_DIR, "bottle.config.mjs"), path.join(cwd, "bottle.config.mjs")];
   return candidates.find((candidate) => fsSync.existsSync(candidate));
@@ -359,14 +508,24 @@ APP_ENV_FILE=../app/.env
 `;
 }
 
-function renderStartScript(relativeConfigPath: string): string {
-  const normalizedConfigPath = relativeConfigPath.split(path.sep).join("/");
+function renderStartScript(input: { configPath: string; runtimeCliPath?: string }): string {
+  const normalizedConfigPath = input.configPath.split(path.sep).join("/");
+  const normalizedRuntimeCliPath = input.runtimeCliPath?.split(path.sep).join("/");
+  const childSpawn = normalizedRuntimeCliPath
+    ? `const runtimeCliPath = fileURLToPath(new URL(${JSON.stringify(normalizedRuntimeCliPath)}, import.meta.url));
+
+const child = spawn(process.execPath, [runtimeCliPath, "start", "--config", configPath], {
+  stdio: "inherit"
+});`
+    : `const child = spawn("bottle", ["start", "--config", configPath], {
+  stdio: "inherit"
+});`;
   return `#!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const child = spawn("bottle", ["start", "--config", new URL(${JSON.stringify(normalizedConfigPath)}, import.meta.url).pathname], {
-  stdio: "inherit"
-});
+const configPath = fileURLToPath(new URL(${JSON.stringify(normalizedConfigPath)}, import.meta.url));
+${childSpawn}
 
 let stopping = false;
 let childExited = false;
@@ -406,7 +565,17 @@ function renderIntegrationDocs(input: {
   envPath: string;
   appEnvPath: string;
   startScriptPath: string;
+  runtimePath?: string;
 }): string {
+  const startCommand = input.runtimePath
+    ? `node ${input.startScriptPath}`
+    : `node ${input.startScriptPath}
+# or
+bottle start --config ${input.configPath}`;
+  const runtimeDescription = input.runtimePath
+    ? `- \`${input.runtimePath}\` - vendored Bottle runtime used by the start script.`
+    : "- Runtime is not vendored; this bundle expects `bottle` to be available on PATH.";
+
   return `# Bottle Integration
 
 Instance: ${input.name}
@@ -414,9 +583,7 @@ Instance: ${input.name}
 ## Start
 
 \`\`\`bash
-node ${input.startScriptPath}
-# or
-bottle start --config ${input.configPath}
+${startCommand}
 \`\`\`
 
 ## Generated Files
@@ -425,6 +592,9 @@ bottle start --config ${input.configPath}
 - \`${input.envPath}\` - Bottle env-file equivalent for process managers.
 - \`${input.appEnvPath}\` - optional app launcher/env notes.
 - \`${input.startScriptPath}\` - standalone start script.
+${runtimeDescription}
+
+The generated start script only requires Node.js. It does not require a global Bottle install unless this bundle was created with \`--no-vendor-runtime\`.
 
 ## Frontend Proxy
 
@@ -458,6 +628,9 @@ function helpText(): string {
 Commands:
   init     Generate app/ and .bottle/ bundle files
   start    Start the standard /v1 Bottle server
+
+Init options:
+  --no-vendor-runtime   Generate a lightweight bundle that expects a global bottle command
 `;
 }
 
