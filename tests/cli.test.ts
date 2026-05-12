@@ -43,10 +43,15 @@ describe("CLI", () => {
     const configFile = await fs.readFile(path.join(cwd, ".bottle", "bottle.config.mjs"), "utf8");
     expect(configFile).toContain('"projectRoot": "../app"');
     expect(configFile).toContain('"bottleDir": "."');
+    expect(configFile).toContain('"bindHost": "0.0.0.0"');
+    expect(configFile).toContain('"allowedHostnames"');
+    expect(configFile).toContain('"localhost"');
+    expect(configFile).toContain('"trustProxy": false');
+    expect(configFile).toContain('"clientOrigins"');
+    expect(configFile).toContain('"http://localhost:5173"');
     expect(configFile).not.toContain("agentProvider");
     expect(configFile).toContain('"sessionDir": "../.bottle/sessions"');
     expect(configFile).not.toContain("workspaceDir");
-    expect(configFile).not.toContain("clientOrigins");
     expect(configFile).not.toContain("maxConcurrentRuns");
     await expect(fs.stat(path.join(cwd, ".bottle", "bottle.env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.stat(path.join(cwd, ".bottle", "app.env"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -72,6 +77,42 @@ describe("CLI", () => {
     expect(stdout.text).not.toContain(".bottle/bottle.env");
     expect(stdout.text).not.toContain(".bottle/app.env");
     expect(stdout.text).toContain(".bottle/runtime");
+  });
+
+  it("writes public host and proxy settings into generated config", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cli-public-host-"));
+    const runtimeSource = await createFakeBottleRuntime(cwd);
+    const stdout = createBufferedStream();
+    const stderr = createBufferedStream();
+
+    const code = await runCli(
+      [
+        "init",
+        "--name",
+        "deployed",
+        "--allowed-hostnames",
+        "ai-proto-dev-1.devnstg.com,localhost",
+        "--client-origins",
+        "https://ai-proto-dev-1.devnstg.com",
+        "--trust-proxy"
+      ],
+      {
+        cwd,
+        env: { ...process.env, BOTTLE_RUNTIME_SOURCE_DIR: runtimeSource },
+        stdout: stdout.stream,
+        stderr: stderr.stream
+      }
+    );
+
+    expect(code).toBe(0);
+    expect(stderr.text).toBe("");
+
+    const configFile = await fs.readFile(path.join(cwd, ".bottle", "bottle.config.mjs"), "utf8");
+    expect(configFile).toContain('"allowedHostnames"');
+    expect(configFile).toContain('"ai-proto-dev-1.devnstg.com"');
+    expect(configFile).toContain('"trustProxy": true');
+    expect(configFile).toContain('"clientOrigins"');
+    expect(configFile).toContain('"https://ai-proto-dev-1.devnstg.com"');
   });
 
   it("can run the generated start script through the vendored runtime", async () => {

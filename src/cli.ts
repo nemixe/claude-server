@@ -24,6 +24,7 @@ type ParsedFlags = {
 };
 
 const DEFAULT_ALLOWED_HOSTNAMES = ["localhost", "127.0.0.1"];
+const DEFAULT_CLIENT_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_APP_DIR = "app";
 const DEFAULT_BOTTLE_DIR = ".bottle";
@@ -80,7 +81,15 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
   const copyFrom = flags.values.has("copy-from") ? path.resolve(options.cwd, flags.values.get("copy-from") as string) : undefined;
   const force = flags.booleans.has("force");
   const bindHost = flags.values.get("bind-host") ?? "0.0.0.0";
-  const allowedHostnames = parseCsv(flags.values.get("allowed-hostnames") ?? DEFAULT_ALLOWED_HOSTNAMES.join(","));
+  const allowedHostnames = parseCsv(
+    flags.values.get("allowed-hostnames") ?? DEFAULT_ALLOWED_HOSTNAMES.join(","),
+    "allowed-hostnames"
+  );
+  const trustProxy = parseOptionalBooleanFlag(flags, "trust-proxy", false);
+  const clientOrigins = parseCsv(
+    flags.values.get("client-origins") ?? DEFAULT_CLIENT_ORIGINS.join(","),
+    "client-origins"
+  );
   const mainAppUrl = flags.values.get("main-app-url") ?? flags.values.get("app-url") ?? DEFAULT_MAIN_APP_URL;
   const vendorRuntime = !flags.booleans.has("no-vendor-runtime");
   const runtimeSourceRoot = runtimeSourceRootFromEnv(options.env);
@@ -112,6 +121,8 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
       projectRoot: projectRootConfigValue,
       bottleDir: ".",
       allowedHostnames,
+      trustProxy,
+      clientOrigins,
       mainAppUrl,
       sessionDir
     }),
@@ -206,15 +217,26 @@ function parsePort(value: string): number {
   return port;
 }
 
-function parseCsv(value: string): string[] {
+function parseCsv(value: string, name: string): string[] {
   const entries = value
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
   if (entries.length === 0) {
-    throw new Error("allowed-hostnames must contain at least one host");
+    throw new Error(`${name} must contain at least one value`);
   }
   return [...new Set(entries)];
+}
+
+function parseOptionalBooleanFlag(flags: ParsedFlags, name: string, fallback: boolean): boolean {
+  if (flags.booleans.has(name)) return true;
+  if (!flags.values.has(name)) return fallback;
+
+  const value = flags.values.get(name);
+  if (value === undefined || value === "") return fallback;
+  if (/^(true|1|yes)$/i.test(value)) return true;
+  if (/^(false|0|no)$/i.test(value)) return false;
+  throw new Error(`${name} must be a boolean`);
 }
 
 function normalizeInstanceName(value: string): string {
@@ -437,25 +459,24 @@ function renderConfigFile(input: {
   projectRoot: string;
   bottleDir: string;
   allowedHostnames: string[];
+  trustProxy: boolean;
+  clientOrigins: string[];
   mainAppUrl?: string;
   sessionDir: string;
 }): string {
   const config: Record<string, unknown> = {
     bottleName: input.name,
     port: input.port,
+    bindHost: input.bindHost,
     projectRoot: input.projectRoot,
     bottleDir: input.bottleDir,
+    allowedHostnames: input.allowedHostnames,
+    trustProxy: input.trustProxy,
+    clientOrigins: input.clientOrigins,
     ...(input.mainAppUrl ? { mainAppUrl: input.mainAppUrl } : {}),
     sessionDir: input.sessionDir,
     claudeModel: DEFAULT_MODEL
   };
-
-  if (input.bindHost !== "0.0.0.0") {
-    config.bindHost = input.bindHost;
-  }
-  if (input.allowedHostnames.join(",") !== DEFAULT_ALLOWED_HOSTNAMES.join(",")) {
-    config.allowedHostnames = input.allowedHostnames;
-  }
 
   return `export default ${JSON.stringify(config, null, 2)};
 `;
@@ -656,6 +677,7 @@ For multiple prototypes on the same VPS, repeat \`bottle init\` with a different
 function helpText(): string {
   return `Usage:
   bottle init --name prototype-a --copy-from /srv/prototype-a --main-app-url http://localhost:3000
+  bottle init --name prototype-a --allowed-hostnames prototype.example.com,localhost --client-origins https://prototype.example.com --trust-proxy
   bottle start
 
 Commands:
@@ -664,6 +686,9 @@ Commands:
 
 Init options:
   --no-vendor-runtime   Generate a lightweight bundle that expects a global bottle command
+  --allowed-hostnames   Comma-separated browser-facing hosts allowed to call Bottle
+  --client-origins      Comma-separated browser origins allowed for AI Client/CORS/frame access
+  --trust-proxy         Trust X-Forwarded-Host when Bottle runs behind nginx/Cloudflare
 `;
 }
 

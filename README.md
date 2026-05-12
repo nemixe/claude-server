@@ -23,6 +23,18 @@ npx bottle init --name prototype-a --copy-from /srv/prototype-a --main-app-url h
 node .bottle/scripts/start-bottle.mjs
 ```
 
+For a public deployment behind nginx or Cloudflare, include the browser-facing host/origin in the generated config:
+
+```bash
+npx bottle init \
+  --name prototype-a \
+  --copy-from /srv/prototype-a \
+  --main-app-url http://localhost:3000 \
+  --allowed-hostnames prototype.example.com,localhost,127.0.0.1 \
+  --client-origins https://prototype.example.com \
+  --trust-proxy
+```
+
 The default bundle shape is:
 
 ```txt
@@ -37,6 +49,9 @@ Customize generated bundles from `.bottle/bottle.config.mjs`. The config keeps b
 export default {
   projectRoot: "../app",
   bottleDir: ".",
+  allowedHostnames: ["localhost", "127.0.0.1", "prototype.example.com"],
+  trustProxy: true,
+  clientOrigins: ["https://prototype.example.com"],
   sessionDir: "../.bottle/sessions"
 };
 ```
