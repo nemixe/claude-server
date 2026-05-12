@@ -22,6 +22,7 @@ describe("config and hostname parsing", () => {
     expect(config.clientOrigins).toEqual(["http://localhost:5173", "https://client.example.com"]);
     expect(config.mainAppUrl).toBe("http://localhost:3000");
     expect(config.defaultAgentProvider).toBe("claude");
+    expect(config.runTimeoutMs).toBe(3_600_000);
     expect(config.allowedHosts).toEqual([
       { hostname: "localhost" },
       { hostname: "example.com" },
@@ -63,9 +64,43 @@ describe("config and hostname parsing", () => {
     const config = loadConfig({ PROJECT_ROOT: root }, process.cwd());
 
     expect(config.projectRoot).toBe(root);
-    expect(config.claudeCommandsDir).toBe(path.join(root, ".claude", "commands"));
+    expect(config.bottleDir).toBe(path.join(root, ".bottle"));
+    expect(config.agentsDir).toBe(path.join(root, ".bottle", "agents"));
+    expect(config.commandsDir).toBe(path.join(root, ".bottle", "commands"));
+    expect(config.rulesDir).toBe(path.join(root, ".bottle", "rules"));
+    expect(config.skillsDir).toBe(path.join(root, ".bottle", "skills"));
+    expect(config.extraSkillRoots).toEqual([]);
+    expect(config.skillRoots).toEqual([path.join(root, ".bottle", "skills")]);
+    expect(config.claudeCommandsDir).toBe(path.join(root, ".bottle", "commands"));
     expect(config.workspaceDir).toBe(path.join(root, ".data", "workspaces"));
     expect(config.sessionDir).toBe(path.join(root, ".data", "sessions"));
+  });
+
+  it("resolves extra skill roots from env against the configured cwd", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-skill-root-cwd-"));
+    const projectRoot = path.join(cwd, "app");
+    const absoluteRoot = path.join(cwd, "absolute-skills");
+    await fs.mkdir(projectRoot);
+
+    const config = loadConfig(
+      {
+        PROJECT_ROOT: "app",
+        BOTTLE_EXTRA_SKILL_ROOTS: "../shared-skills,absolute-skills"
+      },
+      cwd
+    );
+
+    expect(config.extraSkillRoots).toEqual([path.resolve(cwd, "..", "shared-skills"), absoluteRoot]);
+    expect(config.skillRoots).toEqual([path.join(projectRoot, ".bottle", "skills"), path.resolve(cwd, "..", "shared-skills"), absoluteRoot]);
+  });
+
+  it("resolves explicit BOTTLE_DIR from the process cwd", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-root-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cwd-"));
+    const config = loadConfig({ PROJECT_ROOT: root, BOTTLE_DIR: "bundle/.bottle" }, cwd);
+
+    expect(config.bottleDir).toBe(path.join(cwd, "bundle", ".bottle"));
+    expect(config.commandsDir).toBe(path.join(cwd, "bundle", ".bottle", "commands"));
   });
 
   it("loads main app URL and token configuration", async () => {
@@ -83,6 +118,22 @@ describe("config and hostname parsing", () => {
     expect(config.mainAppUrl).toBe("http://localhost:3000/api");
     expect(config.bottleApiToken).toBe("secret");
     expect(config.bottleApiTokenRequired).toBe(true);
+  });
+
+  it("serves the AI client from root in conditional gateway mode", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-root-client-"));
+    const config = loadConfig(
+      {
+        PROJECT_ROOT: root,
+        MAIN_APP_URL: "http://localhost:3000",
+        CLIENT_APP_PATH: "/__ai_client"
+      },
+      process.cwd()
+    );
+
+    expect(config.clientAppPath).toBe("/");
+    expect(config.mainAppProxy).toBe(true);
+    expect(config.mainAppDirect).toBe(true);
   });
 
   it("requires a Bottle API token when production token auth is enabled", async () => {

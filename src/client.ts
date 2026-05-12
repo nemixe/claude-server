@@ -1,6 +1,8 @@
 import type {
   AgentProvider,
   BottleInfoResponse,
+  BottleCommand,
+  BottleCommandInput,
   ClaudeCommand,
   ClaudeCommandInput,
   ClaudeMode,
@@ -8,7 +10,9 @@ import type {
   ListSessionsResponse,
   PublicSession,
   RootInfoResponse,
+  SettingsResponse,
   StreamMessageRequest,
+  UpdateSettingsRequest,
   UploadedFile,
   WorkspaceSearchResult
 } from "./types.js";
@@ -125,6 +129,17 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       return requestJson<BottleInfoResponse>("/v1/bottle");
     },
 
+    getSettings(): Promise<SettingsResponse> {
+      return requestJson<SettingsResponse>("/v1/settings");
+    },
+
+    updateSettings(request: UpdateSettingsRequest): Promise<SettingsResponse> {
+      return requestJson<SettingsResponse>("/v1/settings", {
+        method: "PATCH",
+        body: JSON.stringify(request)
+      });
+    },
+
     getMessages(sessionId: string, options: ListMessagesOptions = {}): Promise<ListMessagesResponse> {
       const params = new URLSearchParams();
       if (options.limit !== undefined) params.set("limit", String(options.limit));
@@ -148,6 +163,30 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       const params = new URLSearchParams({ q: query });
       if (options.limit !== undefined) params.set("limit", String(options.limit));
       return requestJson<{ results: WorkspaceSearchResult[] }>(`/v1/files:search?${params.toString()}`);
+    },
+
+    listCommands(_sessionId?: string): Promise<{ commands: BottleCommand[] }> {
+      return requestJson<{ commands: BottleCommand[] }>("/v1/claude-commands");
+    },
+
+    getCommand(_sessionId: string | undefined, commandPath: string): Promise<{ command: BottleCommand }> {
+      return requestJson<{ command: BottleCommand }>(
+        `/v1/claude-commands?path=${encodeURIComponent(commandPath)}`
+      );
+    },
+
+    saveCommand(_sessionId: string | undefined, command: BottleCommandInput): Promise<{ command: BottleCommand }> {
+      return requestJson<{ command: BottleCommand }>("/v1/claude-commands", {
+        method: "POST",
+        body: JSON.stringify(command)
+      });
+    },
+
+    deleteCommand(_sessionId: string | undefined, commandPath: string): Promise<{ deleted: true }> {
+      return requestJson<{ deleted: true }>("/v1/claude-commands", {
+        method: "DELETE",
+        body: JSON.stringify({ path: commandPath })
+      });
     },
 
     listClaudeCommands(_sessionId?: string): Promise<{ commands: ClaudeCommand[] }> {

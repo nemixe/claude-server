@@ -17,9 +17,14 @@ describe("config file loading", () => {
           trustProxy: true,
           clientOrigins: ["https://client.example.com"],
           mainAppUrl: "http://localhost:3000",
+          clientAppUrl: "http://localhost:5173",
+          mainAppProxy: true,
+          mainAppDirect: true,
           bottleApiToken: "secret",
           bottleApiTokenRequired: true,
           projectRoot: "/srv/app",
+          bottleDir: "/srv/.bottle",
+          extraSkillRoots: ["/srv/shared-skills", "/opt/team-skills"],
           sessionDir: ".data/bottle/app/sessions",
           workspaceDir: ".data/bottle/app/workspaces",
           maxConcurrentRuns: 5,
@@ -40,9 +45,14 @@ describe("config file loading", () => {
       BOTTLE_NAME: "prototype-a",
       CLIENT_ORIGINS: "https://client.example.com",
       MAIN_APP_URL: "http://localhost:3000",
+      CLIENT_APP_URL: "http://localhost:5173",
+      MAIN_APP_PROXY: "true",
+      MAIN_APP_DIRECT: "true",
       BOTTLE_API_TOKEN: "secret",
       BOTTLE_API_TOKEN_REQUIRED: "true",
       PROJECT_ROOT: "/srv/app",
+      BOTTLE_DIR: "/srv/.bottle",
+      BOTTLE_EXTRA_SKILL_ROOTS: "/srv/shared-skills,/opt/team-skills",
       SESSION_DIR: ".data/bottle/app/sessions",
       WORKSPACE_DIR: ".data/bottle/app/workspaces",
       MAX_CONCURRENT_RUNS: "5",
@@ -64,6 +74,8 @@ describe("config file loading", () => {
         bottleName: "prototype-c",
         port: 3004,
         projectRoot: ${JSON.stringify(root)},
+        bottleDir: ".",
+        extraSkillRoots: ["../shared-skills", "/opt/team-skills"],
         allowedHostnames: ["localhost", "prototype.example.com"],
         sessionDir: ".data/bottle/prototype-c/sessions",
         workspaceDir: ".data/bottle/prototype-c/workspaces",
@@ -77,6 +89,9 @@ describe("config file loading", () => {
     expect(config.port).toBe(3004);
     expect(config.bottleName).toBe("prototype-c");
     expect(config.projectRoot).toBe(root);
+    expect(config.bottleDir).toBe(root);
+    expect(config.extraSkillRoots).toEqual([path.resolve(root, "..", "shared-skills"), "/opt/team-skills"]);
+    expect(config.skillRoots).toEqual([path.join(root, "skills"), path.resolve(root, "..", "shared-skills"), "/opt/team-skills"]);
     expect(config.sessionDir).toBe(path.join(root, ".data", "bottle", "prototype-c", "sessions"));
     expect(config.workspaceDir).toBe(path.join(root, ".data", "bottle", "prototype-c", "workspaces"));
     expect(config.defaultModel).toBe("claude-sonnet-4-6");

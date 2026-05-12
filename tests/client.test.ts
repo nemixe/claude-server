@@ -97,14 +97,29 @@ describe("browser client", () => {
 
   it("loads configured project root information", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
-      return new Response(JSON.stringify({ projectRoot: "/repo", claudeCommandsDir: "/repo/.claude/commands" }), {
+      return new Response(JSON.stringify({
+        projectRoot: "/repo/app",
+        bottleDir: "/repo/.bottle",
+        agentsDir: "/repo/.bottle/agents",
+        commandsDir: "/repo/.bottle/commands",
+        rulesDir: "/repo/.bottle/rules",
+        skillsDir: "/repo/.bottle/skills",
+        extraSkillRoots: ["/repo/shared-skills"],
+        skillRoots: ["/repo/.bottle/skills", "/repo/shared-skills"],
+        claudeCommandsDir: "/repo/.bottle/commands"
+      }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
     });
     const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
 
-    await expect(client.getRoot()).resolves.toEqual({ projectRoot: "/repo", claudeCommandsDir: "/repo/.claude/commands" });
+    await expect(client.getRoot()).resolves.toMatchObject({
+      projectRoot: "/repo/app",
+      commandsDir: "/repo/.bottle/commands",
+      skillRoots: ["/repo/.bottle/skills", "/repo/shared-skills"],
+      claudeCommandsDir: "/repo/.bottle/commands"
+    });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v1/root",
@@ -129,6 +144,46 @@ describe("browser client", () => {
       "https://api.example.com/v1/bottle",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+  });
+
+  it("loads and updates AI assistant settings", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      return new Response(
+        JSON.stringify({
+          maxConcurrentRuns: 4,
+          maxTurns: 30,
+          defaultAgentProvider: "codex",
+          availableAgentProviders: ["claude", "codex"]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+
+    await expect(client.getSettings()).resolves.toMatchObject({
+      defaultAgentProvider: "codex",
+      availableAgentProviders: ["claude", "codex"]
+    });
+    await client.updateSettings({ defaultAgentProvider: "codex" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.example.com/v1/settings",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "content-type": "application/json" })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.example.com/v1/settings",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ defaultAgentProvider: "codex" })
       })
     );
   });
@@ -178,7 +233,7 @@ describe("browser client", () => {
     );
   });
 
-  it("calls Claude command endpoints", async () => {
+  it("calls Bottle command endpoints through neutral and Claude-compatible aliases", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response(JSON.stringify({ command: { path: "review/fix.md", content: "Fix it", updatedAt: "now" } }), {
         status: 200,
@@ -187,11 +242,12 @@ describe("browser client", () => {
     });
     const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
 
-    await expect(client.saveClaudeCommand("s1", { path: "review/fix.md", content: "Fix it" })).resolves.toMatchObject({
+    await expect(client.saveCommand("s1", { path: "review/fix.md", content: "Fix it" })).resolves.toMatchObject({
       command: { path: "review/fix.md" }
     });
-    await client.getClaudeCommand("s1", "review/fix.md");
-    await client.deleteClaudeCommand("s1", "review/fix.md");
+    await client.getCommand("s1", "review/fix.md");
+    await client.deleteCommand("s1", "review/fix.md");
+    await client.saveClaudeCommand("s1", { path: "review/fix.md", content: "Fix it" });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -212,6 +268,14 @@ describe("browser client", () => {
       expect.objectContaining({
         method: "DELETE",
         body: JSON.stringify({ path: "review/fix.md" })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "https://api.example.com/v1/claude-commands",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
       })
     );
   });

@@ -11,6 +11,7 @@ describe("Bottle contract fixture", () => {
 
     expect(fixture.protocolVersion).toBe(BOTTLE_PROTOCOL_VERSION);
     expect(fixture.bottleInfo.protocolVersion).toBe(BOTTLE_PROTOCOL_VERSION);
+    expect(fixture.settingsResponse.availableAgentProviders).toEqual(["claude", "codex"]);
     expect(fixture.createSessionResponse).toMatchObject({ sessionId: "session-1", mode: "plan" });
     expect(fixture.listSessionsResponse.sessions[0]).not.toHaveProperty("workspacePath");
     expect(fixture.streamEvents.map((event: { event: string }) => event.event)).toEqual(["message", "result", "done"]);

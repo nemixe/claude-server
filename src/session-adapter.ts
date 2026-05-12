@@ -1,6 +1,7 @@
 import {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
+  type AgentDefinition,
   type SDKSession,
   type SDKSessionOptions
 } from "@anthropic-ai/claude-agent-sdk";
@@ -18,6 +19,9 @@ type SessionSystemPrompt =
 
 export type SessionOptions = SDKSessionOptions & {
   systemPrompt?: SessionSystemPrompt;
+  additionalDirectories?: string[];
+  plugins?: Array<{ type: "local"; path: string }>;
+  agents?: Record<string, AgentDefinition>;
 };
 export type SessionLike = SDKSession;
 
@@ -151,6 +155,9 @@ function createOptionSignature(options: SessionOptions): string {
     permissionMode: options.permissionMode,
     allowDangerouslySkipPermissions: options.allowDangerouslySkipPermissions ?? false,
     systemPrompt: options.systemPrompt,
+    additionalDirectories: options.additionalDirectories ?? [],
+    plugins: options.plugins ?? [],
+    agents: options.agents ?? {},
     env: options.env ?? {},
     disallowedTools: options.disallowedTools ?? []
   });

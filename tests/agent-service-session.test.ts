@@ -33,6 +33,22 @@ describe("buildSessionOptions", () => {
     expect(options).not.toHaveProperty("abortController");
     expect(options).not.toHaveProperty("enableFileCheckpointing");
     expect(options).not.toHaveProperty("persistSession");
+    expect(options).not.toHaveProperty("additionalDirectories");
+    expect(options).not.toHaveProperty("plugins");
+  });
+
+  it("adds the Bottle directory and Claude plugin only when they exist", async () => {
+    const config = await createTempConfig();
+    await fs.mkdir(path.join(config.bottleDir, ".claude-plugin"), { recursive: true });
+    await fs.writeFile(path.join(config.bottleDir, ".claude-plugin", "plugin.json"), "{}", "utf8");
+    const session = metadata(config.workspaceDir, { mode: "plan" });
+
+    const options = buildSessionOptions(config, session, { prompt: "hello", model: "claude-sonnet-4-6" });
+
+    expect(options).toMatchObject({
+      additionalDirectories: [config.bottleDir],
+      plugins: [{ type: "local", path: config.bottleDir }]
+    });
   });
 
   it("falls back to CLAUDE_MODEL and errors clearly when missing", async () => {
@@ -45,14 +61,16 @@ describe("buildSessionOptions", () => {
     expect(() => buildSessionOptions(missingModelConfig, session, { prompt: "hello" })).toThrow(/CLAUDE_MODEL/);
   });
 
-  it("appends project rules from .claude/rules to the Claude Code system prompt", async () => {
+  it("appends Bottle rules from .bottle/rules to the Claude Code system prompt and ignores .claude/rules", async () => {
     const config = await createTempConfig();
-    const rulesDir = path.join(config.projectRoot, ".claude", "rules");
+    const rulesDir = config.rulesDir;
     await fs.mkdir(path.join(rulesDir, "nested"), { recursive: true });
     await fs.writeFile(path.join(rulesDir, "02-component.md"), "Use existing components.", "utf8");
     await fs.writeFile(path.join(rulesDir, "01-development.md"), "Follow project conventions.", "utf8");
     await fs.writeFile(path.join(rulesDir, "nested", "03-api.txt"), "Keep API routes stable.", "utf8");
     await fs.writeFile(path.join(rulesDir, "ignore.json"), "Do not include this.", "utf8");
+    await fs.mkdir(path.join(config.projectRoot, ".claude", "rules"), { recursive: true });
+    await fs.writeFile(path.join(config.projectRoot, ".claude", "rules", "legacy.md"), "Ignore legacy rules.", "utf8");
     const session = metadata(config.workspaceDir);
 
     const options = buildSessionOptions(config, session, { prompt: "hello" });
@@ -67,13 +85,48 @@ describe("buildSessionOptions", () => {
     if (!systemPrompt || typeof systemPrompt !== "object" || !("append" in systemPrompt)) {
       throw new Error("Expected appended system prompt");
     }
-    expect(systemPrompt.append).toContain("Project-specific rules loaded from `.claude/rules`");
+    expect(systemPrompt.append).toContain("Bottle rules loaded from `rules`");
+    expect(systemPrompt.append).toContain("Bottle configuration and discovery are provided from `.bottle` and configured extra skill roots");
     expect(systemPrompt.append).toContain("## 01-development.md");
     expect(systemPrompt.append).toContain("Follow project conventions.");
     expect(systemPrompt.append).toContain("## 02-component.md");
     expect(systemPrompt.append).toContain("## nested/03-api.txt");
     expect(systemPrompt.append).not.toContain("ignore.json");
+    expect(systemPrompt.append).not.toContain("Ignore legacy rules.");
     expect(systemPrompt.append.indexOf("01-development.md")).toBeLessThan(systemPrompt.append.indexOf("02-component.md"));
+  });
+
+  it("loads valid Bottle agent definitions into Claude session options", async () => {
+    const config = await createTempConfig();
+    await fs.mkdir(config.agentsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(config.agentsDir, "api-reviewer.md"),
+      [
+        "---",
+        "name: api-reviewer",
+        "description: Reviews API changes",
+        "tools: Read, Grep",
+        "skills:",
+        "  - api-guidance",
+        "---",
+        "",
+        "You review API changes carefully."
+      ].join("\n"),
+      "utf8"
+    );
+    await fs.writeFile(path.join(config.agentsDir, "invalid.md"), "No metadata", "utf8");
+    const session = metadata(config.workspaceDir);
+
+    const options = buildSessionOptions(config, session, { prompt: "hello" });
+
+    expect(options.agents).toEqual({
+      "api-reviewer": expect.objectContaining({
+        description: "Reviews API changes",
+        prompt: "You review API changes carefully.",
+        tools: ["Read", "Grep"],
+        skills: ["api-guidance"]
+      })
+    });
   });
 
   it("reads persisted messages from the configured project root", async () => {
@@ -117,7 +170,7 @@ describe("AgentService with V2 sessions", () => {
 
   it("sends project rules in the prompt body so resumed sessions receive them", async () => {
     const config = await createTempConfig();
-    const rulesDir = path.join(config.projectRoot, ".claude", "rules");
+    const rulesDir = config.rulesDir;
     await fs.mkdir(rulesDir, { recursive: true });
     await fs.writeFile(path.join(rulesDir, "01-development.md"), "Always inspect the existing module pattern first.", "utf8");
     const mockSession = createMockSession("claude-rules", () => resultStream("claude-rules"));
@@ -152,7 +205,7 @@ describe("AgentService with V2 sessions", () => {
 
   it("includes project rules when cold-resuming a persisted Claude session", async () => {
     const config = await createTempConfig();
-    const rulesDir = path.join(config.projectRoot, ".claude", "rules");
+    const rulesDir = config.rulesDir;
     await fs.mkdir(rulesDir, { recursive: true });
     await fs.writeFile(path.join(rulesDir, "01-development.md"), "Keep generated modules consistent.", "utf8");
     const resumed = createMockSession("claude-rules-resume", () => resultStream("claude-rules-resume"));

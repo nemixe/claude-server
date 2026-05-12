@@ -14,7 +14,7 @@ import {
   type WorkspaceSearchResult
 } from "./types.js";
 
-const CLAUDE_COMMANDS_DIR = ".claude/commands";
+const BOTTLE_COMMANDS_DIR = ".bottle/commands";
 const DEFAULT_WORKSPACE_SEARCH_LIMIT = 50;
 const MAX_WORKSPACE_SEARCH_LIMIT = 200;
 const PROJECT_SEARCH_IGNORED_DIRS = new Set([".data", ".git", "dist", "node_modules"]);
@@ -196,7 +196,7 @@ export class SessionStore {
   }
 
   async listSharedClaudeCommands(): Promise<ClaudeCommand[]> {
-    const commandsPath = this.config.claudeCommandsDir;
+    const commandsPath = this.config.commandsDir;
     const files = await listMarkdownFiles(commandsPath);
     const commands = await Promise.all(
       files.map(async (relativePath) => this.readClaudeCommandFile(commandsPath, relativePath))
@@ -209,31 +209,31 @@ export class SessionStore {
 
   async readSharedClaudeCommand(commandPath: string): Promise<ClaudeCommand | undefined> {
     const relativePath = sanitizeClaudeCommandPath(commandPath);
-    return this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
+    return this.readClaudeCommandFile(this.config.commandsDir, relativePath);
   }
 
   async saveSharedClaudeCommand(command: ClaudeCommandInput): Promise<ClaudeCommand> {
     const relativePath = sanitizeClaudeCommandPath(command.path);
-    const targetPath = path.join(this.config.claudeCommandsDir, relativePath);
+    const targetPath = path.join(this.config.commandsDir, relativePath);
 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, command.content, "utf8");
 
-    const saved = await this.readClaudeCommandFile(this.config.claudeCommandsDir, relativePath);
+    const saved = await this.readClaudeCommandFile(this.config.commandsDir, relativePath);
     if (!saved) throw new Error(`Could not save Claude command: ${relativePath}`);
     return saved;
   }
 
   async deleteSharedClaudeCommand(commandPath: string): Promise<boolean> {
     const relativePath = sanitizeClaudeCommandPath(commandPath);
-    const targetPath = path.join(this.config.claudeCommandsDir, relativePath);
+    const targetPath = path.join(this.config.commandsDir, relativePath);
 
     let deleted = false;
     try {
       const stat = await fs.stat(targetPath);
       if (!stat.isFile()) return false;
       await fs.rm(targetPath, { force: true });
-      await pruneEmptyParents(path.dirname(targetPath), this.config.claudeCommandsDir);
+      await pruneEmptyParents(path.dirname(targetPath), this.config.commandsDir);
       deleted = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -378,9 +378,12 @@ export function sanitizeWorkspaceRelativePath(value: string): string {
 
 export function sanitizeClaudeCommandPath(value: string): string {
   const normalized = sanitizeWorkspaceRelativePath(value);
-  const withoutPrefix = normalized.startsWith(`${CLAUDE_COMMANDS_DIR}/`)
-    ? normalized.slice(CLAUDE_COMMANDS_DIR.length + 1)
+  const withoutBottlePrefix = normalized.startsWith(`${BOTTLE_COMMANDS_DIR}/`)
+    ? normalized.slice(BOTTLE_COMMANDS_DIR.length + 1)
     : normalized;
+  const withoutPrefix = withoutBottlePrefix.startsWith("commands/")
+    ? withoutBottlePrefix.slice("commands/".length)
+    : withoutBottlePrefix;
 
   if (
     !withoutPrefix ||
@@ -391,7 +394,7 @@ export function sanitizeClaudeCommandPath(value: string): string {
     path.posix.basename(withoutPrefix).startsWith(".") ||
     !withoutPrefix.endsWith(".md")
   ) {
-    throw new Error(`Invalid Claude command path: ${value}`);
+    throw new Error(`Invalid Bottle command path: ${value}`);
   }
 
   return withoutPrefix;

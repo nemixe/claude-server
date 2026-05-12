@@ -41,17 +41,20 @@ describe("CLI", () => {
     expect(stderr.text).toBe("");
     await expect(fs.stat(path.join(cwd, "app"))).resolves.toMatchObject({});
     const configFile = await fs.readFile(path.join(cwd, ".bottle", "bottle.config.mjs"), "utf8");
-    const envFile = await fs.readFile(path.join(cwd, ".bottle", "bottle.env"), "utf8");
     expect(configFile).toContain('"projectRoot": "../app"');
+    expect(configFile).toContain('"bottleDir": "."');
     expect(configFile).not.toContain("agentProvider");
     expect(configFile).toContain('"sessionDir": "../.bottle/sessions"');
     expect(configFile).not.toContain("workspaceDir");
-    expect(envFile).toContain("PROJECT_ROOT=../app");
-    expect(envFile).not.toContain("AGENT_PROVIDER");
-    expect(envFile).toContain("MAIN_APP_URL=http://localhost:3000");
-    expect(envFile).toContain("CODEX_SKIP_GIT_REPO_CHECK=true");
-    expect(envFile).not.toContain("WORKSPACE_DIR");
-    await expect(fs.readFile(path.join(cwd, ".bottle", "app.env"), "utf8")).resolves.toContain("APP_PORT=3000");
+    expect(configFile).not.toContain("clientOrigins");
+    expect(configFile).not.toContain("maxConcurrentRuns");
+    await expect(fs.stat(path.join(cwd, ".bottle", "bottle.env"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(cwd, ".bottle", "app.env"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(path.join(cwd, ".bottle", "agents"))).resolves.toMatchObject({});
+    await expect(fs.stat(path.join(cwd, ".bottle", "commands"))).resolves.toMatchObject({});
+    await expect(fs.stat(path.join(cwd, ".bottle", "rules"))).resolves.toMatchObject({});
+    await expect(fs.stat(path.join(cwd, ".bottle", "skills"))).resolves.toMatchObject({});
+    await expect(fs.readFile(path.join(cwd, ".bottle", ".codex-plugin", "plugin.json"), "utf8")).resolves.toContain('"commands": "./commands/"');
     await expect(fs.stat(path.join(cwd, ".bottle", "runtime", "dist", "cli.js"))).resolves.toMatchObject({});
     await expect(fs.readFile(path.join(cwd, ".bottle", "runtime", "package.json"), "utf8")).resolves.toContain('"name": "bottle"');
     const startScript = await fs.readFile(path.join(cwd, ".bottle", "scripts", "start-bottle.mjs"), "utf8");
@@ -60,11 +63,13 @@ describe("CLI", () => {
     expect(startScript).not.toContain('spawn("bottle"');
     expect(startScript).toContain('["SIGINT", "SIGTERM", "SIGHUP"]');
     expect(startScript).toContain("child.kill(signal)");
+    await expect(fs.stat(path.join(cwd, ".bottle", "runtime", ".env.example"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8")).resolves.toContain(
       "/v1/* -> http://127.0.0.1:3001/v1/*"
     );
     expect(stdout.text).toContain("Created Bottle integration for prototype-a");
-    expect(stdout.text).toContain(".bottle/bottle.env");
+    expect(stdout.text).not.toContain(".bottle/bottle.env");
+    expect(stdout.text).not.toContain(".bottle/app.env");
     expect(stdout.text).toContain(".bottle/runtime");
   });
 
@@ -144,7 +149,7 @@ describe("CLI", () => {
     expect(code).toBe(0);
     await expect(fs.readFile(path.join(bundle, "app", "src", "index.js"), "utf8")).resolves.toContain("console.log");
     await expect(fs.stat(path.join(bundle, "app", "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.readFile(path.join(bundle, ".bottle", "bottle.env"), "utf8")).resolves.toContain("PROJECT_ROOT=../app");
+    await expect(fs.readFile(path.join(bundle, ".bottle", "bottle.config.mjs"), "utf8")).resolves.toContain('"projectRoot": "../app"');
     expect(stderr.text).toBe("");
   });
 
@@ -186,6 +191,7 @@ async function createFakeBottleRuntime(root: string): Promise<string> {
     ),
     "utf8"
   );
+  await fs.writeFile(path.join(runtimeRoot, ".env.example"), "SHOULD_NOT_BE_VENDORED=true\n", "utf8");
   await fs.writeFile(
     path.join(runtimeRoot, "dist", "cli.js"),
     [

@@ -30,6 +30,8 @@ const DEFAULT_BOTTLE_DIR = ".bottle";
 const DEFAULT_MAIN_APP_URL = "http://localhost:3000";
 const RUNTIME_DIR_NAME = "runtime";
 const RUNTIME_SOURCE_ENV = "BOTTLE_RUNTIME_SOURCE_DIR";
+const DISCOVERY_DIR_NAMES = ["agents", "commands", "rules", "skills"] as const;
+const SKIPPED_COPY_SEGMENTS = new Set([".git", "node_modules", ".data"]);
 
 export async function runCli(argv = process.argv.slice(2), options: CliOptions = {}): Promise<number> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
@@ -84,17 +86,18 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
   const projectRootConfigValue = relativePath(bottleDir, projectRoot);
   const sessionDir = relativePath(projectRoot, path.join(bottleDir, "sessions"));
   const configPath = path.join(bottleDir, "bottle.config.mjs");
-  const envPath = path.join(bottleDir, "bottle.env");
-  const appEnvPath = path.join(bottleDir, "app.env");
   const scriptsDir = path.join(bottleDir, "scripts");
   const startScriptPath = path.join(scriptsDir, "start-bottle.mjs");
   const docsPath = path.join(bottleDir, "README.md");
+  const pluginManifestPath = path.join(bottleDir, ".codex-plugin", "plugin.json");
+  const discoveryDirs = DISCOVERY_DIR_NAMES.map((dirName) => path.join(bottleDir, dirName));
 
   await fs.mkdir(bundleRoot, { recursive: true });
   await prepareProjectRoot(projectRoot, copyFrom, force);
   await fs.mkdir(bottleDir, { recursive: true });
   await fs.mkdir(scriptsDir, { recursive: true });
-  await ensureCanWrite([configPath, envPath, appEnvPath, startScriptPath, docsPath, ...(vendorRuntime ? [runtimeDir] : [])], force);
+  await ensureCanWrite([configPath, startScriptPath, docsPath, pluginManifestPath, ...(vendorRuntime ? [runtimeDir] : [])], force);
+  await Promise.all([fs.mkdir(path.dirname(pluginManifestPath), { recursive: true }), ...discoveryDirs.map((dirPath) => fs.mkdir(dirPath, { recursive: true }))]);
   if (vendorRuntime) {
     await vendorBottleRuntime(runtimeSourceRoot, runtimeDir, force);
   }
@@ -106,26 +109,14 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
       port,
       bindHost,
       projectRoot: projectRootConfigValue,
+      bottleDir: ".",
       allowedHostnames,
       mainAppUrl,
       sessionDir
     }),
     "utf8"
   );
-  await fs.writeFile(
-    envPath,
-    renderEnvFile({
-      name,
-      port,
-      bindHost,
-      projectRoot: projectRootConfigValue,
-      allowedHostnames,
-      mainAppUrl,
-      sessionDir
-    }),
-    "utf8"
-  );
-  await fs.writeFile(appEnvPath, renderAppEnvFile(), "utf8");
+  await fs.writeFile(pluginManifestPath, renderBottlePluginManifest(name), "utf8");
   await fs.writeFile(
     startScriptPath,
     renderStartScript({
@@ -143,9 +134,8 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
       projectRoot: projectRootConfigValue,
       mainAppUrl,
       configPath: path.relative(bundleRoot, configPath),
-      envPath: path.relative(bundleRoot, envPath),
-      appEnvPath: path.relative(bundleRoot, appEnvPath),
       startScriptPath: path.relative(bundleRoot, startScriptPath),
+      discoveryPaths: discoveryDirs.map((dirPath) => path.relative(bundleRoot, dirPath)),
       runtimePath: vendorRuntime ? path.relative(bundleRoot, runtimeDir) : undefined
     }),
     "utf8"
@@ -153,10 +143,9 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
 
   writeLine(options.stdout, `Created Bottle integration for ${name}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, configPath)}`);
-  writeLine(options.stdout, `- ${path.relative(options.cwd, envPath)}`);
-  writeLine(options.stdout, `- ${path.relative(options.cwd, appEnvPath)}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, startScriptPath)}`);
   writeLine(options.stdout, `- ${path.relative(options.cwd, docsPath)}`);
+  for (const dirPath of discoveryDirs) writeLine(options.stdout, `- ${path.relative(options.cwd, dirPath)}`);
   if (vendorRuntime) writeLine(options.stdout, `- ${path.relative(options.cwd, runtimeDir)}`);
 }
 
@@ -289,7 +278,7 @@ function shouldSkipCopiedPath(root: string, sourcePath: string): boolean {
   const relative = path.relative(root, sourcePath);
   if (!relative) return false;
   const segments = relative.split(path.sep);
-  return segments.some((segment) => segment === ".git" || segment === "node_modules" || segment === ".data");
+  return segments.some((segment) => SKIPPED_COPY_SEGMENTS.has(segment));
 }
 
 function runtimeSourceRootFromEnv(env: NodeJS.ProcessEnv): string {
@@ -323,7 +312,6 @@ async function vendorBottleRuntime(sourceRoot: string, runtimeDir: string, force
   });
   await fs.copyFile(packageJsonPath, path.join(runtimeDir, "package.json"));
   await copyRuntimeMetadataFile(sourceRoot, runtimeDir, "README.md");
-  await copyRuntimeMetadataFile(sourceRoot, runtimeDir, ".env.example");
 
   const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string> };
   const dependencyNames = Object.keys(packageJson.dependencies ?? {});
@@ -439,73 +427,58 @@ function renderConfigFile(input: {
   port: number;
   bindHost: string;
   projectRoot: string;
+  bottleDir: string;
   allowedHostnames: string[];
   mainAppUrl?: string;
   sessionDir: string;
 }): string {
-  return `export default ${JSON.stringify(
+  const config: Record<string, unknown> = {
+    bottleName: input.name,
+    port: input.port,
+    projectRoot: input.projectRoot,
+    bottleDir: input.bottleDir,
+    ...(input.mainAppUrl ? { mainAppUrl: input.mainAppUrl } : {}),
+    sessionDir: input.sessionDir,
+    claudeModel: DEFAULT_MODEL
+  };
+
+  if (input.bindHost !== "0.0.0.0") {
+    config.bindHost = input.bindHost;
+  }
+  if (input.allowedHostnames.join(",") !== DEFAULT_ALLOWED_HOSTNAMES.join(",")) {
+    config.allowedHostnames = input.allowedHostnames;
+  }
+
+  return `export default ${JSON.stringify(config, null, 2)};
+`;
+}
+
+function renderBottlePluginManifest(name: string): string {
+  return `${JSON.stringify(
     {
-      bottleName: input.name,
-      port: input.port,
-      bindHost: input.bindHost,
-      projectRoot: input.projectRoot,
-      allowedHostnames: input.allowedHostnames,
-      ...(input.mainAppUrl ? { mainAppUrl: input.mainAppUrl } : {}),
-      clientOrigins: ["http://localhost:5173", "http://127.0.0.1:5173"],
-      sessionDir: input.sessionDir,
-      maxConcurrentRuns: 4,
-      maxTurns: 30,
-      claudeModel: DEFAULT_MODEL
+      name: `${name}-bottle`,
+      version: "0.1.0",
+      description: "Bottle-local agent discovery for commands, rules, agents, and skills.",
+      author: {
+        name: "Bottle"
+      },
+      license: "UNLICENSED",
+      agents: "./agents/",
+      commands: "./commands/",
+      skills: "./skills/",
+      interface: {
+        displayName: "Bottle Local Discovery",
+        shortDescription: "Project-local Bottle agent context",
+        longDescription: "Loads Bottle-local commands, agents, rules, and skills from the generated .bottle folder.",
+        developerName: "Bottle",
+        category: "Coding",
+        capabilities: ["Interactive", "Write"],
+        defaultPrompt: ["Use the Bottle-local discovery folders for this project."]
+      }
     },
     null,
     2
-  )};
-`;
-}
-
-function renderEnvFile(input: {
-  name: string;
-  port: number;
-  bindHost: string;
-  projectRoot: string;
-  allowedHostnames: string[];
-  mainAppUrl?: string;
-  sessionDir: string;
-}): string {
-  return `BOTTLE_NAME=${input.name}
-PORT=${input.port}
-BIND_HOST=${input.bindHost}
-ALLOWED_HOSTNAMES=${input.allowedHostnames.join(",")}
-TRUST_PROXY=false
-CLIENT_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-MAIN_APP_URL=${input.mainAppUrl ?? ""}
-BOTTLE_API_TOKEN=
-BOTTLE_API_TOKEN_REQUIRED=false
-PROJECT_ROOT=${input.projectRoot}
-SESSION_DIR=${input.sessionDir}
-CLAUDE_MODEL=${DEFAULT_MODEL}
-CODEX_MODEL=
-CODEX_API_KEY=
-CODEX_BASE_URL=
-CODEX_PATH=
-CODEX_REASONING_EFFORT=
-CODEX_NETWORK_ACCESS=false
-CODEX_SKIP_GIT_REPO_CHECK=true
-MAX_CONCURRENT_RUNS=4
-MAX_TURNS=30
-MAX_BUDGET_USD=1
-RUN_TIMEOUT_MS=600000
-SANDBOX_ALLOWED_DOMAINS=api.anthropic.com,claude.ai,statsig.anthropic.com
-SESSION_IDLE_TTL_MS=300000
-`;
-}
-
-function renderAppEnvFile(): string {
-  return `APP_HOST=127.0.0.1
-APP_PORT=3000
-APP_START_COMMAND=
-APP_ENV_FILE=../app/.env
-`;
+  )}\n`;
 }
 
 function renderStartScript(input: { configPath: string; runtimeCliPath?: string }): string {
@@ -562,9 +535,8 @@ function renderIntegrationDocs(input: {
   projectRoot: string;
   mainAppUrl?: string;
   configPath: string;
-  envPath: string;
-  appEnvPath: string;
   startScriptPath: string;
+  discoveryPaths: string[];
   runtimePath?: string;
 }): string {
   const startCommand = input.runtimePath
@@ -575,6 +547,9 @@ bottle start --config ${input.configPath}`;
   const runtimeDescription = input.runtimePath
     ? `- \`${input.runtimePath}\` - vendored Bottle runtime used by the start script.`
     : "- Runtime is not vendored; this bundle expects `bottle` to be available on PATH.";
+  const discoveryDescription = input.discoveryPaths
+    .map((dirPath) => `- \`${dirPath}\` - Bottle-local ${path.basename(dirPath)} discovery folder.`)
+    .join("\n");
 
   return `# Bottle Integration
 
@@ -588,23 +563,27 @@ ${startCommand}
 
 ## Generated Files
 
-- \`${input.configPath}\` - typed config for this backend instance.
-- \`${input.envPath}\` - Bottle env-file equivalent for process managers.
-- \`${input.appEnvPath}\` - optional app launcher/env notes.
+- \`${input.configPath}\` - customize this backend instance here.
 - \`${input.startScriptPath}\` - standalone start script.
+${discoveryDescription}
 ${runtimeDescription}
+
+Use \`${input.configPath}\` for local customization such as ports, project paths, the main app URL, model selection, auth settings, and extra Codex skill roots via \`extraSkillRoots\`.
 
 The generated start script only requires Node.js. It does not require a global Bottle install unless this bundle was created with \`--no-vendor-runtime\`.
 
+Codex skill discovery uses a compact manifest from \`.bottle/skills\` plus any configured \`extraSkillRoots\`; local skills take precedence when names collide.
+
 ## Frontend Proxy
 
-Proxy the standard API to this instance:
+Proxy the standard API and bridge paths to this instance:
 
 \`\`\`txt
 /v1/* -> http://127.0.0.1:${input.port}/v1/*
+/bottle-bridge.js -> http://127.0.0.1:${input.port}/bottle-bridge.js
 \`\`\`
 
-Main app URL advertised to the AI client:
+In conditional-root mode, route public root requests without the \`bottle_target_app_url\` cookie to AI Client, and route requests with that cookie to the main app:
 
 \`\`\`txt
 ${input.mainAppUrl ?? "(not configured)"}

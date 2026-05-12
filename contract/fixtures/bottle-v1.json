@@ -4,19 +4,32 @@
     "protocolVersion": 1,
     "name": "prototype-a",
     "apiBaseUrl": "http://localhost:3001",
-    "appUrl": "http://localhost:3000",
+    "mainAppUrl": "http://localhost:3001",
     "defaultAgentProvider": "claude",
     "availableAgentProviders": ["claude", "codex"],
     "features": {
       "mainApp": true,
+      "mainAppProxy": true,
+      "mainAppDirect": true,
+      "clientAtRoot": true,
       "iframeBridge": true,
       "sessions": true,
       "streaming": true,
       "settings": true,
       "claudeCommands": true,
+      "agents": true,
+      "commands": true,
+      "rules": true,
+      "skills": true,
       "workspaceSearch": true,
       "authToken": false
     }
+  },
+  "settingsResponse": {
+    "maxConcurrentRuns": 4,
+    "maxTurns": 30,
+    "defaultAgentProvider": "claude",
+    "availableAgentProviders": ["claude", "codex"]
   },
   "createSessionResponse": {
     "id": "session-1",

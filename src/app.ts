@@ -1,7 +1,14 @@
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
+import { streamSSE, type SSEStreamingApi } from "hono/streaming";
 import { z } from "zod";
-import { AgentService, ConcurrencyLimitError, isPendingInterruptPayloadValid, ValidationErrorLimitError } from "./agent-service.js";
+import {
+  AgentService,
+  ConcurrencyLimitError,
+  isPendingInterruptPayloadValid,
+  RunAbortedError,
+  RunTimeoutError,
+  ValidationErrorLimitError
+} from "./agent-service.js";
 import {
   bottleInfoForRequest,
   createBottleAuthMiddleware,
@@ -9,6 +16,7 @@ import {
   registerBottleRoutes
 } from "./bottle.js";
 import type { AppConfig } from "./config.js";
+import { registerGatewayRoutes } from "./gateway.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { createSessionFactory, MissingClaudeSessionIdError } from "./session-adapter.js";
 import { SessionStore } from "./session-store.js";
@@ -24,6 +32,7 @@ import {
   type PromptImage,
   type PublicSession,
   type RootInfoResponse,
+  type SettingsResponse,
   type SessionMetadata,
   type StreamMessageRequest
 } from "./types.js";
@@ -31,6 +40,7 @@ import {
 const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
 const MAX_PROMPT_IMAGES = 5;
 const MAX_PROMPT_IMAGE_BYTES = 5 * 1024 * 1024;
+export const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 
 export type AppDependencies = {
   config: AppConfig;
@@ -38,6 +48,31 @@ export type AppDependencies = {
   agentService?: AgentService;
   settingsStore?: SettingsStore;
 };
+
+type HeartbeatStream = Pick<SSEStreamingApi, "aborted" | "closed"> & {
+  write: (input: string) => Promise<unknown>;
+};
+
+export async function withSseHeartbeat<T>(
+  stream: HeartbeatStream,
+  callback: () => Promise<T>,
+  intervalMs = SSE_HEARTBEAT_INTERVAL_MS
+): Promise<T> {
+  const heartbeat = setInterval(() => {
+    if (stream.aborted || stream.closed) return;
+    void stream.write(": keep-alive\n\n");
+  }, intervalMs);
+
+  if (typeof heartbeat === "object" && "unref" in heartbeat && typeof heartbeat.unref === "function") {
+    heartbeat.unref();
+  }
+
+  try {
+    return await callback();
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
 
 const createSessionSchema = z.object({
   mode: z.enum(CLAUDE_MODES).default("bypass"),
@@ -153,6 +188,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   const persisted = await settingsStore.load();
   agentService.setMaxConcurrentRuns(persisted.maxConcurrentRuns);
   agentService.setMaxTurns(persisted.maxTurns);
+  dependencies.config.defaultAgentProvider = persisted.defaultAgentProvider;
 
   app.use("*", createHostnameGate(dependencies.config));
   app.use("*", createClientAccessMiddleware(dependencies.config));
@@ -164,19 +200,23 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
   });
 
   app.get("/v1/bottle", (c) => {
-    return c.json(bottleInfoForRequest(dependencies.config, c.req.url));
+    return c.json(bottleInfoForRequest(dependencies.config, c.req.url, c.req.raw.headers));
   });
 
   app.get("/v1/settings", (c) => {
-    return c.json({
-      maxConcurrentRuns: agentService.getMaxConcurrentRuns(),
-      maxTurns: agentService.getMaxTurns()
-    });
+    return c.json(settingsResponse(dependencies.config, agentService));
   });
 
   app.get("/v1/root", (c) => {
     const rootInfo: RootInfoResponse = {
       projectRoot: dependencies.config.projectRoot,
+      bottleDir: dependencies.config.bottleDir,
+      agentsDir: dependencies.config.agentsDir,
+      commandsDir: dependencies.config.commandsDir,
+      rulesDir: dependencies.config.rulesDir,
+      skillsDir: dependencies.config.skillsDir,
+      extraSkillRoots: dependencies.config.extraSkillRoots,
+      skillRoots: dependencies.config.skillRoots,
       claudeCommandsDir: dependencies.config.claudeCommandsDir
     };
     return c.json(rootInfo);
@@ -195,7 +235,8 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     const body = z
       .object({
         maxConcurrentRuns: z.number().int().min(1).max(64).optional(),
-        maxTurns: z.number().int().min(1).max(200).optional()
+        maxTurns: z.number().int().min(1).max(200).optional(),
+        defaultAgentProvider: z.enum(AGENT_PROVIDERS).optional()
       })
       .parse(await c.req.json().catch(() => ({})));
 
@@ -205,15 +246,19 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     if (body.maxTurns !== undefined) {
       agentService.setMaxTurns(body.maxTurns);
     }
+    if (body.defaultAgentProvider !== undefined) {
+      dependencies.config.defaultAgentProvider = body.defaultAgentProvider;
+    }
 
     const settings = await settingsStore.save({
       maxConcurrentRuns: agentService.getMaxConcurrentRuns(),
-      maxTurns: agentService.getMaxTurns()
+      maxTurns: agentService.getMaxTurns(),
+      defaultAgentProvider: dependencies.config.defaultAgentProvider
     });
 
     return c.json({
-      maxConcurrentRuns: settings.maxConcurrentRuns,
-      maxTurns: settings.maxTurns
+      ...settings,
+      availableAgentProviders: [...AGENT_PROVIDERS]
     });
   });
 
@@ -304,21 +349,23 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     const observation = agentService.observe(session.id);
 
     return streamSSE(c, async (stream) => {
-      await stream.writeSSE({
-        event: "status",
-        data: JSON.stringify({ running: observation.running })
-      });
-
-      for await (const event of observation.events) {
+      await withSseHeartbeat(stream, async () => {
         await stream.writeSSE({
-          event: event.type,
-          data: JSON.stringify(event.data)
+          event: "status",
+          data: JSON.stringify({ running: observation.running })
         });
-      }
 
-      await stream.writeSSE({
-        event: "done",
-        data: JSON.stringify({ observing: false })
+        for await (const event of observation.events) {
+          await stream.writeSSE({
+            event: event.type,
+            data: JSON.stringify(event.data)
+          });
+        }
+
+        await stream.writeSSE({
+          event: "done",
+          data: JSON.stringify({ observing: false })
+        });
       });
     });
   });
@@ -345,87 +392,92 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     if (session.pendingInterrupt && !request.toolResult) {
       const pendingEvent = pendingEventFromSessionInterrupt(session.pendingInterrupt);
       return streamSSE(c, async (stream) => {
-        await stream.writeSSE({
-          event: pendingEvent.type,
-          data: JSON.stringify(pendingEvent.data)
-        });
-        await stream.writeSSE({
-          event: "done",
-          data: JSON.stringify(donePayloadForPendingEvent(pendingEvent.type))
+        await withSseHeartbeat(stream, async () => {
+          await stream.writeSSE({
+            event: pendingEvent.type,
+            data: JSON.stringify(pendingEvent.data)
+          });
+          await stream.writeSSE({
+            event: "done",
+            data: JSON.stringify(donePayloadForPendingEvent(pendingEvent.type))
+          });
         });
       });
     }
 
     return streamSSE(c, async (stream) => {
-      let sessionMarkedAsRun = false;
-      let persistedAgentSessionId = session.agentSessionId ?? session.claudeSessionId;
-      let waitingForUserQuestion = false;
-      let waitingForApproval = false;
-      if (providerForSession(dependencies.config, session) === "codex") {
-        await sessionStore.appendAgentMessages(session.id, [userMessageFromRequest(session, request)]);
-      }
-      try {
-        for await (const event of agentService.stream({
-          session,
-          request,
-          onAgentSessionId: async (agentSessionId) => {
-            if (persistedAgentSessionId === agentSessionId) return;
-            await sessionStore.setAgentSessionId(session.id, agentSessionId);
-            session.agentSessionId = agentSessionId;
-            if (providerForSession(dependencies.config, session) === "claude") session.claudeSessionId = agentSessionId;
-            persistedAgentSessionId = agentSessionId;
-          }
-        })) {
-          if (!sessionMarkedAsRun) {
-            await sessionStore.markRun(session.id);
-            session.hasRun = true;
-            sessionMarkedAsRun = true;
-          }
-          if (event.type === "question_pending") waitingForUserQuestion = true;
-          if (event.type === "approval_pending") waitingForApproval = true;
-          if (event.type === "result" && event.data && typeof event.data === "object") {
-            const cost = (event.data as { total_cost_usd?: unknown }).total_cost_usd;
-            if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
-              session.costUsd = cost;
-              await sessionStore.setCost(session.id, cost);
+      await withSseHeartbeat(stream, async () => {
+        let sessionMarkedAsRun = false;
+        let persistedAgentSessionId = session.agentSessionId ?? session.claudeSessionId;
+        let waitingForUserQuestion = false;
+        let waitingForApproval = false;
+        if (providerForSession(dependencies.config, session) === "codex") {
+          await sessionStore.appendAgentMessages(session.id, [userMessageFromRequest(session, request)]);
+        }
+        try {
+          for await (const event of agentService.stream({
+            session,
+            request,
+            signal: c.req.raw.signal,
+            onAgentSessionId: async (agentSessionId) => {
+              if (persistedAgentSessionId === agentSessionId) return;
+              await sessionStore.setAgentSessionId(session.id, agentSessionId);
+              session.agentSessionId = agentSessionId;
+              if (providerForSession(dependencies.config, session) === "claude") session.claudeSessionId = agentSessionId;
+              persistedAgentSessionId = agentSessionId;
             }
+          })) {
+            if (!sessionMarkedAsRun) {
+              await sessionStore.markRun(session.id);
+              session.hasRun = true;
+              sessionMarkedAsRun = true;
+            }
+            if (event.type === "question_pending") waitingForUserQuestion = true;
+            if (event.type === "approval_pending") waitingForApproval = true;
+            if (event.type === "result" && event.data && typeof event.data === "object") {
+              const cost = (event.data as { total_cost_usd?: unknown }).total_cost_usd;
+              if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
+                session.costUsd = cost;
+                await sessionStore.setCost(session.id, cost);
+              }
+            }
+            if (event.type === "question_pending" || event.type === "approval_pending") {
+              await sessionStore.save(session);
+            }
+            if (providerForSession(dependencies.config, session) === "codex" && event.type === "message") {
+              await sessionStore.appendAgentMessages(session.id, [event.data]);
+            }
+
+            await stream.writeSSE({
+              event: event.type,
+              data: JSON.stringify(event.data)
+            });
           }
-          if (event.type === "question_pending" || event.type === "approval_pending") {
+
+          if (!waitingForUserQuestion && !waitingForApproval) {
+            session.status = "done";
+            delete session.pendingInterrupt;
             await sessionStore.save(session);
           }
-          if (providerForSession(dependencies.config, session) === "codex" && event.type === "message") {
-            await sessionStore.appendAgentMessages(session.id, [event.data]);
-          }
 
+          await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true, waitingForUserQuestion, waitingForApproval }) });
+        } catch (error) {
+          session.status = "failed";
+          await sessionStore.save(session).catch(() => undefined);
+          const status =
+            error instanceof ConcurrencyLimitError
+              ? "concurrency_limit"
+              : error instanceof ValidationErrorLimitError
+                ? error.code
+                : error instanceof MissingClaudeSessionIdError || error instanceof RunTimeoutError || error instanceof RunAbortedError
+                  ? error.code
+                  : "agent_error";
           await stream.writeSSE({
-            event: event.type,
-            data: JSON.stringify(event.data)
+            event: "error",
+            data: JSON.stringify({ error: { code: status, message: errorMessage(error) } })
           });
         }
-
-        if (!waitingForUserQuestion && !waitingForApproval) {
-          session.status = "done";
-          delete session.pendingInterrupt;
-          await sessionStore.save(session);
-        }
-
-        await stream.writeSSE({ event: "done", data: JSON.stringify({ ok: true, waitingForUserQuestion, waitingForApproval }) });
-      } catch (error) {
-        session.status = "failed";
-        await sessionStore.save(session).catch(() => undefined);
-        const status =
-          error instanceof ConcurrencyLimitError
-            ? "concurrency_limit"
-            : error instanceof ValidationErrorLimitError
-              ? error.code
-              : error instanceof MissingClaudeSessionIdError
-                ? error.code
-                : "agent_error";
-        await stream.writeSSE({
-          event: "error",
-          data: JSON.stringify({ error: { code: status, message: errorMessage(error) } })
-        });
-      }
+      });
     });
   });
 
@@ -451,6 +503,8 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     if (!deleted) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
     return c.json({ deleted: true });
   });
+
+  registerGatewayRoutes(app, dependencies.config);
 
   app.onError((error, c) => {
     if (error instanceof z.ZodError) {
@@ -591,6 +645,15 @@ function toPublicSession(session: SessionMetadata): PublicSession {
     updatedAt: session.updatedAt,
     hasRun: session.hasRun,
     costUsd: session.costUsd
+  };
+}
+
+function settingsResponse(config: AppConfig, agentService: AgentService): SettingsResponse {
+  return {
+    maxConcurrentRuns: agentService.getMaxConcurrentRuns(),
+    maxTurns: agentService.getMaxTurns(),
+    defaultAgentProvider: config.defaultAgentProvider,
+    availableAgentProviders: [...AGENT_PROVIDERS]
   };
 }
 

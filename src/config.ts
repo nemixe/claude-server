@@ -11,6 +11,10 @@ export type AppConfig = {
   bottleName: string;
   defaultAgentProvider: AgentProvider;
   mainAppUrl?: string;
+  clientAppUrl?: string;
+  clientAppPath: "/";
+  mainAppProxy: boolean;
+  mainAppDirect: boolean;
   projectRoot: string;
   port: number;
   bindHost: string;
@@ -19,6 +23,13 @@ export type AppConfig = {
   clientOrigins: string[];
   bottleApiToken?: string;
   bottleApiTokenRequired: boolean;
+  bottleDir: string;
+  agentsDir: string;
+  commandsDir: string;
+  rulesDir: string;
+  skillsDir: string;
+  extraSkillRoots: string[];
+  skillRoots: string[];
   claudeCommandsDir: string;
   workspaceDir: string;
   sessionDir: string;
@@ -55,8 +66,13 @@ const RawEnvSchema = z.object({
   CLIENT_ORIGINS: z.string().optional(),
   MAIN_APP_URL: z.string().optional(),
   APP_URL: z.string().optional(),
+  CLIENT_APP_URL: z.string().optional(),
+  MAIN_APP_PROXY: z.string().optional(),
+  MAIN_APP_DIRECT: z.string().optional(),
   BOTTLE_API_TOKEN: z.string().optional(),
   BOTTLE_API_TOKEN_REQUIRED: z.string().optional(),
+  BOTTLE_DIR: z.string().optional(),
+  BOTTLE_EXTRA_SKILL_ROOTS: z.string().optional(),
   NODE_ENV: z.string().optional(),
   WORKSPACE_DIR: z.string().optional(),
   SESSION_DIR: z.string().optional(),
@@ -95,11 +111,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
   if (bottleApiTokenRequired && !bottleApiToken) {
     throw new Error("BOTTLE_API_TOKEN is required when BOTTLE_API_TOKEN_REQUIRED is true");
   }
+  const bottleDir = resolveBottleDir(raw.BOTTLE_DIR, projectRoot, cwd);
+  const commandsDir = path.join(bottleDir, "commands");
+  const skillsDir = path.join(bottleDir, "skills");
+  const extraSkillRoots = resolveExtraSkillRoots(raw.BOTTLE_EXTRA_SKILL_ROOTS, cwd);
+  const mainAppUrl = normalizeOptionalUrl(raw.MAIN_APP_URL ?? raw.APP_URL, "MAIN_APP_URL");
+  const mainAppProxy = parseBoolean(raw.MAIN_APP_PROXY, Boolean(mainAppUrl), "MAIN_APP_PROXY");
+  const mainAppDirect = mainAppProxy && parseBoolean(raw.MAIN_APP_DIRECT, true, "MAIN_APP_DIRECT");
+  if (mainAppProxy && !mainAppUrl) {
+    throw new Error("MAIN_APP_URL is required when MAIN_APP_PROXY is true");
+  }
 
   return {
     bottleName: normalizeOptionalString(raw.BOTTLE_NAME) ?? normalizeOptionalString(raw.CLAUDE_SERVER_INSTANCE) ?? "bottle",
     defaultAgentProvider: parseAgentProvider(raw.AGENT_PROVIDER),
-    mainAppUrl: normalizeOptionalUrl(raw.MAIN_APP_URL ?? raw.APP_URL, "MAIN_APP_URL"),
+    mainAppUrl,
+    clientAppUrl: normalizeOptionalUrl(raw.CLIENT_APP_URL ?? "http://localhost:5173", "CLIENT_APP_URL"),
+    clientAppPath: "/",
+    mainAppProxy,
+    mainAppDirect,
     projectRoot,
     port: parseInteger(raw.PORT, 3001, "PORT"),
     bindHost: raw.BIND_HOST ?? "0.0.0.0",
@@ -108,13 +138,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
     clientOrigins: parseOrigins(raw.CLIENT_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173"),
     bottleApiToken,
     bottleApiTokenRequired,
-    claudeCommandsDir: resolveFromRoot(".claude/commands", projectRoot),
+    bottleDir,
+    agentsDir: path.join(bottleDir, "agents"),
+    commandsDir,
+    rulesDir: path.join(bottleDir, "rules"),
+    skillsDir,
+    extraSkillRoots,
+    skillRoots: [skillsDir, ...extraSkillRoots],
+    claudeCommandsDir: commandsDir,
     workspaceDir: resolveFromRoot(raw.WORKSPACE_DIR ?? ".data/workspaces", projectRoot),
     sessionDir: resolveFromRoot(raw.SESSION_DIR ?? ".data/sessions", projectRoot),
     maxConcurrentRuns: parseInteger(raw.MAX_CONCURRENT_RUNS, 4, "MAX_CONCURRENT_RUNS"),
     maxTurns: parseInteger(raw.MAX_TURNS, 30, "MAX_TURNS"),
     maxBudgetUsd: parseNumber(raw.MAX_BUDGET_USD, 1, "MAX_BUDGET_USD"),
-    runTimeoutMs: parseInteger(raw.RUN_TIMEOUT_MS, 600_000, "RUN_TIMEOUT_MS"),
+    runTimeoutMs: parseInteger(raw.RUN_TIMEOUT_MS, 3_600_000, "RUN_TIMEOUT_MS"),
     sandboxAllowedDomains: parseCsv(raw.SANDBOX_ALLOWED_DOMAINS ?? "api.anthropic.com,claude.ai,statsig.anthropic.com"),
     sessionIdleTtlMs: parsePositiveInteger(raw.SESSION_IDLE_TTL_MS, 300_000, "SESSION_IDLE_TTL_MS"),
     defaultModel: normalizeOptionalString(raw.CLAUDE_MODEL),
@@ -162,6 +199,18 @@ function resolveExistingProjectRoot(value: string, cwd: string): string {
 
 function resolveFromRoot(value: string, root: string): string {
   return path.isAbsolute(value) ? path.resolve(value) : path.resolve(root, value);
+}
+
+function resolveBottleDir(value: string | undefined, projectRoot: string, cwd: string): string {
+  const normalized = normalizeOptionalString(value);
+  if (normalized) {
+    return path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
+  }
+  return path.join(projectRoot, ".bottle");
+}
+
+function resolveExtraSkillRoots(value: string | undefined, cwd: string): string[] {
+  return parseCsv(value ?? "").map((entry) => resolveFromRoot(entry, cwd));
 }
 
 function parseCsv(value: string): string[] {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getSessionMessages, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, type AgentDefinition, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   Codex,
   type CodexOptions,
@@ -33,6 +33,7 @@ export type AgentSdkAdapter = {
 export type AgentRunInput = {
   session: SessionMetadata;
   request: StreamMessageRequest;
+  signal?: AbortSignal;
   onAgentSessionId?: (agentSessionId: string) => void | Promise<void>;
   onClaudeSessionId?: (claudeSessionId: string) => void | Promise<void>;
 };
@@ -74,8 +75,12 @@ export type ToolOutcome =
 export const MAX_CONSECUTIVE_VALIDATION_ERRORS = 3;
 
 const TOOL_USE_ERROR_PATTERN = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/i;
-const CLAUDE_RULES_DIR = ".claude/rules";
-const CLAUDE_RULE_FILE_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
+const BOTTLE_RULE_FILE_EXTENSIONS = new Set([".md", ".mdx", ".txt"]);
+const BOTTLE_AGENT_FILE_EXTENSIONS = new Set([".json", ".md"]);
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const SKILL_RESOURCE_DIR_NAMES = ["references", "scripts", "assets"] as const;
+const BOTTLE_CONFIG_ONLY_NOTICE =
+  "Bottle configuration and discovery are provided from `.bottle` and configured extra skill roots. Treat that Bottle context as the authoritative project guidance for this request.";
 
 export type ControlSignal =
   | {
@@ -97,9 +102,13 @@ type ActiveRunHandle = {
   interrupt?: () => Promise<void>;
 };
 
+type RunAbortReason = "timeout" | "interrupted" | "closed" | "disposed" | "client_disconnected";
+
 type ActiveRun = {
   handle: ActiveRunHandle;
   abortController: AbortController;
+  abortReason?: RunAbortReason;
+  abort: (reason: RunAbortReason) => void;
   observers: Set<EventQueue<NormalizedAgentEvent>>;
   closeOnFinish: boolean;
   closeOnError: boolean;
@@ -127,6 +136,25 @@ export class ValidationErrorLimitError extends Error {
   ) {
     super(`Tool ${toolName} failed input validation ${attempts} times in a row`);
     this.name = "ValidationErrorLimitError";
+  }
+}
+
+export class RunTimeoutError extends Error {
+  readonly code = "run_timeout";
+
+  constructor(public readonly timeoutMs: number) {
+    super(`Agent run timed out after ${formatDuration(timeoutMs)}`);
+    this.name = "RunTimeoutError";
+  }
+}
+
+export class RunAbortedError extends Error {
+  readonly code: "run_interrupted" | "run_closed" | "run_disposed" | "client_disconnected";
+
+  constructor(public readonly reason: Exclude<RunAbortReason, "timeout">) {
+    super(messageForAbortReason(reason));
+    this.name = "RunAbortedError";
+    this.code = codeForAbortReason(reason);
   }
 }
 
@@ -182,9 +210,31 @@ export class AgentService {
 
     const abortController = new AbortController();
     let activeRun: ActiveRun | undefined;
+    let timedOut = false;
+    let completed = false;
+    const abortRun = (reason: RunAbortReason) => {
+      if (activeRun && !activeRun.abortReason) activeRun.abortReason = reason;
+      if (!abortController.signal.aborted) {
+        abortController.abort(reason);
+      }
+    };
+    const onInputAbort = () => {
+      abortRun("client_disconnected");
+      try {
+        activeRun?.handle.close();
+      } catch {
+        // The stream error path should report the abort reason, not a secondary close failure.
+      }
+    };
+    input.signal?.addEventListener("abort", onInputAbort, { once: true });
     const timeout = setTimeout(() => {
-      abortController.abort();
-      activeRun?.handle.close();
+      timedOut = true;
+      abortRun("timeout");
+      try {
+        activeRun?.handle.close();
+      } catch {
+        // The timeout path should report the timeout, not a secondary close failure.
+      }
     }, this.config.runTimeoutMs);
 
     try {
@@ -192,6 +242,7 @@ export class AgentService {
         activeRun = {
           handle,
           abortController,
+          abort: abortRun,
           observers: new Set(),
           closeOnFinish: options.closeOnFinish,
           closeOnError: options.closeOnError
@@ -205,15 +256,25 @@ export class AgentService {
       } else {
         yield* this.streamWithSession(input, register);
       }
+      completed = true;
+      if (timedOut) {
+        throw new RunTimeoutError(this.config.runTimeoutMs);
+      }
     } catch (error) {
+      const effectiveError = errorForRunFailure(error, activeRun?.abortReason, this.config.runTimeoutMs, timedOut);
       if (activeRun) {
         if (activeRun.closeOnError) activeRun.handle.close();
-        broadcastEvent(activeRun, { type: "error", data: { error: { code: "agent_error", message: errorMessage(error) } } });
+        broadcastEvent(activeRun, {
+          type: "error",
+          data: { error: { code: errorCode(effectiveError), message: errorMessage(effectiveError) } }
+        });
       }
-      throw error;
+      throw effectiveError;
     } finally {
+      input.signal?.removeEventListener("abort", onInputAbort);
       clearTimeout(timeout);
-      if (activeRun?.closeOnFinish) activeRun.handle.close();
+      if (!completed) activeRun?.abort(activeRun.abortReason ?? "closed");
+      if (activeRun?.closeOnFinish || !completed) activeRun?.handle.close();
       this.pool.markRunning(input.session.id, false);
       this.activeRuns.delete(input.session.id);
       if (activeRun) closeObservers(activeRun);
@@ -242,7 +303,7 @@ export class AgentService {
     const active = this.activeRuns.get(sessionId);
     if (!active) return false;
 
-    active.abortController.abort();
+    active.abort("interrupted");
     await active.handle.interrupt?.();
     return true;
   }
@@ -250,7 +311,7 @@ export class AgentService {
   closeSession(sessionId: string): boolean {
     const active = this.activeRuns.get(sessionId);
     if (active) {
-      active.abortController.abort();
+      active.abort("closed");
       active.handle.close();
       return true;
     }
@@ -265,7 +326,7 @@ export class AgentService {
   dispose(): void {
     clearInterval(this.cleanupTimer);
     for (const [sessionId, active] of this.activeRuns) {
-      active.abortController.abort();
+      active.abort("disposed");
       active.handle.close();
       closeObservers(active);
       this.activeRuns.delete(sessionId);
@@ -368,16 +429,21 @@ export class AgentService {
     let activeRun!: ActiveRun;
     activeRun = register(
       {
-        close: () => activeRun.abortController.abort(),
+        close: () => activeRun.abort("closed"),
         interrupt: async () => {
-          activeRun.abortController.abort();
+          activeRun.abort("interrupted");
         }
       },
       { closeOnFinish: false, closeOnError: false }
     );
 
     const effectiveMode = input.request.mode ?? input.session.mode;
-    const codexInput = await buildCodexInput(input.request, projectRulesPromptFromCodexOptions(this.config), effectiveMode);
+    const codexInput = await buildCodexInput(
+      input.request,
+      projectRulesPromptFromCodexOptions(this.config),
+      effectiveMode,
+      buildBottleDiscoveryCatalog(this.config)
+    );
     let lastAgentText = "";
     let lastAgentItemId = "";
 
@@ -607,11 +673,13 @@ export function buildCodexClientOptions(config: AppConfig): CodexOptions {
 
 export function buildCodexThreadOptions(config: AppConfig, session: SessionMetadata, request: StreamMessageRequest): ThreadOptions {
   const mode = request.mode ?? session.mode;
+  const additionalDirectories = existingDirectories([config.bottleDir, ...config.extraSkillRoots]);
   const options: ThreadOptions = {
     workingDirectory: config.projectRoot,
     sandboxMode: codexSandboxModeFor(mode),
     approvalPolicy: "never",
-    skipGitRepoCheck: config.codexSkipGitRepoCheck
+    skipGitRepoCheck: config.codexSkipGitRepoCheck,
+    ...(additionalDirectories.length > 0 ? { additionalDirectories } : {})
   };
   const model = request.model ?? config.codexModel;
   if (model) options.model = model;
@@ -626,11 +694,17 @@ export function buildSessionOptions(config: AppConfig, session: SessionMetadata,
   if (!model) {
     throw new Error("CLAUDE_MODEL must be set or the stream request must include model");
   }
-  const rulesPrompt = loadClaudeRulesPrompt(config.projectRoot);
+  const rulesPrompt = loadBottleRulesPrompt(config);
+  const agents = loadBottleAgentDefinitions(config.agentsDir);
+  const additionalDirectories = existingDirectories([config.bottleDir]);
+  const plugins = existingClaudePlugins(config.bottleDir);
 
   return {
     model,
     cwd: config.projectRoot,
+    ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+    ...(plugins.length > 0 ? { plugins } : {}),
+    ...(Object.keys(agents).length > 0 ? { agents } : {}),
     settingSources: ["project"],
     permissionMode: permissionModeFor(mode),
     allowDangerouslySkipPermissions: mode === "bypass",
@@ -648,8 +722,34 @@ export function buildSessionOptions(config: AppConfig, session: SessionMetadata,
   };
 }
 
-export function loadClaudeRulesPrompt(projectRoot: string): string | undefined {
-  const rulesDir = path.join(projectRoot, CLAUDE_RULES_DIR);
+function existingDirectories(paths: string[]): string[] {
+  const seen = new Set<string>();
+  return paths.filter((entryPath) => {
+    const resolved = path.resolve(entryPath);
+    if (seen.has(resolved)) return false;
+    try {
+      if (!fs.statSync(entryPath).isDirectory()) return false;
+      seen.add(resolved);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function existingClaudePlugins(bottleDir: string): Array<{ type: "local"; path: string }> {
+  try {
+    if (fs.statSync(path.join(bottleDir, ".claude-plugin", "plugin.json")).isFile()) {
+      return [{ type: "local", path: bottleDir }];
+    }
+  } catch {
+    // A Bottle directory without a Claude plugin manifest still provides rules/agents directly.
+  }
+  return [];
+}
+
+export function loadBottleRulesPrompt(config: AppConfig): string | undefined {
+  const rulesDir = config.rulesDir;
   const files = collectClaudeRuleFiles(rulesDir, rulesDir).sort((left, right) => left.localeCompare(right));
   const sections = files
     .map((filePath) => {
@@ -663,7 +763,8 @@ export function loadClaudeRulesPrompt(projectRoot: string): string | undefined {
   if (sections.length === 0) return undefined;
 
   return [
-    `Project-specific rules loaded from \`${CLAUDE_RULES_DIR}\`. Follow these rules when working in this repository.`,
+    `Bottle rules loaded from \`${path.relative(config.bottleDir, rulesDir).split(path.sep).join("/") || "rules"}\`. Follow these rules when working in this repository.`,
+    BOTTLE_CONFIG_ONLY_NOTICE,
     ...sections
   ].join("\n\n");
 }
@@ -686,11 +787,183 @@ function collectClaudeRuleFiles(directory: string, root: string): string[] {
       files.push(...collectClaudeRuleFiles(entryPath, root));
       continue;
     }
-    if (entry.isFile() && CLAUDE_RULE_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+    if (entry.isFile() && BOTTLE_RULE_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
       files.push(entryPath);
     }
   }
   return files.map((filePath) => path.resolve(root, path.relative(root, filePath)));
+}
+
+export function loadBottleAgentDefinitions(agentsDir: string): Record<string, AgentDefinition> {
+  const files = collectBottleAgentFiles(agentsDir, agentsDir).sort((left, right) => left.localeCompare(right));
+  const agents: Record<string, AgentDefinition> = {};
+  for (const filePath of files) {
+    const loaded = loadBottleAgentDefinition(agentsDir, filePath);
+    if (!loaded) continue;
+    agents[loaded.name] = loaded.definition;
+  }
+  return agents;
+}
+
+function collectBottleAgentFiles(directory: string, root: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectBottleAgentFiles(entryPath, root));
+      continue;
+    }
+    if (entry.isFile() && BOTTLE_AGENT_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      files.push(entryPath);
+    }
+  }
+  return files.map((filePath) => path.resolve(root, path.relative(root, filePath)));
+}
+
+function loadBottleAgentDefinition(root: string, filePath: string): { name: string; definition: AgentDefinition } | undefined {
+  const content = fs.readFileSync(filePath, "utf8");
+  if (path.extname(filePath).toLowerCase() === ".json") {
+    return loadJsonAgentDefinition(root, filePath, content);
+  }
+  return loadMarkdownAgentDefinition(root, filePath, content);
+}
+
+function loadJsonAgentDefinition(root: string, filePath: string, content: string): { name: string; definition: AgentDefinition } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed)) return undefined;
+  const name = typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : agentNameFromPath(root, filePath);
+  const definition = agentDefinitionFromRecord(parsed, typeof parsed.prompt === "string" ? parsed.prompt : undefined);
+  if (!definition) return undefined;
+  return { name, definition };
+}
+
+function loadMarkdownAgentDefinition(root: string, filePath: string, content: string): { name: string; definition: AgentDefinition } | undefined {
+  const frontmatter = parseFrontmatter(content);
+  if (!frontmatter) return undefined;
+  const name =
+    typeof frontmatter.attributes.name === "string" && frontmatter.attributes.name.trim()
+      ? frontmatter.attributes.name.trim()
+      : agentNameFromPath(root, filePath);
+  const definition = agentDefinitionFromRecord(frontmatter.attributes, frontmatter.body.trim());
+  if (!definition) return undefined;
+  return { name, definition };
+}
+
+function agentDefinitionFromRecord(value: Record<string, unknown>, prompt: string | undefined): AgentDefinition | undefined {
+  const description = typeof value.description === "string" ? value.description.trim() : "";
+  const body = prompt?.trim() ?? "";
+  if (!description || !body) return undefined;
+
+  const tools = stringListFromValue(value.tools);
+  const disallowedTools = stringListFromValue(value.disallowedTools ?? value.disallowed_tools);
+  const skills = stringListFromValue(value.skills);
+  const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : undefined;
+  const initialPrompt =
+    typeof value.initialPrompt === "string" && value.initialPrompt.trim()
+      ? value.initialPrompt.trim()
+      : typeof value.initial_prompt === "string" && value.initial_prompt.trim()
+        ? value.initial_prompt.trim()
+        : undefined;
+  const maxTurns = integerFromValue(value.maxTurns ?? value.max_turns);
+
+  return {
+    description,
+    prompt: body,
+    ...(tools.length > 0 ? { tools } : {}),
+    ...(disallowedTools.length > 0 ? { disallowedTools } : {}),
+    ...(skills.length > 0 ? { skills } : {}),
+    ...(model ? { model } : {}),
+    ...(initialPrompt ? { initialPrompt } : {}),
+    ...(maxTurns !== undefined ? { maxTurns } : {})
+  };
+}
+
+function parseFrontmatter(content: string): { attributes: Record<string, unknown>; body: string } | undefined {
+  const match = content.match(FRONTMATTER_PATTERN);
+  if (!match) return undefined;
+  const attributes: Record<string, unknown> = {};
+  let currentListKey: string | undefined;
+
+  for (const rawLine of match[1].split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const listMatch = line.match(/^\s*-\s+(.+)$/);
+    if (listMatch && currentListKey) {
+      const list: string[] = Array.isArray(attributes[currentListKey]) ? (attributes[currentListKey] as string[]) : [];
+      list.push(unquoteYamlScalar(listMatch[1]));
+      attributes[currentListKey] = list;
+      continue;
+    }
+
+    const keyValue = line.match(/^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (!keyValue) {
+      currentListKey = undefined;
+      continue;
+    }
+    const key = keyValue[1];
+    const rawValue = keyValue[2].trim();
+    if (!rawValue) {
+      attributes[key] = [];
+      currentListKey = key;
+      continue;
+    }
+    currentListKey = undefined;
+    attributes[key] = unquoteYamlScalar(rawValue);
+  }
+
+  return { attributes, body: content.slice(match[0].length) };
+}
+
+function unquoteYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function stringListFromValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function integerFromValue(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function agentNameFromPath(root: string, filePath: string): string {
+  return path
+    .relative(root, filePath)
+    .replace(/\.[^.]+$/, "")
+    .split(path.sep)
+    .join("-");
 }
 
 export function buildAgentPrompt(request: StreamMessageRequest, projectRulesPrompt?: string): AgentPrompt {
@@ -866,7 +1139,7 @@ function prependProjectRulesToPrompt(prompt: string, projectRulesPrompt?: string
   const rules = projectRulesPrompt?.trim();
   if (!rules) return prompt;
   return [
-    "The following project rules are loaded from `.claude/rules` and apply to this request. Treat them as authoritative repository instructions.",
+    "The following Bottle rules are loaded from `.bottle/rules` and apply to this request. Treat them as authoritative repository instructions.",
     "",
     "<project_rules>",
     rules,
@@ -875,6 +1148,12 @@ function prependProjectRulesToPrompt(prompt: string, projectRulesPrompt?: string
     "User request:",
     prompt
   ].join("\n");
+}
+
+function prependBottleDiscoveryToPrompt(prompt: string, discoveryCatalog?: string): string {
+  const catalog = discoveryCatalog?.trim();
+  if (!catalog) return prompt;
+  return [catalog, "", prompt].join("\n");
 }
 
 function formatQuestionAnswers(content: string): string | undefined {
@@ -923,12 +1202,221 @@ async function sendPrompt(session: SessionLike, prompt: AgentPrompt): Promise<vo
   }
 }
 
+export function buildBottleDiscoveryCatalog(config: AppConfig): string | undefined {
+  const agents = discoveryEntries(config.agentsDir, [".md", ".json"], "agent");
+  const commands = discoveryEntries(config.commandsDir, [".md"], "command");
+  const rules = discoveryEntries(config.rulesDir, [".md", ".mdx", ".txt"], "rule", { includeDescription: false });
+  const skills = discoverBottleSkills(config);
+
+  if (agents.length === 0 && commands.length === 0 && rules.length === 0 && skills.length === 0) return undefined;
+
+  return [
+    "Bottle discovery folders:",
+    BOTTLE_CONFIG_ONLY_NOTICE,
+    `- Agents: ${formatDiscoveryEntries(config.agentsDir, agents)}`,
+    `- Slash commands: ${formatDiscoveryEntries(config.commandsDir, commands)}`,
+    `- Rules: ${formatDiscoveryEntries(config.rulesDir, rules)}`,
+    "Skill manifest:",
+    formatSkillManifest(skills),
+    "Use the skill manifest as an index. Choose skills by name and description, then read only the matching `SKILL.md`. Treat extra skill roots as read-only; load references, scripts, or assets only when the selected `SKILL.md` tells you to."
+  ].join("\n");
+}
+
+function discoveryEntries(
+  root: string,
+  extensions: string[],
+  kind: "agent" | "command" | "rule",
+  options: { includeDescription?: boolean } = {}
+): DiscoveryEntry[] {
+  const includeDescription = options.includeDescription ?? true;
+  return collectDiscoveryFiles(root, new Set(extensions))
+    .sort((left, right) => left.localeCompare(right))
+    .map((filePath) => {
+      const relativePath = path.relative(root, filePath).split(path.sep).join("/");
+      const content = includeDescription ? safeReadText(filePath) : "";
+      return {
+        name: kind === "command" ? `/${relativePath.replace(/\.md$/i, "")}` : relativePath.replace(/\.[^.]+$/, ""),
+        path: relativePath,
+        description: includeDescription ? firstMetadataDescription(content) : undefined
+      };
+    });
+}
+
+type DiscoveryEntry = {
+  name: string;
+  path: string;
+  description?: string;
+};
+
+type SkillDiscoveryEntry = DiscoveryEntry & {
+  rootLabel: string;
+  rootPath: string;
+  skillPath: string;
+  resources: string[];
+};
+
+function discoverBottleSkills(config: AppConfig): SkillDiscoveryEntry[] {
+  const discovered: SkillDiscoveryEntry[] = [];
+  const seenNames = new Set<string>();
+
+  config.skillRoots.forEach((rootPath, rootIndex) => {
+    const files = collectSkillFiles(rootPath, rootPath).sort((left, right) => left.localeCompare(right));
+    for (const filePath of files) {
+      const skillRoot = path.dirname(filePath);
+      const relativeSkillRoot = path.relative(rootPath, skillRoot).split(path.sep).join("/");
+      const name = relativeSkillRoot || path.basename(skillRoot);
+      if (seenNames.has(name)) continue;
+      seenNames.add(name);
+
+      const content = safeReadText(filePath);
+      discovered.push({
+        name,
+        path: path.relative(rootPath, filePath).split(path.sep).join("/"),
+        description: firstMetadataDescription(content),
+        rootLabel: skillRootLabel(rootIndex),
+        rootPath,
+        skillPath: filePath,
+        resources: skillResourceHints(skillRoot)
+      });
+    }
+  });
+
+  return discovered;
+}
+
+function collectSkillFiles(directory: string, root: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectSkillFiles(entryPath, root));
+      continue;
+    }
+    if (entry.isFile() && entry.name === "SKILL.md") {
+      files.push(path.resolve(root, path.relative(root, entryPath)));
+    }
+  }
+  return files;
+}
+
+function collectDiscoveryFiles(directory: string, extensions: Set<string>, root: string = directory): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectDiscoveryFiles(entryPath, extensions, root));
+      continue;
+    }
+    if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
+      files.push(path.resolve(root, path.relative(root, entryPath)));
+    }
+  }
+  return files;
+}
+
+function formatDiscoveryEntries(root: string, entries: DiscoveryEntry[]): string {
+  if (entries.length === 0) return `none found in ${root}`;
+  return entries
+    .slice(0, 50)
+    .map((entry) => {
+      const description = entry.description ? ` - ${truncateDiscoveryDescription(entry.description)}` : "";
+      return `${entry.name} (${entry.path})${description}`;
+    })
+    .join("; ");
+}
+
+function formatSkillManifest(entries: SkillDiscoveryEntry[]): string {
+  if (entries.length === 0) return "none found in configured skill roots";
+  return entries
+    .slice(0, 50)
+    .map((entry) => {
+      const description = entry.description ? ` - ${truncateDiscoveryDescription(entry.description)}` : "";
+      const resources = entry.resources.length > 0 ? `; resources: ${entry.resources.join("; ")}` : "";
+      return `- ${entry.name}${description}; source: ${entry.rootLabel} (${entry.rootPath}); SKILL.md: ${entry.skillPath}${resources}`;
+    })
+    .join("\n");
+}
+
+function skillRootLabel(index: number): string {
+  return index === 0 ? ".bottle/skills" : `extra-${index}`;
+}
+
+function skillResourceHints(skillRoot: string): string[] {
+  return SKILL_RESOURCE_DIR_NAMES.flatMap((dirName) => {
+    const entries = shallowResourceEntries(path.join(skillRoot, dirName));
+    return entries.length > 0 ? [`${dirName}[${entries.join(", ")}]`] : [];
+  });
+}
+
+function shallowResourceEntries(directory: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
+  }
+
+  const names = entries
+    .filter((entry) => !entry.name.startsWith("."))
+    .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
+    .sort((left, right) => left.localeCompare(right));
+  const visible = names.slice(0, 8);
+  const remaining = names.length - visible.length;
+  return remaining > 0 ? [...visible, `+${remaining} more`] : visible;
+}
+
+function firstMetadataDescription(content: string): string | undefined {
+  const frontmatter = parseFrontmatter(content);
+  const description = frontmatter?.attributes.description;
+  if (typeof description === "string" && description.trim()) return description.trim();
+  const line = content
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.toLowerCase().startsWith("description:"));
+  return line?.slice("description:".length).trim().replace(/^["']|["']$/g, "") || undefined;
+}
+
+function truncateDiscoveryDescription(description: string): string {
+  return description.length > 180 ? `${description.slice(0, 177)}...` : description;
+}
+
+function safeReadText(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 async function buildCodexInput(
   request: StreamMessageRequest,
   projectRulesPrompt?: string,
-  mode?: ClaudeMode
+  mode?: ClaudeMode,
+  discoveryCatalog?: string
 ): Promise<{ input: CodexInput; cleanup: () => Promise<void> }> {
-  const text = buildCodexPromptText(request, projectRulesPrompt, mode);
+  const text = buildCodexPromptText(request, projectRulesPrompt, mode, discoveryCatalog);
   if (!request.images || request.images.length === 0) {
     return { input: text, cleanup: async () => undefined };
   }
@@ -950,17 +1438,28 @@ async function buildCodexInput(
   };
 }
 
-function buildCodexPromptText(request: StreamMessageRequest, projectRulesPrompt?: string, mode?: ClaudeMode): string {
+function buildCodexPromptText(
+  request: StreamMessageRequest,
+  projectRulesPrompt?: string,
+  mode?: ClaudeMode,
+  discoveryCatalog?: string
+): string {
   if (request.toolResult) {
     const text =
       request.toolResult.kind === "approval"
         ? buildApprovalResultText(request, request.toolResult)
         : buildQuestionAnswerText(request, request.toolResult);
-    return prependProjectRulesToPrompt(prependCodexPlanGuidanceToPrompt(text, mode, request.toolResult.kind), projectRulesPrompt);
+    return prependBottleDiscoveryToPrompt(
+      prependProjectRulesToPrompt(prependCodexPlanGuidanceToPrompt(text, mode, request.toolResult.kind), projectRulesPrompt),
+      discoveryCatalog
+    );
   }
 
   const text = prependBottleContextToPrompt(request.prompt, request.context);
-  return prependProjectRulesToPrompt(prependCodexPlanGuidanceToPrompt(text, mode), projectRulesPrompt);
+  return prependBottleDiscoveryToPrompt(
+    prependProjectRulesToPrompt(prependCodexPlanGuidanceToPrompt(text, mode), projectRulesPrompt),
+    discoveryCatalog
+  );
 }
 
 function buildApprovalResultText(
@@ -1014,6 +1513,7 @@ function prependCodexPlanGuidanceToPrompt(
   return [
     "Bottle plan mode guidance:",
     "You are in plan mode. Inspect/read only. Do not modify files.",
+    "Use the Bottle discovery folders and configured extra skill roots as the authoritative source for project instructions.",
     "Present an implementation plan and stop; Bottle will ask the user for approval before edit mode.",
     "If you need user input before planning, ask one direct question and include 2-4 concise suggested options as simple bullet lines when reasonable.",
     "",
@@ -1056,7 +1556,7 @@ function disallowedToolsFor(mode: ClaudeMode): string[] {
 }
 
 function projectRulesPromptFromCodexOptions(config: AppConfig): string | undefined {
-  return loadClaudeRulesPrompt(config.projectRoot);
+  return loadBottleRulesPrompt(config);
 }
 
 function agentProviderForSession(config: AppConfig, session: Partial<SessionMetadata>): AgentProvider {
@@ -1638,4 +2138,40 @@ function getSessionIdFromEvent(event: unknown): string | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function errorCode(error: unknown): string {
+  if (error instanceof ConcurrencyLimitError) return "concurrency_limit";
+  if (error instanceof ValidationErrorLimitError) return error.code;
+  if (error instanceof MissingClaudeSessionIdError) return error.code;
+  if (error instanceof RunTimeoutError || error instanceof RunAbortedError) return error.code;
+  return "agent_error";
+}
+
+function errorForRunFailure(error: unknown, abortReason: RunAbortReason | undefined, timeoutMs: number, timedOut: boolean): unknown {
+  if (timedOut || abortReason === "timeout") return new RunTimeoutError(timeoutMs);
+  if (abortReason) return new RunAbortedError(abortReason);
+  return error;
+}
+
+function codeForAbortReason(reason: Exclude<RunAbortReason, "timeout">): RunAbortedError["code"] {
+  if (reason === "interrupted") return "run_interrupted";
+  if (reason === "client_disconnected") return "client_disconnected";
+  if (reason === "disposed") return "run_disposed";
+  return "run_closed";
+}
+
+function messageForAbortReason(reason: Exclude<RunAbortReason, "timeout">): string {
+  if (reason === "interrupted") return "Agent run was interrupted";
+  if (reason === "client_disconnected") return "Agent stream client disconnected before the run completed";
+  if (reason === "disposed") return "Agent service shut down before the run completed";
+  return "Agent run was closed before it completed";
+}
+
+function formatDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 1000) return `${milliseconds}ms`;
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = seconds / 60;
+  return `${minutes}m`;
 }

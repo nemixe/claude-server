@@ -1,14 +1,51 @@
 import fs from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgentService, type AgentSdkAdapter, type CodexSdkAdapter, type CodexThreadLike } from "../src/agent-service.js";
-import { createApp } from "../src/app.js";
+import { createApp, withSseHeartbeat } from "../src/app.js";
 import type { SessionFactory, SessionLike } from "../src/session-adapter.js";
 import { SessionStore } from "../src/session-store.js";
 import { SettingsStore } from "../src/settings-store.js";
 import { createTempConfig } from "./helpers.js";
 
 describe("Hono API", () => {
+  it("writes SSE keep-alive comments while a stream callback is waiting", async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const stream = {
+      aborted: false,
+      closed: false,
+      write: vi.fn(async (chunk: string) => {
+        writes.push(chunk);
+      })
+    };
+    let finish!: () => void;
+
+    try {
+      const pending = withSseHeartbeat(
+        stream,
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+        25
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(writes).toEqual([": keep-alive\n\n"]);
+
+      stream.closed = true;
+      await vi.advanceTimersByTimeAsync(25);
+      expect(writes).toHaveLength(1);
+
+      finish();
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("exposes Bottle discovery metadata behind the hostname gate", async () => {
     const config = await createTempConfig({ BOTTLE_NAME: "prototype-a", MAIN_APP_URL: "http://localhost:5173" });
     const app = await createApp({ config });
@@ -18,18 +55,28 @@ describe("Hono API", () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    const body = await response.json();
+    expect(body).not.toHaveProperty("appProxyUrl");
+    expect(body).not.toHaveProperty("appUrl");
+    expect(body).toMatchObject({
       protocolVersion: 1,
       name: "prototype-a",
       apiBaseUrl: "http://localhost",
-      appUrl: "http://localhost:5173",
+      mainAppUrl: "http://localhost",
       defaultAgentProvider: "claude",
       availableAgentProviders: ["claude", "codex"],
       features: {
         mainApp: true,
+        mainAppProxy: true,
+        mainAppDirect: true,
+        clientAtRoot: true,
         iframeBridge: true,
         sessions: true,
         streaming: true,
+        agents: true,
+        commands: true,
+        rules: true,
+        skills: true,
         authToken: false
       }
     });
@@ -46,12 +93,23 @@ describe("Hono API", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       projectRoot: config.projectRoot,
+      bottleDir: config.bottleDir,
+      agentsDir: config.agentsDir,
+      commandsDir: config.commandsDir,
+      rulesDir: config.rulesDir,
+      skillsDir: config.skillsDir,
+      extraSkillRoots: config.extraSkillRoots,
+      skillRoots: config.skillRoots,
       claudeCommandsDir: config.claudeCommandsDir
     });
   });
 
   it("serves the optional iframe bridge without hosting the main app", async () => {
-    const config = await createTempConfig({ MAIN_APP_URL: "http://localhost:5173", CLIENT_ORIGINS: "http://localhost:5174" });
+    const config = await createTempConfig({
+      MAIN_APP_URL: "http://localhost:5173",
+      MAIN_APP_PROXY: "false",
+      CLIENT_ORIGINS: "http://localhost:5174"
+    });
     const app = await createApp({ config });
 
     const infoResponse = await app.request("http://localhost/v1/bottle", {
@@ -59,7 +117,7 @@ describe("Hono API", () => {
     });
     await expect(infoResponse.json()).resolves.toMatchObject({
       appUrl: "http://localhost:5173",
-      features: { mainApp: true }
+      features: { mainApp: true, mainAppProxy: false }
     });
 
     const bridgeResponse = await app.request("http://localhost/bottle-bridge.js", {
@@ -72,6 +130,138 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     expect(removedAppHostingResponse.status).toBe(404);
+  });
+
+  it("serves AI Client at root until the target URL cookie exists", async () => {
+    const clientRequests: string[] = [];
+    const clientApp = await createTestHttpServer((request, response) => {
+      clientRequests.push(request.url ?? "");
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><body>AI Client</body></html>");
+    });
+    const upstreamRequests: string[] = [];
+    const upstream = await createTestHttpServer((request, response) => {
+      upstreamRequests.push(request.url ?? "");
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><html><head><title>Target</title></head><body>Target App</body></html>");
+    });
+
+    try {
+      const config = await createTempConfig({
+        MAIN_APP_URL: upstream.origin,
+        CLIENT_APP_URL: clientApp.origin
+      });
+      const app = await createApp({ config });
+
+      const clientResponse = await app.request("http://localhost/", {
+        headers: { host: "localhost" }
+      });
+      expect(clientResponse.status).toBe(200);
+      expect(await clientResponse.text()).toContain("AI Client");
+
+      const legacyClientResponse = await app.request("http://localhost/__ai_client/", {
+        headers: { host: "localhost" }
+      });
+      expect(legacyClientResponse.status).toBe(404);
+
+      const infoResponse = await app.request("http://localhost/v1/bottle", {
+        headers: { host: "localhost" }
+      });
+      const infoBody = await infoResponse.json();
+      expect(infoBody).not.toHaveProperty("appProxyUrl");
+      expect(infoBody).not.toHaveProperty("appUrl");
+      expect(infoBody.features).toMatchObject({
+        mainApp: true,
+        mainAppProxy: true,
+        mainAppDirect: true,
+        clientAtRoot: true
+      });
+      expect(infoBody.mainAppUrl).toBe("http://localhost");
+
+      const cookieHeaders = {
+        host: "localhost",
+        cookie: "bottle_target_app_url=http%3A%2F%2Flocalhost%2F"
+      };
+      const infoWithCookieResponse = await app.request("http://localhost/v1/bottle", {
+        headers: cookieHeaders
+      });
+      const infoWithCookieBody = await infoWithCookieResponse.json();
+      expect(infoWithCookieBody.appUrl).toBe("http://localhost/");
+      expect(infoWithCookieBody.features.clientAtRoot).toBe(false);
+
+      const rootResponse = await app.request("http://localhost/", {
+        headers: cookieHeaders
+      });
+      expect(rootResponse.status).toBe(200);
+      const rootHtml = await rootResponse.text();
+      expect(rootHtml).toContain("Target App");
+      expect(rootHtml).toContain('<script src="/bottle-bridge.js" data-bottle-bridge></script>');
+
+      const dashboardResponse = await app.request("http://localhost/dashboard?tab=monthly", {
+        headers: cookieHeaders
+      });
+      expect(dashboardResponse.status).toBe(200);
+      expect(clientRequests).toEqual(expect.arrayContaining(["/"]));
+      expect(upstreamRequests).toEqual(expect.arrayContaining(["/", "/dashboard?tab=monthly"]));
+    } finally {
+      await clientApp.close();
+      await upstream.close();
+    }
+  });
+
+  it("proxies fixed app routes, rewrites root assets, and injects the generic bridge", async () => {
+    const upstreamRequests: string[] = [];
+    const upstream = await createTestHttpServer((request, response) => {
+      upstreamRequests.push(request.url ?? "");
+      if (request.url?.startsWith("/assets/app.js")) {
+        response.writeHead(200, { "content-type": "application/javascript", "content-length": "18" });
+        response.end("console.log('app')");
+        return;
+      }
+
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "default-src 'self'",
+        "x-frame-options": "DENY"
+      });
+      response.end(
+        '<!doctype html><html><head><title>Target</title><script type="module" src="/assets/app.js"></script></head><body><a href="/activity-log">Activity</a></body></html>'
+      );
+    });
+
+    try {
+      const config = await createTempConfig({ MAIN_APP_URL: upstream.origin, MAIN_APP_DIRECT: "false" });
+      const app = await createApp({ config });
+
+      const htmlResponse = await app.request("http://localhost/__app/dashboard?tab=monthly", {
+        headers: { host: "localhost" }
+      });
+      const html = await htmlResponse.text();
+
+      expect(htmlResponse.status).toBe(200);
+      expect(upstreamRequests).toContain("/dashboard?tab=monthly");
+      expect(html).toContain("window.__BOTTLE_BRIDGE_CONFIG__");
+      expect(html).toContain('"appProxyPath":"/__app"');
+      expect(html).toContain('<script src="/bottle-bridge.js" data-bottle-bridge></script>');
+      expect(html).toContain('src="/__app/assets/app.js"');
+      expect(html).toContain('href="/__app/activity-log"');
+      expect(htmlResponse.headers.get("content-security-policy")).toBeNull();
+      expect(htmlResponse.headers.get("x-frame-options")).toBeNull();
+
+      const assetResponse = await app.request("http://localhost/__app/assets/app.js", {
+        headers: { host: "localhost" }
+      });
+      expect(assetResponse.status).toBe(200);
+      expect(await assetResponse.text()).toBe("console.log('app')");
+
+      const rootAssetResponse = await app.request("http://localhost/assets/app.js", {
+        headers: { host: "localhost", referer: "http://localhost/__app/dashboard" }
+      });
+      expect(rootAssetResponse.status).toBe(200);
+      expect(await rootAssetResponse.text()).toBe("console.log('app')");
+    } finally {
+      await upstream.close();
+    }
   });
 
   it("applies AI client CORS, frame headers, and optional Bottle API token auth", async () => {
@@ -946,7 +1136,7 @@ describe("Hono API", () => {
     expect(saveResponse.status).toBe(201);
     await expect(saveResponse.json()).resolves.toMatchObject({ command: { path: "review/fix.md", content: "Fix it" } });
 
-    const rootCommandPath = path.join(config.projectRoot, ".claude", "commands", "review", "fix.md");
+    const rootCommandPath = path.join(config.commandsDir, "review", "fix.md");
     await expect(fs.readFile(rootCommandPath, "utf8")).resolves.toBe("Fix it");
 
     const createResponse = await app.request("http://localhost/v1/sessions", {
@@ -1000,19 +1190,33 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     expect(getResponse.status).toBe(200);
-    const initial = (await getResponse.json()) as { maxConcurrentRuns: number; maxTurns: number };
+    const initial = (await getResponse.json()) as {
+      maxConcurrentRuns: number;
+      maxTurns: number;
+      defaultAgentProvider: string;
+      availableAgentProviders: string[];
+    };
     expect(initial.maxConcurrentRuns).toBe(2);
     expect(initial.maxTurns).toBe(5);
+    expect(initial.defaultAgentProvider).toBe("claude");
+    expect(initial.availableAgentProviders).toEqual(["claude", "codex"]);
 
     const patchResponse = await app.request("http://localhost/v1/settings", {
       method: "PATCH",
       headers: { host: "localhost", "content-type": "application/json" },
-      body: JSON.stringify({ maxConcurrentRuns: 8, maxTurns: 50 })
+      body: JSON.stringify({ maxConcurrentRuns: 8, maxTurns: 50, defaultAgentProvider: "codex" })
     });
     expect(patchResponse.status).toBe(200);
-    const patched = (await patchResponse.json()) as { maxConcurrentRuns: number; maxTurns: number };
+    const patched = (await patchResponse.json()) as {
+      maxConcurrentRuns: number;
+      maxTurns: number;
+      defaultAgentProvider: string;
+      availableAgentProviders: string[];
+    };
     expect(patched.maxConcurrentRuns).toBe(8);
     expect(patched.maxTurns).toBe(50);
+    expect(patched.defaultAgentProvider).toBe("codex");
+    expect(patched.availableAgentProviders).toEqual(["claude", "codex"]);
 
     // Verify persisted to file
     const settingsPath = path.join(config.sessionDir, "settings.json");
@@ -1020,6 +1224,7 @@ describe("Hono API", () => {
     const persisted = JSON.parse(raw);
     expect(persisted.maxConcurrentRuns).toBe(8);
     expect(persisted.maxTurns).toBe(50);
+    expect(persisted.defaultAgentProvider).toBe("codex");
 
     const sessionsResponse = await app.request("http://localhost/v1/sessions", {
       headers: { host: "localhost" }
@@ -1028,14 +1233,27 @@ describe("Hono API", () => {
     const sessionsBody = (await sessionsResponse.json()) as { sessions: unknown[] };
     expect(sessionsBody.sessions).toEqual([]);
 
+    const createResponse = await app.request("http://localhost/v1/sessions", {
+      method: "POST",
+      headers: { host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ mode: "plan", title: "Default provider" })
+    });
+    const created = (await createResponse.json()) as { provider: string };
+    expect(created.provider).toBe("codex");
+
     // Verify a fresh app instance loads persisted values
     const freshApp = await createApp({ config });
     const freshGet = await freshApp.request("http://localhost/v1/settings", {
       headers: { host: "localhost" }
     });
-    const freshSettings = (await freshGet.json()) as { maxConcurrentRuns: number; maxTurns: number };
+    const freshSettings = (await freshGet.json()) as {
+      maxConcurrentRuns: number;
+      maxTurns: number;
+      defaultAgentProvider: string;
+    };
     expect(freshSettings.maxConcurrentRuns).toBe(8);
     expect(freshSettings.maxTurns).toBe(50);
+    expect(freshSettings.defaultAgentProvider).toBe("codex");
   });
 });
 
@@ -1066,5 +1284,26 @@ async function* codexResultStream(threadId: string, text: string): AsyncGenerato
   yield {
     type: "turn.completed",
     usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0 }
+  };
+}
+
+async function createTestHttpServer(
+  handler: (request: http.IncomingMessage, response: http.ServerResponse) => void
+): Promise<{ origin: string; close: () => Promise<void> }> {
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Test server did not bind to a TCP port");
+  }
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      })
   };
 }

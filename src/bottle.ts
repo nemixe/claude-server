@@ -1,5 +1,6 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import type { AppConfig } from "./config.js";
+import { APP_PROXY_PATH, hasTargetAppUrlCookie, isDirectMainAppGateway } from "./gateway.js";
 import { AGENT_PROVIDERS, BOTTLE_PROTOCOL_VERSION, type BottleInfoResponse } from "./types.js";
 
 const BRIDGE_PATH = "/bottle-bridge.js";
@@ -44,24 +45,47 @@ export function createBottleAuthMiddleware(config: AppConfig): MiddlewareHandler
   };
 }
 
-export function bottleInfoForRequest(config: AppConfig, requestUrl: string): BottleInfoResponse {
+export function bottleInfoForRequest(config: AppConfig, requestUrl: string, headers?: Headers): BottleInfoResponse {
   const origin = new URL(requestUrl).origin;
-  const appUrl = config.mainAppUrl;
+  const isGatewayProxyEnabled = Boolean(config.mainAppProxy && config.mainAppUrl);
+  const isDirectMainApp = isDirectMainAppGateway(config);
+  const isConditionalRootClient = isDirectMainApp && !hasTargetAppUrlCookie(headers);
+  const isClientAtRoot = isGatewayProxyEnabled && (!isDirectMainApp || isConditionalRootClient);
+  const publicMainAppUrl = isDirectMainApp ? origin : config.mainAppUrl;
+  const appUrl = isDirectMainApp
+    ? isConditionalRootClient
+      ? undefined
+      : `${origin}/`
+    : isClientAtRoot
+    ? undefined
+    : isGatewayProxyEnabled
+      ? `${origin}/`
+      : config.mainAppUrl;
+  const appProxyUrl = isGatewayProxyEnabled && !isDirectMainApp ? `${origin}${APP_PROXY_PATH}/` : undefined;
 
   return {
     protocolVersion: BOTTLE_PROTOCOL_VERSION,
     name: config.bottleName,
     apiBaseUrl: origin,
     ...(appUrl ? { appUrl } : {}),
+    ...(publicMainAppUrl ? { mainAppUrl: publicMainAppUrl } : {}),
+    ...(appProxyUrl ? { appProxyUrl } : {}),
     defaultAgentProvider: config.defaultAgentProvider,
     availableAgentProviders: [...AGENT_PROVIDERS],
     features: {
       mainApp: Boolean(config.mainAppUrl),
+      mainAppProxy: isGatewayProxyEnabled,
+      mainAppDirect: isDirectMainApp,
+      clientAtRoot: isClientAtRoot,
       iframeBridge: true,
       sessions: true,
       streaming: true,
       settings: true,
       claudeCommands: true,
+      agents: true,
+      commands: true,
+      rules: true,
+      skills: true,
       workspaceSearch: true,
       authToken: Boolean(config.bottleApiToken)
     }
@@ -94,11 +118,71 @@ function renderBottleBridgeScript(): string {
   return `(() => {
   const protocolVersion = ${BOTTLE_PROTOCOL_VERSION};
   const source = "bottle";
+  const config = window.__BOTTLE_BRIDGE_CONFIG__ || {};
 
   function post(message) {
     if (window.parent && window.parent !== window) {
       window.parent.postMessage({ source, ...message }, "*");
     }
+  }
+
+  function normalizeUrl(value) {
+    try {
+      return new URL(value, window.location.href);
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizePathPrefix(value) {
+    const raw = String(value || "").replace(/\\/+$/, "");
+    return raw && raw !== "/" ? raw : "";
+  }
+
+  function joinPath(basePath, requestPath) {
+    const base = normalizePathPrefix(basePath);
+    const path = String(requestPath || "/").startsWith("/") ? String(requestPath || "/") : "/" + requestPath;
+    return (base + path) || "/";
+  }
+
+  function pathWithoutBase(pathname, basePath) {
+    const base = normalizePathPrefix(basePath);
+    if (!base) return pathname || "/";
+    if (pathname === base) return "/";
+    if (pathname.startsWith(base + "/")) return pathname.slice(base.length) || "/";
+    return pathname || "/";
+  }
+
+  function isInsideProxy(url) {
+    const proxyPath = normalizePathPrefix(config.appProxyPath || "/__app");
+    return Boolean(proxyPath && (url.pathname === proxyPath || url.pathname.startsWith(proxyPath + "/")));
+  }
+
+  function canonicalUrl(value) {
+    const url = normalizeUrl(value || window.location.href);
+    if (!url) return String(value || "");
+    const mainAppUrl = normalizeUrl(config.mainAppUrl || "");
+    if (!mainAppUrl || !isInsideProxy(url)) return url.href;
+    const next = new URL(mainAppUrl.href);
+    next.pathname = joinPath(mainAppUrl.pathname, pathWithoutBase(url.pathname, config.appProxyPath || "/__app"));
+    next.search = url.search;
+    next.hash = url.hash;
+    return next.href;
+  }
+
+  function proxiedHistoryUrl(value) {
+    if (value === undefined || value === null || !config.appProxyPath || !isInsideProxy(window.location)) return value;
+    const url = normalizeUrl(value);
+    if (!url) return value;
+    if (isInsideProxy(url)) return url.pathname + url.search + url.hash;
+    if (url.origin === window.location.origin) {
+      return joinPath(config.appProxyPath, url.pathname) + url.search + url.hash;
+    }
+    const mainAppUrl = normalizeUrl(config.mainAppUrl || "");
+    if (mainAppUrl && url.origin === mainAppUrl.origin) {
+      return joinPath(config.appProxyPath, pathWithoutBase(url.pathname, mainAppUrl.pathname)) + url.search + url.hash;
+    }
+    return value;
   }
 
   function selectedElementHint() {
@@ -119,9 +203,10 @@ function renderBottleBridgeScript(): string {
   function currentContext() {
     const selection = window.getSelection && window.getSelection();
     const selectedText = selection ? String(selection).trim().slice(0, 4000) : "";
+    const currentUrl = new URL(canonicalUrl());
     return {
-      url: window.location.href,
-      route: window.location.pathname + window.location.search + window.location.hash,
+      url: currentUrl.href,
+      route: currentUrl.pathname + currentUrl.search + currentUrl.hash,
       title: document.title,
       selectedText: selectedText || undefined,
       selectedElement: selectedElementHint(),
@@ -137,7 +222,7 @@ function renderBottleBridgeScript(): string {
   }
 
   function navigation() {
-    post({ type: "bottle:navigation", url: window.location.href, title: document.title || undefined });
+    post({ type: "bottle:navigation", url: canonicalUrl(), title: document.title || undefined });
   }
 
   window.addEventListener("message", (event) => {
@@ -157,7 +242,9 @@ function renderBottleBridgeScript(): string {
   for (const methodName of ["pushState", "replaceState"]) {
     const original = window.history[methodName];
     window.history[methodName] = function patchedHistoryMethod() {
-      const result = original.apply(this, arguments);
+      const args = Array.prototype.slice.call(arguments);
+      if (args.length >= 3) args[2] = proxiedHistoryUrl(args[2]);
+      const result = original.apply(this, args);
       window.setTimeout(navigation, 0);
       return result;
     };

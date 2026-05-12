@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -6,6 +7,8 @@ import {
   buildCodexClientOptions,
   buildCodexThreadOptions,
   normalizeCodexEvent,
+  RunAbortedError,
+  RunTimeoutError,
   type CodexSdkAdapter,
   type CodexSdkFactory,
   type CodexThreadLike
@@ -16,6 +19,7 @@ import { createTempConfig } from "./helpers.js";
 describe("Codex AgentService runtime", () => {
   it("maps Bottle modes to Codex sandbox options", async () => {
     const config = await createTempConfig({ AGENT_PROVIDER: "codex", CODEX_MODEL: "gpt-5.5", CODEX_REASONING_EFFORT: "high" });
+    await fs.mkdir(config.bottleDir, { recursive: true });
     const session = metadata(config.workspaceDir);
 
     expect(buildCodexThreadOptions(config, session, { prompt: "plan", mode: "plan" })).toMatchObject({
@@ -24,6 +28,7 @@ describe("Codex AgentService runtime", () => {
       sandboxMode: "read-only",
       approvalPolicy: "never",
       workingDirectory: config.projectRoot,
+      additionalDirectories: [config.bottleDir],
       skipGitRepoCheck: true
     });
     expect(buildCodexThreadOptions(config, session, { prompt: "edit", mode: "edit" }).sandboxMode).toBe("workspace-write");
@@ -43,6 +48,49 @@ describe("Codex AgentService runtime", () => {
       baseUrl: "https://api.example.com",
       codexPathOverride: "/usr/local/bin/codex"
     });
+  });
+
+  it("passes Bottle discovery folders and catalog to Codex", async () => {
+    const extraSkillRoot = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-extra-skills-"));
+    const missingSkillRoot = path.join(extraSkillRoot, "missing");
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex", BOTTLE_EXTRA_SKILL_ROOTS: `${extraSkillRoot},${missingSkillRoot}` });
+    await fs.mkdir(path.join(config.skillsDir, "ux", "references"), { recursive: true });
+    await fs.mkdir(config.commandsDir, { recursive: true });
+    await fs.mkdir(path.join(extraSkillRoot, "api", "scripts"), { recursive: true });
+    await fs.mkdir(path.join(extraSkillRoot, "api", "assets", "template"), { recursive: true });
+    await fs.mkdir(path.join(extraSkillRoot, "ux"), { recursive: true });
+    await fs.writeFile(path.join(config.commandsDir, "review.md"), "---\ndescription: Review current changes\n---\nReview.", "utf8");
+    await fs.writeFile(path.join(config.skillsDir, "ux", "SKILL.md"), "---\ndescription: UX review\n---\nReview UI body should stay out.", "utf8");
+    await fs.writeFile(path.join(config.skillsDir, "ux", "references", "colors.md"), "resource content should stay out", "utf8");
+    await fs.writeFile(path.join(extraSkillRoot, "api", "SKILL.md"), "---\ndescription: API guidance\n---\nAPI body should stay out.", "utf8");
+    await fs.writeFile(path.join(extraSkillRoot, "api", "scripts", "build.js"), "script content should stay out", "utf8");
+    await fs.writeFile(path.join(extraSkillRoot, "ux", "SKILL.md"), "---\ndescription: Duplicate UX should be omitted\n---\nDuplicate body.", "utf8");
+    let promptText = "";
+    const thread = createMockThread(() => codexResultStream("codex-discovery", "Done."), async (input) => {
+      promptText = typeof input === "string" ? input : JSON.stringify(input);
+    });
+    const adapter = createMockCodexAdapter(thread);
+    const service = new AgentService(config, undefined, undefined, () => adapter);
+
+    await collect(service.stream({ session: metadata(config.workspaceDir), request: { prompt: "hello" } }));
+
+    expect(adapter.startThread).toHaveBeenCalledWith(expect.objectContaining({ additionalDirectories: [config.bottleDir, extraSkillRoot] }));
+    expect(promptText).toContain("Bottle discovery folders:");
+    expect(promptText).toContain("Bottle configuration and discovery are provided from `.bottle` and configured extra skill roots");
+    expect(promptText).toContain("Treat that Bottle context as the authoritative project guidance");
+    expect(promptText).toContain("/review (review.md) - Review current changes");
+    expect(promptText).toContain("Skill manifest:");
+    expect(promptText).toContain(`- ux - UX review; source: .bottle/skills (${config.skillsDir}); SKILL.md: ${path.join(config.skillsDir, "ux", "SKILL.md")}`);
+    expect(promptText).toContain(`- api - API guidance; source: extra-1 (${extraSkillRoot}); SKILL.md: ${path.join(extraSkillRoot, "api", "SKILL.md")}`);
+    expect(promptText).toContain("references[colors.md]");
+    expect(promptText).toContain("scripts[build.js]");
+    expect(promptText).toContain("assets[template/]");
+    expect(promptText).not.toContain("Review UI body should stay out");
+    expect(promptText).not.toContain("API body should stay out");
+    expect(promptText).not.toContain("resource content should stay out");
+    expect(promptText).not.toContain("script content should stay out");
+    expect(promptText).not.toContain("Duplicate UX should be omitted");
+    expect(promptText).not.toContain(missingSkillRoot);
   });
 
   it("starts a Codex thread and normalizes streamed events", async () => {
@@ -192,6 +240,7 @@ describe("Codex AgentService runtime", () => {
     const events = await collect(service.stream({ session, request: { prompt: "Create product CRUD", mode: "plan" } }));
 
     expect(promptText).toContain("You are in plan mode. Inspect/read only. Do not modify files.");
+    expect(promptText).toContain("Use the Bottle discovery folders and configured extra skill roots as the authoritative source for project instructions");
     expect(promptText).toContain("include 2-4 concise suggested options as simple bullet lines");
     expect(events.map((event) => event.type)).toEqual([
       "codex_event",
@@ -316,6 +365,70 @@ describe("Codex AgentService runtime", () => {
     expect(seenSignal?.aborted).toBe(true);
     release();
     await iterator.return?.(undefined);
+  });
+
+  it("reports an explicit Codex interrupt instead of a generic agent error", async () => {
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
+    let seenSignal: AbortSignal | undefined;
+    const thread = createMockThread(
+      async function* () {
+        yield { type: "thread.started", thread_id: "codex-interrupt" };
+        await new Promise<void>((_, reject) => {
+          if (seenSignal?.aborted) {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+            return;
+          }
+          seenSignal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+        });
+      },
+      (_input, options) => {
+        seenSignal = options?.signal;
+      }
+    );
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+    const iterator = service.stream({ session: metadata(config.workspaceDir), request: { prompt: "wait" } });
+
+    await expect(iterator.next()).resolves.toMatchObject({ value: { type: "codex_event" }, done: false });
+    const rejection = iterator.next().catch((error: unknown) => error);
+    await Promise.resolve();
+    await expect(service.interrupt("app-1")).resolves.toBe(true);
+
+    await expect(rejection).resolves.toBeInstanceOf(RunAbortedError);
+    await expect(rejection).resolves.toMatchObject({
+      code: "run_interrupted",
+      message: "Agent run was interrupted"
+    });
+  });
+
+  it("reports a run timeout when a Codex stream exceeds RUN_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex", RUN_TIMEOUT_MS: "50" });
+    let seenSignal: AbortSignal | undefined;
+    const thread = createMockThread(
+      async function* () {
+        yield { type: "thread.started", thread_id: "codex-timeout" };
+        await new Promise<void>((_, reject) => {
+          seenSignal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+        });
+      },
+      (_input, options) => {
+        seenSignal = options?.signal;
+      }
+    );
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+
+    try {
+      const pending = collect(service.stream({ session: metadata(config.workspaceDir), request: { prompt: "wait" } }));
+      const rejection = pending.catch((error: unknown) => error);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+
+      await expect(rejection).resolves.toBeInstanceOf(RunTimeoutError);
+      expect(seenSignal?.aborted).toBe(true);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("normalizes failed Codex turns as Bottle errors", () => {

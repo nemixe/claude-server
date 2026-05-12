@@ -39,6 +39,9 @@ export type ClaudeCommandInput = {
   content: string;
 };
 
+export type BottleCommand = ClaudeCommand;
+export type BottleCommandInput = ClaudeCommandInput;
+
 export type WorkspaceSearchResult = {
   path: string;
   name: string;
@@ -50,6 +53,13 @@ export type WorkspaceSearchResult = {
 
 export type RootInfoResponse = {
   projectRoot: string;
+  bottleDir: string;
+  agentsDir: string;
+  commandsDir: string;
+  rulesDir: string;
+  skillsDir: string;
+  extraSkillRoots: string[];
+  skillRoots: string[];
   claudeCommandsDir: string;
 };
 
@@ -71,15 +81,24 @@ export type BottleInfoResponse = {
   name: string;
   apiBaseUrl: string;
   appUrl?: string;
+  mainAppUrl?: string;
+  appProxyUrl?: string;
   defaultAgentProvider: AgentProvider;
   availableAgentProviders: AgentProvider[];
   features: {
     mainApp: boolean;
+    mainAppProxy: boolean;
+    mainAppDirect?: boolean;
+    clientAtRoot?: boolean;
     iframeBridge: boolean;
     sessions: boolean;
     streaming: boolean;
     settings: boolean;
     claudeCommands: boolean;
+    agents: boolean;
+    commands: boolean;
+    rules: boolean;
+    skills: boolean;
     workspaceSearch: boolean;
     authToken: boolean;
   };
@@ -140,6 +159,19 @@ export type ListMessagesResponse = {
   nextOffset?: number;
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
+};
+
+export type SettingsResponse = {
+  maxConcurrentRuns: number;
+  maxTurns: number;
+  defaultAgentProvider: AgentProvider;
+  availableAgentProviders: AgentProvider[];
+};
+
+export type UpdateSettingsRequest = {
+  maxConcurrentRuns?: number;
+  maxTurns?: number;
+  defaultAgentProvider?: AgentProvider;
 };
 
 export type NormalizedAgentEvent = {

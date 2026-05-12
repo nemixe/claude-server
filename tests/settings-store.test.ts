@@ -12,18 +12,20 @@ describe("SettingsStore", () => {
     const settings = await store.load();
     expect(settings.maxConcurrentRuns).toBe(2);
     expect(settings.maxTurns).toBe(5);
+    expect(settings.defaultAgentProvider).toBe("claude");
   });
 
   it("persists and reloads settings from disk", async () => {
     const config = await createTempConfig();
     const store = new SettingsStore(config);
 
-    await store.save({ maxConcurrentRuns: 8, maxTurns: 50 });
+    await store.save({ maxConcurrentRuns: 8, maxTurns: 50, defaultAgentProvider: "codex" });
 
     const freshStore = new SettingsStore(config);
     const loaded = await freshStore.load();
     expect(loaded.maxConcurrentRuns).toBe(8);
     expect(loaded.maxTurns).toBe(50);
+    expect(loaded.defaultAgentProvider).toBe("codex");
   });
 
   it("preserves unpatched fields on partial save", async () => {
@@ -35,17 +37,23 @@ describe("SettingsStore", () => {
     const loaded = await freshStore.load();
     expect(loaded.maxConcurrentRuns).toBe(8);
     expect(loaded.maxTurns).toBe(5);
+    expect(loaded.defaultAgentProvider).toBe("claude");
   });
 
   it("ignores invalid values in the file and falls back to defaults", async () => {
     const config = await createTempConfig();
     const filePath = path.join(config.sessionDir, "settings.json");
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify({ maxConcurrentRuns: -1, maxTurns: "bad" }), "utf8");
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({ maxConcurrentRuns: -1, maxTurns: "bad", defaultAgentProvider: "bad" }),
+      "utf8"
+    );
 
     const store = new SettingsStore(config);
     const settings = await store.load();
     expect(settings.maxConcurrentRuns).toBe(2);
     expect(settings.maxTurns).toBe(5);
+    expect(settings.defaultAgentProvider).toBe("claude");
   });
 });

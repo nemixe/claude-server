@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
+import { installGatewayUpgradeProxy } from "./gateway.js";
 import { createSessionFactory } from "./session-adapter.js";
 
 export type RunningClaudeServer = {
@@ -36,6 +37,7 @@ export async function startClaudeServer(
         console.log(`Bottle listening on http://${info.address}:${info.port}`);
       })
   );
+  installGatewayUpgradeProxy(server, config);
 
   return {
     app,
