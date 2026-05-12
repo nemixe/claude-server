@@ -57,6 +57,7 @@ describe("CLI", () => {
     await expect(fs.readFile(path.join(cwd, ".bottle", ".codex-plugin", "plugin.json"), "utf8")).resolves.toContain('"commands": "./commands/"');
     await expect(fs.stat(path.join(cwd, ".bottle", "runtime", "dist", "cli.js"))).resolves.toMatchObject({});
     await expect(fs.readFile(path.join(cwd, ".bottle", "runtime", "package.json"), "utf8")).resolves.toContain('"name": "bottle"');
+    await expect(fs.readFile(path.join(cwd, ".bottle", "runtime", "package-lock.json"), "utf8")).resolves.toContain('"lockfileVersion"');
     const startScript = await fs.readFile(path.join(cwd, ".bottle", "scripts", "start-bottle.mjs"), "utf8");
     expect(startScript).toContain("process.execPath");
     expect(startScript).toContain("runtime/dist/cli.js");
@@ -101,6 +102,47 @@ describe("CLI", () => {
         ok: true,
         service: "fake-bottle"
       });
+    } finally {
+      child.kill("SIGTERM");
+      await waitForExit(child);
+    }
+  });
+
+  it("repairs missing vendored runtime dependencies before starting", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cli-runtime-install-"));
+    const runtimeSource = await createFakeBottleRuntime(cwd, { dependencies: { "fake-dep": "1.0.0" } });
+    const fakeBinDir = await createFakeNpm(cwd);
+    const stdout = createBufferedStream();
+    const stderr = createBufferedStream();
+
+    const code = await runCli(
+      ["init", "--name", "runtime-install", "--port", "3001"],
+      {
+        cwd,
+        env: { ...process.env, BOTTLE_RUNTIME_SOURCE_DIR: runtimeSource },
+        stdout: stdout.stream,
+        stderr: stderr.stream
+      }
+    );
+    expect(code).toBe(0);
+
+    await fs.rm(path.join(cwd, ".bottle", "runtime", "node_modules"), { recursive: true, force: true });
+
+    const child = spawn(process.execPath, [path.join(cwd, ".bottle", "scripts", "start-bottle.mjs")], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}` }
+    });
+
+    try {
+      const url = await waitForListeningUrl(child);
+      await expect(fetch(`${url}/health`).then((response) => response.json())).resolves.toMatchObject({
+        ok: true,
+        service: "fake-bottle"
+      });
+      await expect(fs.readFile(path.join(cwd, ".bottle", "runtime", "node_modules", "fake-dep", "package.json"), "utf8")).resolves.toContain(
+        '"fake-dep"'
+      );
     } finally {
       child.kill("SIGTERM");
       await waitForExit(child);
@@ -179,18 +221,44 @@ describe("CLI", () => {
   });
 });
 
-async function createFakeBottleRuntime(root: string): Promise<string> {
+async function createFakeBottleRuntime(root: string, options: { dependencies?: Record<string, string> } = {}): Promise<string> {
   const runtimeRoot = path.join(root, "fake-runtime");
+  const dependencies = options.dependencies ?? {};
   await fs.mkdir(path.join(runtimeRoot, "dist"), { recursive: true });
   await fs.writeFile(
     path.join(runtimeRoot, "package.json"),
     JSON.stringify(
-      { name: "bottle", version: "0.0.0-test", type: "module", bin: { bottle: "./dist/cli.js" }, dependencies: {} },
+      { name: "bottle", version: "0.0.0-test", type: "module", bin: { bottle: "./dist/cli.js" }, dependencies },
       null,
       2
     ),
     "utf8"
   );
+  await fs.writeFile(
+    path.join(runtimeRoot, "package-lock.json"),
+    JSON.stringify(
+      {
+        name: "bottle",
+        version: "0.0.0-test",
+        lockfileVersion: 3,
+        packages: {
+          "": {
+            name: "bottle",
+            version: "0.0.0-test",
+            dependencies
+          }
+        }
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  for (const [dependencyName, version] of Object.entries(dependencies)) {
+    const dependencyDir = path.join(runtimeRoot, "node_modules", ...dependencyName.split("/"));
+    await fs.mkdir(dependencyDir, { recursive: true });
+    await fs.writeFile(path.join(dependencyDir, "package.json"), JSON.stringify({ name: dependencyName, version }, null, 2), "utf8");
+  }
   await fs.writeFile(path.join(runtimeRoot, ".env.example"), "SHOULD_NOT_BE_VENDORED=true\n", "utf8");
   await fs.writeFile(
     path.join(runtimeRoot, "dist", "cli.js"),
@@ -219,6 +287,27 @@ async function createFakeBottleRuntime(root: string): Promise<string> {
     "utf8"
   );
   return runtimeRoot;
+}
+
+async function createFakeNpm(root: string): Promise<string> {
+  const binDir = path.join(root, "fake-bin");
+  const npmPath = path.join(binDir, process.platform === "win32" ? "npm.cmd" : "npm");
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(
+    npmPath,
+    [
+      "#!/usr/bin/env node",
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'const dependencyDir = path.join(process.cwd(), "node_modules", "fake-dep");',
+      "fs.mkdirSync(dependencyDir, { recursive: true });",
+      'fs.writeFileSync(path.join(dependencyDir, "package.json"), JSON.stringify({ name: "fake-dep", version: "1.0.0" }, null, 2));',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.chmod(npmPath, 0o755);
+  return binDir;
 }
 
 function waitForListeningUrl(child: ReturnType<typeof spawn>): Promise<string> {

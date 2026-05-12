@@ -32,6 +32,7 @@ const RUNTIME_DIR_NAME = "runtime";
 const RUNTIME_SOURCE_ENV = "BOTTLE_RUNTIME_SOURCE_DIR";
 const DISCOVERY_DIR_NAMES = ["agents", "commands", "rules", "skills"] as const;
 const SKIPPED_COPY_SEGMENTS = new Set([".git", "node_modules", ".data"]);
+const RUNTIME_LOCKFILE_NAMES = ["package-lock.json", "npm-shrinkwrap.json"] as const;
 
 export async function runCli(argv = process.argv.slice(2), options: CliOptions = {}): Promise<number> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
@@ -312,6 +313,7 @@ async function vendorBottleRuntime(sourceRoot: string, runtimeDir: string, force
   });
   await fs.copyFile(packageJsonPath, path.join(runtimeDir, "package.json"));
   await copyRuntimeMetadataFile(sourceRoot, runtimeDir, "README.md");
+  await copyRuntimeLockfiles(sourceRoot, runtimeDir);
 
   const packageJson = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as { dependencies?: Record<string, string> };
   const dependencyNames = Object.keys(packageJson.dependencies ?? {});
@@ -340,6 +342,12 @@ async function copyRuntimeMetadataFile(sourceRoot: string, runtimeDir: string, f
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") throw error;
+  }
+}
+
+async function copyRuntimeLockfiles(sourceRoot: string, runtimeDir: string): Promise<void> {
+  for (const filename of RUNTIME_LOCKFILE_NAMES) {
+    await copyRuntimeMetadataFile(sourceRoot, runtimeDir, filename);
   }
 }
 
@@ -485,7 +493,10 @@ function renderStartScript(input: { configPath: string; runtimeCliPath?: string 
   const normalizedConfigPath = input.configPath.split(path.sep).join("/");
   const normalizedRuntimeCliPath = input.runtimeCliPath?.split(path.sep).join("/");
   const childSpawn = normalizedRuntimeCliPath
-    ? `const runtimeCliPath = fileURLToPath(new URL(${JSON.stringify(normalizedRuntimeCliPath)}, import.meta.url));
+    ? `const runtimeDir = fileURLToPath(new URL("../runtime/", import.meta.url));
+const runtimeCliPath = fileURLToPath(new URL(${JSON.stringify(normalizedRuntimeCliPath)}, import.meta.url));
+
+ensureRuntimeDependencies(runtimeDir);
 
 const child = spawn(process.execPath, [runtimeCliPath, "start", "--config", configPath], {
   stdio: "inherit"
@@ -494,11 +505,54 @@ const child = spawn(process.execPath, [runtimeCliPath, "start", "--config", conf
   stdio: "inherit"
 });`;
   return `#!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const configPath = fileURLToPath(new URL(${JSON.stringify(normalizedConfigPath)}, import.meta.url));
 ${childSpawn}
+
+function ensureRuntimeDependencies(runtimeDir) {
+  const dependencyNames = getRuntimeDependencyNames(runtimeDir);
+  const missingDependencies = dependencyNames.filter((dependencyName) => !fs.existsSync(packageManifestPath(runtimeDir, dependencyName)));
+  if (missingDependencies.length === 0) return;
+
+  console.error(\`[bottle] Installing missing runtime dependencies: \${missingDependencies.join(", ")}\`);
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const result = spawnSync(npmCommand, ["install", "--omit=dev", "--no-audit", "--no-fund"], {
+    cwd: runtimeDir,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      npm_config_update_notifier: "false"
+    }
+  });
+
+  if (result.error) {
+    console.error(\`[bottle] Failed to install runtime dependencies: \${result.error.message}\`);
+    process.exit(1);
+  }
+
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
+
+function getRuntimeDependencyNames(runtimeDir) {
+  const packageJsonPath = path.join(runtimeDir, "package.json");
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    return Object.keys(packageJson.dependencies ?? {});
+  } catch (error) {
+    console.error(\`[bottle] Failed to read runtime package.json: \${error instanceof Error ? error.message : "unknown error"}\`);
+    process.exit(1);
+  }
+}
+
+function packageManifestPath(runtimeDir, packageName) {
+  return path.join(runtimeDir, "node_modules", ...packageName.split("/"), "package.json");
+}
 
 let stopping = false;
 let childExited = false;
