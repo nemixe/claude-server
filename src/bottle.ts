@@ -47,7 +47,7 @@ export function createBottleAuthMiddleware(config: AppConfig): MiddlewareHandler
 }
 
 export function bottleInfoForRequest(config: AppConfig, requestUrl: string, headers?: Headers): BottleInfoResponse {
-  const origin = getEffectiveOrigin(requestUrl, headers, config.trustProxy);
+  const origin = getEffectiveOrigin(requestUrl, headers, config.trustProxy, config.mainAppUrl);
   const isGatewayProxyEnabled = Boolean(config.mainAppProxy && config.mainAppUrl);
   const isDirectMainApp = isDirectMainAppGateway(config);
   const isConditionalRootClient = isDirectMainApp && !hasTargetAppUrlCookie(headers);

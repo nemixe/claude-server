@@ -43,7 +43,7 @@ export function registerGatewayRoutes(app: Hono, config: AppConfig): void {
   app.all("*", async (c) => {
     const target = resolveGatewayProxyTarget(config, c.req.url, c.req.raw.headers);
     if (!target) return c.notFound();
-    return proxyHttpRequest(c.req.raw, target, getEffectiveOrigin(c.req.url, c.req.raw.headers, config.trustProxy), config);
+    return proxyHttpRequest(c.req.raw, target, getEffectiveOrigin(c.req.url, c.req.raw.headers, config.trustProxy, config.mainAppUrl), config);
   });
 }
 

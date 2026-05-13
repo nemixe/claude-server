@@ -249,4 +249,20 @@ describe("config and hostname parsing", () => {
     expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers, true)).toBe("https://prototype.example.com");
     expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers, false)).toBe("http://internal:3001");
   });
+
+  it("uses a matching public origin hint when forwarded proto is unavailable", () => {
+    const headers = new Headers({
+      host: "prototype.example.com"
+    });
+    const mismatchedHeaders = new Headers({
+      host: "other.example.com"
+    });
+
+    expect(getEffectiveOrigin("http://prototype.example.com/v1/bottle", headers, true, "https://prototype.example.com")).toBe(
+      "https://prototype.example.com"
+    );
+    expect(getEffectiveOrigin("http://other.example.com/v1/bottle", mismatchedHeaders, true, "https://prototype.example.com")).toBe(
+      "http://other.example.com"
+    );
+  });
 });

@@ -148,6 +148,32 @@ describe("Hono API", () => {
     });
   });
 
+  it("uses the configured HTTPS main app origin when proxy headers omit proto", async () => {
+    const config = await createTempConfig({
+      ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,ai-proto.devnstg.com,localhost",
+      TRUST_PROXY: "true",
+      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
+      MAIN_APP_PROXY: "false",
+      CLIENT_ORIGINS: "https://ai-proto.devnstg.com"
+    });
+    const app = await createApp({ config });
+
+    const infoResponse = await app.request("http://internal/v1/bottle", {
+      headers: {
+        host: "ai-proto-dev-1.devnstg.com",
+        origin: "https://ai-proto.devnstg.com"
+      }
+    });
+    const infoBody = await infoResponse.json();
+
+    expect(infoResponse.status).toBe(200);
+    expect(infoBody).toMatchObject({
+      apiBaseUrl: "https://ai-proto-dev-1.devnstg.com",
+      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
+      appUrl: "https://ai-proto-dev-1.devnstg.com"
+    });
+  });
+
   it("advertises appProxyUrl for AI iframe proxy mode while preserving the real main app URL", async () => {
     const config = await createTempConfig({
       MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",

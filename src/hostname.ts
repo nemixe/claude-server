@@ -67,9 +67,14 @@ export function getEffectiveHost(headers: Headers, trustProxy: boolean): string 
   return headers.get("host") ?? undefined;
 }
 
-export function getEffectiveOrigin(requestUrl: string, headers: Headers | undefined, trustProxy: boolean): string {
+export function getEffectiveOrigin(
+  requestUrl: string,
+  headers: Headers | undefined,
+  trustProxy: boolean,
+  publicOriginHint?: string
+): string {
   const fallbackUrl = new URL(requestUrl);
-  if (!trustProxy || !headers) return fallbackUrl.origin;
+  if (!trustProxy || !headers) return coerceToPublicOriginHint(fallbackUrl.origin, publicOriginHint);
 
   const forwarded = parseForwardedHeader(headers.get("forwarded"));
   const forwardedHost = firstHeaderValue(headers.get("x-forwarded-host")) ?? forwarded.host;
@@ -78,10 +83,26 @@ export function getEffectiveOrigin(requestUrl: string, headers: Headers | undefi
   const protocol = normalizeProtocol(forwardedProto) ?? fallbackUrl.protocol.replace(/:$/, "");
 
   try {
-    return new URL(`${protocol}://${host}`).origin;
+    return coerceToPublicOriginHint(new URL(`${protocol}://${host}`).origin, publicOriginHint);
   } catch {
-    return fallbackUrl.origin;
+    return coerceToPublicOriginHint(fallbackUrl.origin, publicOriginHint);
   }
+}
+
+function coerceToPublicOriginHint(origin: string, publicOriginHint: string | undefined): string {
+  if (!publicOriginHint) return origin;
+
+  try {
+    const parsedOrigin = new URL(origin);
+    const parsedHint = new URL(publicOriginHint);
+    if (parsedOrigin.host === parsedHint.host && parsedOrigin.protocol !== parsedHint.protocol) {
+      return parsedHint.origin;
+    }
+  } catch {
+    return origin;
+  }
+
+  return origin;
 }
 
 function parseForwardedHeader(value: string | undefined | null): { host?: string; proto?: string } {
