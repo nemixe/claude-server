@@ -46,6 +46,36 @@ describe("Hono API", () => {
     }
   });
 
+  it("ignores keep-alive write failures after a stream closes", async () => {
+    vi.useFakeTimers();
+    const stream = {
+      aborted: false,
+      closed: false,
+      write: vi.fn(async () => {
+        throw new Error("stream closed");
+      })
+    };
+    let finish!: () => void;
+
+    try {
+      const pending = withSseHeartbeat(
+        stream,
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+        25
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      finish();
+      await expect(pending).resolves.toBeUndefined();
+      expect(stream.write).toHaveBeenCalledWith(": keep-alive\n\n");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("exposes Bottle discovery metadata behind the hostname gate", async () => {
     const config = await createTempConfig({ BOTTLE_NAME: "prototype-a", MAIN_APP_URL: "http://localhost:5173" });
     const app = await createApp({ config });
@@ -459,6 +489,7 @@ describe("Hono API", () => {
     });
 
     expect(streamResponse.status).toBe(200);
+    expect(streamResponse.headers.get("x-accel-buffering")).toBe("no");
     const streamText = await streamResponse.text();
     expect(streamText).toContain("event: message");
     expect(streamText).toContain("event: result");
@@ -486,6 +517,7 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     expect(observeResponse.status).toBe(200);
+    expect(observeResponse.headers.get("x-accel-buffering")).toBe("no");
     const observeText = await observeResponse.text();
     expect(observeText).toContain("event: status");
     expect(observeText).toContain('"running":false');

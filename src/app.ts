@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE, type SSEStreamingApi } from "hono/streaming";
 import { z } from "zod";
 import {
@@ -53,14 +53,35 @@ type HeartbeatStream = Pick<SSEStreamingApi, "aborted" | "closed"> & {
   write: (input: string) => Promise<unknown>;
 };
 
+function prepareSseResponse(c: Context): void {
+  c.header("X-Accel-Buffering", "no");
+  c.header("Cache-Control", "no-cache, no-transform");
+  c.header("Connection", "keep-alive");
+}
+
+async function writeSseKeepAlive(stream: HeartbeatStream): Promise<void> {
+  if (stream.aborted || stream.closed) return;
+  try {
+    await stream.write(": keep-alive\n\n");
+  } catch {
+    // The client or an intermediate proxy can close the stream between the
+    // state check and the write. Keep-alive failures should not crash Bottle.
+  }
+}
+
 export async function withSseHeartbeat<T>(
   stream: HeartbeatStream,
   callback: () => Promise<T>,
   intervalMs = SSE_HEARTBEAT_INTERVAL_MS
 ): Promise<T> {
+  let heartbeatWriting = false;
   const heartbeat = setInterval(() => {
     if (stream.aborted || stream.closed) return;
-    void stream.write(": keep-alive\n\n");
+    if (heartbeatWriting) return;
+    heartbeatWriting = true;
+    void writeSseKeepAlive(stream).finally(() => {
+      heartbeatWriting = false;
+    });
   }, intervalMs);
 
   if (typeof heartbeat === "object" && "unref" in heartbeat && typeof heartbeat.unref === "function") {
@@ -348,6 +369,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
 
     const observation = agentService.observe(session.id);
 
+    prepareSseResponse(c);
     return streamSSE(c, async (stream) => {
       await withSseHeartbeat(stream, async () => {
         await stream.writeSSE({
@@ -391,6 +413,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
 
     if (session.pendingInterrupt && !request.toolResult) {
       const pendingEvent = pendingEventFromSessionInterrupt(session.pendingInterrupt);
+      prepareSseResponse(c);
       return streamSSE(c, async (stream) => {
         await withSseHeartbeat(stream, async () => {
           await stream.writeSSE({
@@ -405,6 +428,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
       });
     }
 
+    prepareSseResponse(c);
     return streamSSE(c, async (stream) => {
       await withSseHeartbeat(stream, async () => {
         let sessionMarkedAsRun = false;
