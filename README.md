@@ -1,6 +1,6 @@
 # Bottle
 
-Hono-based Bottle runtime for Claude Agent SDK or Codex SDK sessions. Bottle exposes a stable `/v1/*` HTTP/SSE API, conditionally serves AI Client or the target app at `/`, and provides an iframe bridge that lets AI Client send live app context with assistant prompts.
+Hono-based Bottle runtime for Claude Agent SDK or Codex SDK sessions. Bottle exposes a stable `/v1/*` HTTP/SSE API, can proxy target apps only for AI iframe sessions, and provides an iframe bridge that lets AI Client send live app context with assistant prompts.
 
 ## Setup
 
@@ -35,6 +35,33 @@ npx bottle init \
   --trust-proxy
 ```
 
+For the recommended AI iframe proxy mode, keep normal users on the main app URL and let only the AI iframe travel through Bottle:
+
+```bash
+npx bottle init \
+  --name prototype-a \
+  --copy-from /srv/prototype-a \
+  --main-app-url https://prototype.example.com \
+  --main-app-proxy true \
+  --main-app-direct false \
+  --allowed-hostnames ai-wrapper.example.com,localhost,127.0.0.1 \
+  --client-origins https://ai-wrapper.example.com \
+  --trust-proxy
+```
+
+For an API-only Bottle behind a host app that serves its own `/`, disable Bottle root gateway mode:
+
+```bash
+npx bottle init \
+  --name prototype-a \
+  --copy-from /srv/prototype-a \
+  --main-app-url https://prototype.example.com \
+  --main-app-proxy false \
+  --allowed-hostnames prototype.example.com,localhost,127.0.0.1 \
+  --client-origins https://ai-client.example.com \
+  --trust-proxy
+```
+
 The default bundle shape is:
 
 ```txt
@@ -52,13 +79,15 @@ export default {
   allowedHostnames: ["localhost", "127.0.0.1", "prototype.example.com"],
   trustProxy: true,
   clientOrigins: ["https://prototype.example.com"],
+  mainAppProxy: true,
+  mainAppDirect: false,
   sessionDir: "../.bottle/sessions"
 };
 ```
 
 `bottle init` vendors a self-contained Bottle runtime into `.bottle/runtime` by default. After initialization, the bundle only needs Node.js to run; it does not need `bottle` installed globally on the target machine. Use `bottle init --no-vendor-runtime` if you prefer the old lightweight bundle that shells out to a global `bottle start`.
 
-Point a browser at the Bottle base URL, for example `http://localhost:3001`. In the default single-origin gateway mode, Bottle serves AI Client at `/` while the `bottle_target_app_url` cookie is missing. After the user enters a target URL, the cookie is set and Bottle proxies normal root routes like `/` and `/dashboard` to the configured target app. Bottle reserves `/v1/*`, `/health`, and `/bottle-bridge.js` for itself. `GET /v1/bottle` returns same-origin `apiBaseUrl` and `mainAppUrl`, omits `appProxyUrl`, and reports `features.mainAppDirect: true`. The legacy `/__app/*` proxy remains available when `MAIN_APP_DIRECT=false`.
+Point a browser or AI Client at the Bottle base URL, for example `http://localhost:3001`. In recommended AI iframe proxy mode (`MAIN_APP_PROXY=true`, `MAIN_APP_DIRECT=false`), normal users continue using `mainAppUrl` directly, while AI iframe sessions should use the `appProxyUrl` returned by `GET /v1/bottle` so Bottle can inject `/bottle-bridge.js` into proxied HTML. In API-only mode (`MAIN_APP_PROXY=false`), Bottle exposes only its own routes such as `/v1/*`, `/health`, and `/bottle-bridge.js`; the host app keeps serving `/` and must include/provide the bridge itself if live iframe context is needed. Single-origin demo mode (`MAIN_APP_PROXY=true`, `MAIN_APP_DIRECT=true`) can route root traffic through Bottle, but it is not recommended for normal production user traffic.
 
 Bottle-local agent context lives under `.bottle`:
 
@@ -91,7 +120,7 @@ CLIENT_ORIGINS=http://localhost:5173,https://ai-client.example.com
 MAIN_APP_URL=http://localhost:3000
 CLIENT_APP_URL=http://localhost:5173
 MAIN_APP_PROXY=true
-MAIN_APP_DIRECT=true
+MAIN_APP_DIRECT=false
 BOTTLE_API_TOKEN=optional-shared-token
 ```
 
@@ -100,8 +129,8 @@ If `BOTTLE_API_TOKEN` is set, `/v1/*` requests must include either `Authorizatio
 ## Endpoints
 
 - `GET /health`
-- `GET /` (AI Client when no `bottle_target_app_url` cookie exists; target app when it does)
-- `GET /__app/*`
+- `GET /` (only when Bottle root gateway mode is enabled)
+- `GET /__app/*` (AI iframe proxy mode)
 - `GET /v1/bottle`
 - `GET /bottle-bridge.js`
 - `GET /v1/root`
@@ -127,7 +156,7 @@ Modes are `plan`, `edit`, and `bypass`. Tool execution runs from the configured 
 
 ## Iframe Bridge
 
-Bottle serves `/bottle-bridge.js` for richer iframe context. Target apps can include it manually when they want assistant context and navigation events. The bridge responds to AI client messages:
+Bottle serves `/bottle-bridge.js` for richer iframe context. When `appProxyUrl` is present in `GET /v1/bottle`, AI wrappers should use it for iframe `src`; Bottle injects the bridge into proxied HTML. Target apps can include the bridge manually when proxy mode is disabled. The bridge responds to AI client messages:
 
 ```js
 { type: "ai-client:hello", protocolVersion: 1 }

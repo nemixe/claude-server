@@ -49,6 +49,8 @@ describe("CLI", () => {
     expect(configFile).toContain('"trustProxy": false');
     expect(configFile).toContain('"clientOrigins"');
     expect(configFile).toContain('"http://localhost:5173"');
+    expect(configFile).toContain('"mainAppProxy": true');
+    expect(configFile).toContain('"mainAppDirect": false');
     expect(configFile).not.toContain("agentProvider");
     expect(configFile).toContain('"sessionDir": "../.bottle/sessions"');
     expect(configFile).not.toContain("workspaceDir");
@@ -73,6 +75,9 @@ describe("CLI", () => {
     await expect(fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8")).resolves.toContain(
       "/v1/* -> http://127.0.0.1:3001/v1/*"
     );
+    await expect(fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8")).resolves.toContain("recommended AI iframe proxy mode");
+    await expect(fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8")).resolves.toContain("appProxyUrl");
+    await expect(fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8")).resolves.toContain("/__app/* -> http://127.0.0.1:3001/__app/*");
     expect(stdout.text).toContain("Created Bottle integration for prototype-a");
     expect(stdout.text).not.toContain(".bottle/bottle.env");
     expect(stdout.text).not.toContain(".bottle/app.env");
@@ -113,6 +118,81 @@ describe("CLI", () => {
     expect(configFile).toContain('"trustProxy": true');
     expect(configFile).toContain('"clientOrigins"');
     expect(configFile).toContain('"https://ai-proto-dev-1.devnstg.com"');
+    expect(configFile).toContain('"mainAppProxy": true');
+    expect(configFile).toContain('"mainAppDirect": false');
+  });
+
+  it("labels explicit direct main-app routing as single-origin demo mode", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cli-single-origin-"));
+    const runtimeSource = await createFakeBottleRuntime(cwd);
+    const stdout = createBufferedStream();
+    const stderr = createBufferedStream();
+
+    const code = await runCli(
+      ["init", "--name", "single-origin", "--main-app-direct", "true"],
+      {
+        cwd,
+        env: { ...process.env, BOTTLE_RUNTIME_SOURCE_DIR: runtimeSource },
+        stdout: stdout.stream,
+        stderr: stderr.stream
+      }
+    );
+
+    expect(code).toBe(0);
+    expect(stderr.text).toBe("");
+
+    const configFile = await fs.readFile(path.join(cwd, ".bottle", "bottle.config.mjs"), "utf8");
+    expect(configFile).toContain('"mainAppProxy": true');
+    expect(configFile).toContain('"mainAppDirect": true');
+
+    const docs = await fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8");
+    expect(docs).toContain("single-origin demo mode");
+    expect(docs).toContain("avoid this mode for normal production user traffic");
+  });
+
+  it("writes API-only host app settings into generated config", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-cli-api-only-"));
+    const runtimeSource = await createFakeBottleRuntime(cwd);
+    const stdout = createBufferedStream();
+    const stderr = createBufferedStream();
+
+    const code = await runCli(
+      [
+        "init",
+        "--name",
+        "api-only",
+        "--main-app-url",
+        "https://ai-proto-dev-1.devnstg.com",
+        "--main-app-proxy",
+        "false",
+        "--allowed-hostnames",
+        "ai-proto-dev-1.devnstg.com,localhost",
+        "--client-origins",
+        "https://ai-wrapper.devnstg.com",
+        "--trust-proxy"
+      ],
+      {
+        cwd,
+        env: { ...process.env, BOTTLE_RUNTIME_SOURCE_DIR: runtimeSource },
+        stdout: stdout.stream,
+        stderr: stderr.stream
+      }
+    );
+
+    expect(code).toBe(0);
+    expect(stderr.text).toBe("");
+
+    const configFile = await fs.readFile(path.join(cwd, ".bottle", "bottle.config.mjs"), "utf8");
+    expect(configFile).toContain('"mainAppUrl": "https://ai-proto-dev-1.devnstg.com"');
+    expect(configFile).toContain('"mainAppProxy": false');
+    expect(configFile).toContain('"ai-proto-dev-1.devnstg.com"');
+    expect(configFile).toContain('"https://ai-wrapper.devnstg.com"');
+
+    const docs = await fs.readFile(path.join(cwd, ".bottle", "README.md"), "utf8");
+    expect(docs).toContain("API-only host mode");
+    expect(docs).toContain("proxy only `/v1/*` plus `/bottle-bridge.js`");
+    expect(docs).toContain("app must include `/bottle-bridge.js` itself");
+    expect(docs).not.toContain("/__app/* ->");
   });
 
   it("can run the generated start script through the vendored runtime", async () => {

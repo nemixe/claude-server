@@ -91,6 +91,13 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
     "client-origins"
   );
   const mainAppUrl = flags.values.get("main-app-url") ?? flags.values.get("app-url") ?? DEFAULT_MAIN_APP_URL;
+  const clientAppUrl = flags.values.get("client-app-url");
+  const mainAppProxy = hasOptionalBooleanFlag(flags, "main-app-proxy")
+    ? parseOptionalBooleanFlag(flags, "main-app-proxy", true)
+    : true;
+  const mainAppDirect = hasOptionalBooleanFlag(flags, "main-app-direct")
+    ? parseOptionalBooleanFlag(flags, "main-app-direct", false)
+    : false;
   const vendorRuntime = !flags.booleans.has("no-vendor-runtime");
   const runtimeSourceRoot = runtimeSourceRootFromEnv(options.env);
   const projectRootConfigValue = relativePath(bottleDir, projectRoot);
@@ -124,6 +131,9 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
       trustProxy,
       clientOrigins,
       mainAppUrl,
+      clientAppUrl,
+      mainAppProxy,
+      mainAppDirect,
       sessionDir
     }),
     "utf8"
@@ -148,6 +158,9 @@ async function initCommand(args: string[], options: { cwd: string; env: NodeJS.P
       configPath: path.relative(bundleRoot, configPath),
       startScriptPath: path.relative(bundleRoot, startScriptPath),
       discoveryPaths: discoveryDirs.map((dirPath) => path.relative(bundleRoot, dirPath)),
+      clientAppUrl,
+      mainAppProxy,
+      mainAppDirect,
       runtimePath: vendorRuntime ? path.relative(bundleRoot, runtimeDir) : undefined
     }),
     "utf8"
@@ -237,6 +250,10 @@ function parseOptionalBooleanFlag(flags: ParsedFlags, name: string, fallback: bo
   if (/^(true|1|yes)$/i.test(value)) return true;
   if (/^(false|0|no)$/i.test(value)) return false;
   throw new Error(`${name} must be a boolean`);
+}
+
+function hasOptionalBooleanFlag(flags: ParsedFlags, name: string): boolean {
+  return flags.booleans.has(name) || flags.values.has(name);
 }
 
 function normalizeInstanceName(value: string): string {
@@ -462,6 +479,9 @@ function renderConfigFile(input: {
   trustProxy: boolean;
   clientOrigins: string[];
   mainAppUrl?: string;
+  clientAppUrl?: string;
+  mainAppProxy?: boolean;
+  mainAppDirect?: boolean;
   sessionDir: string;
 }): string {
   const config: Record<string, unknown> = {
@@ -474,6 +494,9 @@ function renderConfigFile(input: {
     trustProxy: input.trustProxy,
     clientOrigins: input.clientOrigins,
     ...(input.mainAppUrl ? { mainAppUrl: input.mainAppUrl } : {}),
+    ...(input.clientAppUrl ? { clientAppUrl: input.clientAppUrl } : {}),
+    ...(input.mainAppProxy !== undefined ? { mainAppProxy: input.mainAppProxy } : {}),
+    ...(input.mainAppDirect !== undefined ? { mainAppDirect: input.mainAppDirect } : {}),
     sessionDir: input.sessionDir,
     claudeModel: DEFAULT_MODEL
   };
@@ -609,6 +632,9 @@ function renderIntegrationDocs(input: {
   port: number;
   projectRoot: string;
   mainAppUrl?: string;
+  clientAppUrl?: string;
+  mainAppProxy?: boolean;
+  mainAppDirect?: boolean;
   configPath: string;
   startScriptPath: string;
   discoveryPaths: string[];
@@ -625,6 +651,16 @@ bottle start --config ${input.configPath}`;
   const discoveryDescription = input.discoveryPaths
     .map((dirPath) => `- \`${dirPath}\` - Bottle-local ${path.basename(dirPath)} discovery folder.`)
     .join("\n");
+  const mainAppProxyDescription = input.mainAppProxy === false
+    ? `This bundle is configured for API-only host mode. Keep the host app serving its own root routes from \`${input.mainAppUrl ?? "(not configured)"}\`, and proxy only \`/v1/*\` plus \`/bottle-bridge.js\` to Bottle. If the iframe needs live page context in this mode, the app must include \`/bottle-bridge.js\` itself.`
+    : input.mainAppDirect === false
+      ? `This bundle is configured for the recommended AI iframe proxy mode. Keep normal users on the main app URL \`${input.mainAppUrl ?? "(not configured)"}\`. Point AI iframe sessions at the \`appProxyUrl\` returned by \`GET /v1/bottle\` (or \`/__app/*\`) so Bottle can inject \`/bottle-bridge.js\` without proxying normal user traffic.`
+      : `This bundle is configured for single-origin demo mode. Bottle can serve AI Client at root and route main-app root traffic through Bottle after the \`bottle_target_app_url\` cookie is set; avoid this mode for normal production user traffic.`;
+  const proxyPathLines = [
+    `/v1/* -> http://127.0.0.1:${input.port}/v1/*`,
+    `/bottle-bridge.js -> http://127.0.0.1:${input.port}/bottle-bridge.js`,
+    ...(input.mainAppProxy === false ? [] : [`/__app/* -> http://127.0.0.1:${input.port}/__app/* (AI iframe proxy mode)`])
+  ].join("\n");
 
   return `# Bottle Integration
 
@@ -654,15 +690,10 @@ Codex skill discovery uses a compact manifest from \`.bottle/skills\` plus any c
 Proxy the standard API and bridge paths to this instance:
 
 \`\`\`txt
-/v1/* -> http://127.0.0.1:${input.port}/v1/*
-/bottle-bridge.js -> http://127.0.0.1:${input.port}/bottle-bridge.js
+${proxyPathLines}
 \`\`\`
 
-In conditional-root mode, route public root requests without the \`bottle_target_app_url\` cookie to AI Client, and route requests with that cookie to the main app:
-
-\`\`\`txt
-${input.mainAppUrl ?? "(not configured)"}
-\`\`\`
+${mainAppProxyDescription}
 
 Use \`createClaudeClient({ baseUrl })\` from the copied Bottle client contract in AI tools. The configured project root is:
 
@@ -688,6 +719,9 @@ Init options:
   --no-vendor-runtime   Generate a lightweight bundle that expects a global bottle command
   --allowed-hostnames   Comma-separated browser-facing hosts allowed to call Bottle
   --client-origins      Comma-separated browser origins allowed for AI Client/CORS/frame access
+  --client-app-url      Internal AI Client URL for optional Bottle root gateway mode
+  --main-app-proxy      Enable/disable Bottle AI iframe/root proxy mode
+  --main-app-direct     Enable single-origin demo routing through Bottle root
   --trust-proxy         Trust X-Forwarded-Host when Bottle runs behind nginx/Cloudflare
 `;
 }

@@ -120,6 +120,47 @@ describe("config and hostname parsing", () => {
     expect(config.bottleApiTokenRequired).toBe(true);
   });
 
+  it("supports API-only host app mode", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-api-only-root-"));
+    const config = loadConfig(
+      {
+        PROJECT_ROOT: root,
+        MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
+        MAIN_APP_PROXY: "false",
+        ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,localhost",
+        CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com",
+        TRUST_PROXY: "true"
+      },
+      process.cwd()
+    );
+
+    expect(config.mainAppUrl).toBe("https://ai-proto-dev-1.devnstg.com");
+    expect(config.mainAppProxy).toBe(false);
+    expect(config.mainAppDirect).toBe(false);
+    expect(config.trustProxy).toBe(true);
+    expect(config.clientOrigins).toEqual(["https://ai-wrapper.devnstg.com"]);
+    expect(config.allowedHosts).toEqual([{ hostname: "ai-proto-dev-1.devnstg.com" }, { hostname: "localhost" }]);
+  });
+
+  it("supports AI iframe proxy mode without direct main app routing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-iframe-proxy-root-"));
+    const config = loadConfig(
+      {
+        PROJECT_ROOT: root,
+        MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
+        MAIN_APP_PROXY: "true",
+        MAIN_APP_DIRECT: "false",
+        CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com"
+      },
+      process.cwd()
+    );
+
+    expect(config.mainAppUrl).toBe("https://ai-proto-dev-1.devnstg.com");
+    expect(config.mainAppProxy).toBe(true);
+    expect(config.mainAppDirect).toBe(false);
+    expect(config.clientOrigins).toEqual(["https://ai-wrapper.devnstg.com"]);
+  });
+
   it("serves the AI client from root in conditional gateway mode", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-root-client-"));
     const config = loadConfig(

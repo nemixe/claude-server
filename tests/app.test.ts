@@ -82,6 +82,68 @@ describe("Hono API", () => {
     });
   });
 
+  it("exposes API-only Bottle metadata without taking over root routes", async () => {
+    const config = await createTempConfig({
+      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
+      MAIN_APP_PROXY: "false",
+      CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com"
+    });
+    const app = await createApp({ config });
+
+    const infoResponse = await app.request("http://localhost/v1/bottle", {
+      headers: { host: "localhost" }
+    });
+    const infoBody = await infoResponse.json();
+
+    expect(infoResponse.status).toBe(200);
+    expect(infoBody).not.toHaveProperty("appProxyUrl");
+    expect(infoBody).toMatchObject({
+      apiBaseUrl: "http://localhost",
+      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
+      appUrl: "https://ai-proto-dev-1.devnstg.com",
+      features: {
+        mainApp: true,
+        mainAppProxy: false,
+        mainAppDirect: false,
+        clientAtRoot: false
+      }
+    });
+
+    const rootResponse = await app.request("http://localhost/", {
+      headers: { host: "localhost" }
+    });
+    expect(rootResponse.status).toBe(404);
+  });
+
+  it("advertises appProxyUrl for AI iframe proxy mode while preserving the real main app URL", async () => {
+    const config = await createTempConfig({
+      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
+      MAIN_APP_PROXY: "true",
+      MAIN_APP_DIRECT: "false",
+      CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com"
+    });
+    const app = await createApp({ config });
+
+    const infoResponse = await app.request("http://localhost/v1/bottle", {
+      headers: { host: "localhost" }
+    });
+    const infoBody = await infoResponse.json();
+
+    expect(infoResponse.status).toBe(200);
+    expect(infoBody).not.toHaveProperty("appUrl");
+    expect(infoBody).toMatchObject({
+      apiBaseUrl: "http://localhost",
+      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
+      appProxyUrl: "http://localhost/__app/",
+      features: {
+        mainApp: true,
+        mainAppProxy: true,
+        mainAppDirect: false,
+        clientAtRoot: true
+      }
+    });
+  });
+
   it("exposes configured project root information", async () => {
     const config = await createTempConfig();
     const app = await createApp({ config });
@@ -232,6 +294,14 @@ describe("Hono API", () => {
     try {
       const config = await createTempConfig({ MAIN_APP_URL: upstream.origin, MAIN_APP_DIRECT: "false" });
       const app = await createApp({ config });
+
+      const infoResponse = await app.request("http://localhost/v1/bottle", {
+        headers: { host: "localhost" }
+      });
+      const infoBody = await infoResponse.json();
+      expect(infoBody.mainAppUrl).toBe(upstream.origin);
+      expect(infoBody.appProxyUrl).toBe("http://localhost/__app/");
+      expect(infoBody).not.toHaveProperty("appUrl");
 
       const htmlResponse = await app.request("http://localhost/__app/dashboard?tab=monthly", {
         headers: { host: "localhost" }
