@@ -67,6 +67,51 @@ export function getEffectiveHost(headers: Headers, trustProxy: boolean): string 
   return headers.get("host") ?? undefined;
 }
 
+export function getEffectiveOrigin(requestUrl: string, headers: Headers | undefined, trustProxy: boolean): string {
+  const fallbackUrl = new URL(requestUrl);
+  if (!trustProxy || !headers) return fallbackUrl.origin;
+
+  const forwarded = parseForwardedHeader(headers.get("forwarded"));
+  const forwardedHost = firstHeaderValue(headers.get("x-forwarded-host")) ?? forwarded.host;
+  const host = forwardedHost ?? firstHeaderValue(headers.get("host")) ?? fallbackUrl.host;
+  const forwardedProto = firstHeaderValue(headers.get("x-forwarded-proto")) ?? forwarded.proto;
+  const protocol = normalizeProtocol(forwardedProto) ?? fallbackUrl.protocol.replace(/:$/, "");
+
+  try {
+    return new URL(`${protocol}://${host}`).origin;
+  } catch {
+    return fallbackUrl.origin;
+  }
+}
+
+function parseForwardedHeader(value: string | undefined | null): { host?: string; proto?: string } {
+  const firstValue = firstHeaderValue(value);
+  if (!firstValue) return {};
+
+  const result: { host?: string; proto?: string } = {};
+  for (const part of firstValue.split(";")) {
+    const [rawKey, ...rawValueParts] = part.split("=");
+    const key = rawKey?.trim().toLowerCase();
+    const valuePart = rawValueParts.join("=").trim();
+    const unquotedValue = valuePart.replace(/^"|"$/g, "");
+    if (key === "host" && unquotedValue) result.host = unquotedValue;
+    if (key === "proto" && unquotedValue) result.proto = unquotedValue;
+  }
+  return result;
+}
+
+function firstHeaderValue(value: string | undefined | null): string | undefined {
+  return value
+    ?.split(",")[0]
+    ?.trim() || undefined;
+}
+
+function normalizeProtocol(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase().replace(/:$/, "");
+  if (normalized === "http" || normalized === "https") return normalized;
+  return undefined;
+}
+
 function normalizeHostname(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
 }

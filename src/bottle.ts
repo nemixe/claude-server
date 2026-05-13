@@ -1,6 +1,7 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import type { AppConfig } from "./config.js";
 import { APP_PROXY_PATH, hasTargetAppUrlCookie, isDirectMainAppGateway } from "./gateway.js";
+import { getEffectiveOrigin } from "./hostname.js";
 import { AGENT_PROVIDERS, BOTTLE_PROTOCOL_VERSION, type BottleInfoResponse } from "./types.js";
 
 const BRIDGE_PATH = "/bottle-bridge.js";
@@ -46,7 +47,7 @@ export function createBottleAuthMiddleware(config: AppConfig): MiddlewareHandler
 }
 
 export function bottleInfoForRequest(config: AppConfig, requestUrl: string, headers?: Headers): BottleInfoResponse {
-  const origin = new URL(requestUrl).origin;
+  const origin = getEffectiveOrigin(requestUrl, headers, config.trustProxy);
   const isGatewayProxyEnabled = Boolean(config.mainAppProxy && config.mainAppUrl);
   const isDirectMainApp = isDirectMainAppGateway(config);
   const isConditionalRootClient = isDirectMainApp && !hasTargetAppUrlCookie(headers);

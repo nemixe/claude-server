@@ -3,6 +3,7 @@ import https from "node:https";
 import type { Duplex } from "node:stream";
 import type { Hono } from "hono";
 import type { AppConfig } from "./config.js";
+import { getEffectiveOrigin } from "./hostname.js";
 
 export const APP_PROXY_PATH = "/__app";
 const LEGACY_AI_CLIENT_PATH = "/__ai_client";
@@ -42,7 +43,7 @@ export function registerGatewayRoutes(app: Hono, config: AppConfig): void {
   app.all("*", async (c) => {
     const target = resolveGatewayProxyTarget(config, c.req.url, c.req.raw.headers);
     if (!target) return c.notFound();
-    return proxyHttpRequest(c.req.raw, target, new URL(c.req.url).origin, config);
+    return proxyHttpRequest(c.req.raw, target, getEffectiveOrigin(c.req.url, c.req.raw.headers, config.trustProxy), config);
   });
 }
 

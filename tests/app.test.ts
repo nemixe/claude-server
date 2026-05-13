@@ -115,6 +115,39 @@ describe("Hono API", () => {
     expect(rootResponse.status).toBe(404);
   });
 
+  it("advertises the forwarded HTTPS origin when running behind a trusted proxy", async () => {
+    const config = await createTempConfig({
+      ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,ai-proto.devnstg.com,localhost",
+      TRUST_PROXY: "true",
+      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
+      MAIN_APP_PROXY: "false",
+      CLIENT_ORIGINS: "https://ai-proto.devnstg.com"
+    });
+    const app = await createApp({ config });
+
+    const infoResponse = await app.request("http://internal/v1/bottle", {
+      headers: {
+        host: "internal",
+        "x-forwarded-host": "ai-proto-dev-1.devnstg.com",
+        "x-forwarded-proto": "https",
+        origin: "https://ai-proto.devnstg.com"
+      }
+    });
+    const infoBody = await infoResponse.json();
+
+    expect(infoResponse.status).toBe(200);
+    expect(infoResponse.headers.get("access-control-allow-origin")).toBe("https://ai-proto.devnstg.com");
+    expect(infoBody).toMatchObject({
+      apiBaseUrl: "https://ai-proto-dev-1.devnstg.com",
+      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
+      appUrl: "https://ai-proto-dev-1.devnstg.com",
+      features: {
+        mainAppProxy: false,
+        mainAppDirect: false
+      }
+    });
+  });
+
   it("advertises appProxyUrl for AI iframe proxy mode while preserving the real main app URL", async () => {
     const config = await createTempConfig({
       MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",

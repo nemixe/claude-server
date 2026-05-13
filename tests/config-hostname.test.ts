@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { isAllowedHost, parseAllowedHostList, parseHostLike, parseOrigin } from "../src/hostname.js";
+import { getEffectiveOrigin, isAllowedHost, parseAllowedHostList, parseHostLike, parseOrigin } from "../src/hostname.js";
 
 describe("config and hostname parsing", () => {
   it("loads .env style configuration with normalized allowed hosts", () => {
@@ -237,5 +237,16 @@ describe("config and hostname parsing", () => {
     expect(isAllowedHost(parseOrigin("https://example.com"), rules)).toBe(true);
     expect(isAllowedHost(parseHostLike("app.example.com:8443"), rules)).toBe(true);
     expect(isAllowedHost(parseHostLike("app.example.com:3000"), rules)).toBe(false);
+  });
+
+  it("builds public origins from forwarded proxy headers only when trusted", () => {
+    const headers = new Headers({
+      host: "internal:3001",
+      "x-forwarded-host": "prototype.example.com",
+      "x-forwarded-proto": "https"
+    });
+
+    expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers, true)).toBe("https://prototype.example.com");
+    expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers, false)).toBe("http://internal:3001");
   });
 });
