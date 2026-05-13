@@ -276,6 +276,71 @@ describe("Codex AgentService runtime", () => {
     });
   });
 
+  it("treats route query strings in Codex plans as approval instead of questions", async () => {
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
+    const thread = createMockThread(() =>
+      codexResultStream(
+        "codex-plan-route-query",
+        [
+          "Sandbox masih menolak semua command baca, jadi scope dari prompt sudah cukup jelas untuk rencana edit.",
+          "",
+          "**Rencana Implementasi**",
+          "",
+          "1. Saat edit mode tersedia, baca file wajib:",
+          "   - `.bottle/skills/manage-page/SKILL.md`",
+          "   - `.clinerules`",
+          "",
+          "2. Cari implementasi halaman detail:",
+          "   - Route aktif: `/configuration/promotion-demotion/a1b2c3d4-5678-4efa-9012-345678901234?tab=promosi`",
+          "   - Target: halaman **Detail Konfigurasi Promotion Increase**, tab `promosi`.",
+          "",
+          "3. Verifikasi:",
+          "   - Buka route /configuration/promotion-demotion/a1b2c3d4-5678-4efa-9012-345678901234?tab=promosi saat verifikasi.",
+          "   - Buka route detail dengan `tab=promosi`.",
+          "   - Pastikan tombol `Edit` dan `Delete` sudah hilang, sementara konten detail dan tab tetap berfungsi."
+        ].join("\n")
+      )
+    );
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+    const session = metadata(config.workspaceDir, { mode: "plan" });
+
+    const events = await collect(service.stream({ session, request: { prompt: "Remove detail actions", mode: "plan" } }));
+    const eventTypes = events.map((event) => event.type);
+
+    expect(eventTypes).toEqual(["codex_event", "message", "codex_event", "result", "codex_event", "approval_pending"]);
+    expect(eventTypes).not.toContain("question_pending");
+    expect(events.at(-1)).toMatchObject({
+      type: "approval_pending",
+      data: {
+        waitingForApproval: true,
+        toolUseId: "codex-plan:item-1",
+        plan: expect.stringContaining("Route aktif:")
+      }
+    });
+    expect(session).toMatchObject({
+      status: "awaiting_approval",
+      pendingInterrupt: {
+        type: "approval",
+        toolCallId: "codex-plan:item-1",
+        toolName: "ExitPlanMode"
+      }
+    });
+  });
+
+  it("does not synthesize a question from inline-code route query strings", async () => {
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
+    const thread = createMockThread(() =>
+      codexResultStream("codex-inline-route-query", "The active route is `/configuration/promotion-demotion/123?tab=promosi`.")
+    );
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+    const session = metadata(config.workspaceDir, { mode: "edit" });
+
+    const events = await collect(service.stream({ session, request: { prompt: "Inspect the current route", mode: "edit" } }));
+
+    expect(events.map((event) => event.type)).toEqual(["codex_event", "message", "codex_event", "result", "codex_event"]);
+    expect(session.pendingInterrupt).toBeUndefined();
+  });
+
   it("uses proposed_plan content for synthetic Codex approval plans", async () => {
     const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
     const thread = createMockThread(() =>

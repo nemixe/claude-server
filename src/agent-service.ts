@@ -1635,13 +1635,9 @@ function extractCodexUserQuestions(
 ): Array<{ id: string; question: string; multiSelect?: boolean; options: Array<{ label: string; description: string }> }> {
   const cleaned = stripFencedCodeBlocks(text);
   const candidates: string[] = [];
-  const options = extractCodexQuestionOptions(text);
 
   for (const rawLine of cleaned.split(/\r?\n/)) {
-    const line = rawLine
-      .replace(/^[\s>*-]*(?:\d+[.)]\s*)?/, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    const line = normalizeQuestionDetectionLine(rawLine);
     if (!line.includes("?")) continue;
 
     for (const match of line.match(/[^?]+?\?/g) ?? []) {
@@ -1657,7 +1653,7 @@ function extractCodexUserQuestions(
   }
 
   return Array.from(new Set(candidates)).slice(0, 3).map((question, index) => {
-    const extractedOptions = index === 0 ? options : [];
+    const extractedOptions = index === 0 ? extractCodexQuestionOptions(text, question) : [];
     const questionOptions =
       extractedOptions.length > 0
         ? extractedOptions
@@ -1700,7 +1696,21 @@ function stripFencedCodeBlocks(text: string): string {
   return text.replace(/```[\s\S]*?```/g, " ");
 }
 
-function extractCodexQuestionOptions(text: string): Array<{ label: string; description: string }> {
+function normalizeQuestionDetectionLine(line: string): string {
+  return line
+    .replace(/`[^`\r\n]*(?:`|$)/g, (inlineCode) => (inlineCode.includes("?") ? " " : inlineCode))
+    .replace(/\bhttps?:\/\/\S+/gi, maskQuestionMarks)
+    .replace(/(^|[\s([{])\/[^\s`)\]}>"']*\?[^\s`)\]}>"']*/g, maskQuestionMarks)
+    .replace(/^[\s>*-]*(?:\d+[.)]\s*)?/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function maskQuestionMarks(text: string): string {
+  return text.replace(/\?/g, "");
+}
+
+function extractCodexQuestionOptions(text: string, question: string): Array<{ label: string; description: string }> {
   const labels: string[] = [];
   const fencedBlockPattern = /```[^\n\r]*(?:\r?\n)([\s\S]*?)```/g;
   let match: RegExpExecArray | null;
@@ -1709,14 +1719,47 @@ function extractCodexQuestionOptions(text: string): Array<{ label: string; descr
     labels.push(...extractOptionLabelsFromLines(match[1] ?? ""));
   }
 
-  if (labels.length === 0) {
-    labels.push(...extractOptionLabelsFromLines(text));
-  }
+  if (labels.length === 0) labels.push(...extractLocalOptionLabels(text, question));
 
   return Array.from(new Set(labels)).slice(0, 12).map((label) => ({
     label,
     description: ""
   }));
+}
+
+function extractLocalOptionLabels(text: string, question: string): string[] {
+  const lines = stripFencedCodeBlocks(text).split(/\r?\n/);
+  const questionIndex = lines.findIndex((line) => normalizeQuestionDetectionLine(line).includes(question));
+  if (questionIndex < 0) return [];
+
+  const labels: string[] = [];
+  for (const rawLine of lines.slice(questionIndex + 1, questionIndex + 9)) {
+    if (rawLine.trim() === "") {
+      if (labels.length > 0) break;
+      continue;
+    }
+
+    const label = extractNonFencedOptionLabel(rawLine);
+    if (label) {
+      labels.push(label);
+      continue;
+    }
+
+    if (labels.length > 0) break;
+  }
+
+  return labels;
+}
+
+function extractNonFencedOptionLabel(line: string): string | undefined {
+  if (!/^\s*(?:[-*+]|\d+[.)])\s+\S/.test(line)) return undefined;
+  const label = line
+    .replace(/^[\s>*-]*(?:\d+[.)]\s*)?/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!isUsefulCodexOptionLabel(label)) return undefined;
+  if (label.endsWith(":") && !/\b(required|optional|default|true|false|yes|no|enable|disable)\b/i.test(label)) return undefined;
+  return label;
 }
 
 function extractOptionLabelsFromLines(text: string): string[] {
