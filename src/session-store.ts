@@ -330,6 +330,8 @@ export class SessionStore {
 function normalizeSessionMetadata(value: unknown): SessionMetadata | undefined {
   if (!value || typeof value !== "object") return undefined;
   const metadata = value as Partial<SessionMetadata>;
+  const rawMode = typeof (value as { mode?: unknown }).mode === "string" ? (value as { mode: string }).mode : undefined;
+  const mode = rawMode === "edit" ? "bypass" : rawMode;
   const valid =
     typeof metadata.id === "string" &&
     metadata.id.trim().length > 0 &&
@@ -340,13 +342,14 @@ function normalizeSessionMetadata(value: unknown): SessionMetadata | undefined {
     typeof metadata.updatedAt === "string" &&
     metadata.updatedAt.trim().length > 0 &&
     typeof metadata.hasRun === "boolean" &&
-    typeof metadata.mode === "string" &&
-    (CLAUDE_MODES as readonly string[]).includes(metadata.mode);
+    typeof mode === "string" &&
+    (CLAUDE_MODES as readonly string[]).includes(mode);
 
   if (!valid) return undefined;
   const provider = isAgentProvider(metadata.provider) ? metadata.provider : "claude";
   return {
     ...metadata,
+    mode,
     provider,
     agentSessionId: metadata.agentSessionId ?? metadata.claudeSessionId
   } as SessionMetadata;

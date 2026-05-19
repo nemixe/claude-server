@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import http from "node:http";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgentService, type AgentSdkAdapter, type CodexSdkAdapter, type CodexThreadLike } from "../src/agent-service.js";
@@ -77,29 +76,26 @@ describe("Hono API", () => {
   });
 
   it("exposes Bottle discovery metadata behind the hostname gate", async () => {
-    const config = await createTempConfig({ BOTTLE_NAME: "prototype-a", MAIN_APP_URL: "http://localhost:5173" });
+    const config = await createTempConfig({ BOTTLE_NAME: "prototype-a" });
     const app = await createApp({ config });
 
-    const response = await app.request("http://localhost/v1/bottle", {
+    const response = await app.request("http://localhost/__bottle/v1/bottle", {
       headers: { host: "localhost" }
     });
 
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body).not.toHaveProperty("appProxyUrl");
+    expect(body).not.toHaveProperty("apiBaseUrl");
     expect(body).not.toHaveProperty("appUrl");
     expect(body).toMatchObject({
       protocolVersion: 1,
       name: "prototype-a",
-      apiBaseUrl: "http://localhost",
       mainAppUrl: "http://localhost",
       defaultAgentProvider: "claude",
       availableAgentProviders: ["claude", "codex"],
       features: {
         mainApp: true,
-        mainAppProxy: true,
-        mainAppDirect: true,
-        clientAtRoot: true,
         iframeBridge: true,
         sessions: true,
         streaming: true,
@@ -114,30 +110,28 @@ describe("Hono API", () => {
 
   it("exposes API-only Bottle metadata without taking over root routes", async () => {
     const config = await createTempConfig({
-      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
-      MAIN_APP_PROXY: "false",
       CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com"
     });
     const app = await createApp({ config });
 
-    const infoResponse = await app.request("http://localhost/v1/bottle", {
+    const infoResponse = await app.request("http://localhost/__bottle/v1/bottle", {
       headers: { host: "localhost" }
     });
     const infoBody = await infoResponse.json();
 
     expect(infoResponse.status).toBe(200);
     expect(infoBody).not.toHaveProperty("appProxyUrl");
+    expect(infoBody).not.toHaveProperty("apiBaseUrl");
+    expect(infoBody).not.toHaveProperty("appUrl");
     expect(infoBody).toMatchObject({
-      apiBaseUrl: "http://localhost",
-      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
-      appUrl: "https://ai-proto-dev-1.devnstg.com",
+      mainAppUrl: "http://localhost",
       features: {
-        mainApp: true,
-        mainAppProxy: false,
-        mainAppDirect: false,
-        clientAtRoot: false
+        mainApp: true
       }
     });
+    expect(infoBody.features).not.toHaveProperty("mainAppProxy");
+    expect(infoBody.features).not.toHaveProperty("mainAppDirect");
+    expect(infoBody.features).not.toHaveProperty("clientAtRoot");
 
     const rootResponse = await app.request("http://localhost/", {
       headers: { host: "localhost" }
@@ -148,14 +142,11 @@ describe("Hono API", () => {
   it("advertises the forwarded HTTPS origin when running behind a trusted proxy", async () => {
     const config = await createTempConfig({
       ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,ai-proto.devnstg.com,localhost",
-      TRUST_PROXY: "true",
-      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
-      MAIN_APP_PROXY: "false",
       CLIENT_ORIGINS: "https://ai-proto.devnstg.com"
     });
     const app = await createApp({ config });
 
-    const infoResponse = await app.request("http://internal/v1/bottle", {
+    const infoResponse = await app.request("http://internal/__bottle/v1/bottle", {
       headers: {
         host: "internal",
         "x-forwarded-host": "ai-proto-dev-1.devnstg.com",
@@ -167,28 +158,24 @@ describe("Hono API", () => {
 
     expect(infoResponse.status).toBe(200);
     expect(infoResponse.headers.get("access-control-allow-origin")).toBe("https://ai-proto.devnstg.com");
+    expect(infoResponse.headers.get("access-control-allow-credentials")).toBe("true");
+    expect(infoBody).not.toHaveProperty("apiBaseUrl");
+    expect(infoBody).not.toHaveProperty("appUrl");
     expect(infoBody).toMatchObject({
-      apiBaseUrl: "https://ai-proto-dev-1.devnstg.com",
-      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
-      appUrl: "https://ai-proto-dev-1.devnstg.com",
-      features: {
-        mainAppProxy: false,
-        mainAppDirect: false
-      }
+      mainAppUrl: "https://ai-proto-dev-1.devnstg.com"
     });
+    expect(infoBody.features).not.toHaveProperty("mainAppProxy");
+    expect(infoBody.features).not.toHaveProperty("mainAppDirect");
   });
 
-  it("uses the configured HTTPS main app origin when proxy headers omit proto", async () => {
+  it("uses the request host origin when proxy headers omit proto", async () => {
     const config = await createTempConfig({
       ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,ai-proto.devnstg.com,localhost",
-      TRUST_PROXY: "true",
-      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
-      MAIN_APP_PROXY: "false",
       CLIENT_ORIGINS: "https://ai-proto.devnstg.com"
     });
     const app = await createApp({ config });
 
-    const infoResponse = await app.request("http://internal/v1/bottle", {
+    const infoResponse = await app.request("http://internal/__bottle/v1/bottle", {
       headers: {
         host: "ai-proto-dev-1.devnstg.com",
         origin: "https://ai-proto.devnstg.com"
@@ -197,39 +184,10 @@ describe("Hono API", () => {
     const infoBody = await infoResponse.json();
 
     expect(infoResponse.status).toBe(200);
-    expect(infoBody).toMatchObject({
-      apiBaseUrl: "https://ai-proto-dev-1.devnstg.com",
-      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
-      appUrl: "https://ai-proto-dev-1.devnstg.com"
-    });
-  });
-
-  it("advertises appProxyUrl for AI iframe proxy mode while preserving the real main app URL", async () => {
-    const config = await createTempConfig({
-      MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
-      MAIN_APP_PROXY: "true",
-      MAIN_APP_DIRECT: "false",
-      CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com"
-    });
-    const app = await createApp({ config });
-
-    const infoResponse = await app.request("http://localhost/v1/bottle", {
-      headers: { host: "localhost" }
-    });
-    const infoBody = await infoResponse.json();
-
-    expect(infoResponse.status).toBe(200);
+    expect(infoBody).not.toHaveProperty("apiBaseUrl");
     expect(infoBody).not.toHaveProperty("appUrl");
     expect(infoBody).toMatchObject({
-      apiBaseUrl: "http://localhost",
-      mainAppUrl: "https://ai-proto-dev-1.devnstg.com",
-      appProxyUrl: "http://localhost/__app/",
-      features: {
-        mainApp: true,
-        mainAppProxy: true,
-        mainAppDirect: false,
-        clientAtRoot: true
-      }
+      mainAppUrl: "http://ai-proto-dev-1.devnstg.com"
     });
   });
 
@@ -237,7 +195,7 @@ describe("Hono API", () => {
     const config = await createTempConfig();
     const app = await createApp({ config });
 
-    const response = await app.request("http://localhost/v1/root", {
+    const response = await app.request("http://localhost/__bottle/v1/root", {
       headers: { host: "localhost" }
     });
 
@@ -257,21 +215,18 @@ describe("Hono API", () => {
 
   it("serves the optional iframe bridge without hosting the main app", async () => {
     const config = await createTempConfig({
-      MAIN_APP_URL: "http://localhost:5173",
-      MAIN_APP_PROXY: "false",
       CLIENT_ORIGINS: "http://localhost:5174"
     });
     const app = await createApp({ config });
 
-    const infoResponse = await app.request("http://localhost/v1/bottle", {
+    const infoResponse = await app.request("http://localhost/__bottle/v1/bottle", {
       headers: { host: "localhost" }
     });
     await expect(infoResponse.json()).resolves.toMatchObject({
-      appUrl: "http://localhost:5173",
-      features: { mainApp: true, mainAppProxy: false }
+      features: { mainApp: true }
     });
 
-    const bridgeResponse = await app.request("http://localhost/bottle-bridge.js", {
+    const bridgeResponse = await app.request("http://localhost/__bottle/bottle-bridge.js", {
       headers: { host: "localhost" }
     });
     expect(bridgeResponse.status).toBe(200);
@@ -281,145 +236,141 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     expect(removedAppHostingResponse.status).toBe(404);
+
+    const removedAppProxyResponse = await app.request("http://localhost/__app/", {
+      headers: { host: "localhost" }
+    });
+    expect(removedAppProxyResponse.status).toBe(404);
   });
 
-  it("serves AI Client at root until the target URL cookie exists", async () => {
-    const clientRequests: string[] = [];
-    const clientApp = await createTestHttpServer((request, response) => {
-      clientRequests.push(request.url ?? "");
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end("<!doctype html><html><body>AI Client</body></html>");
+  it("does not expose root-level Bottle API, bridge, or iframe routes", async () => {
+    const config = await createTempConfig();
+    const app = await createApp({ config });
+
+    const apiResponse = await app.request("http://localhost/v1/bottle", {
+      headers: { host: "localhost" }
     });
-    const upstreamRequests: string[] = [];
-    const upstream = await createTestHttpServer((request, response) => {
-      upstreamRequests.push(request.url ?? "");
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end("<!doctype html><html><head><title>Target</title></head><body>Target App</body></html>");
+    const bridgeResponse = await app.request("http://localhost/bottle-bridge.js", {
+      headers: { host: "localhost" }
     });
+    const iframeResponse = await app.request("http://localhost/iframe/dashboard", {
+      headers: { host: "localhost" }
+    });
+
+    expect(apiResponse.status).toBe(404);
+    expect(bridgeResponse.status).toBe(404);
+    expect(iframeResponse.status).toBe(404);
+  });
+
+  it("serves /iframe by fetching the main app root and injecting the bridge", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<!doctype html><html><head><title>Main</title></head><body>App</body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" }
+      })
+    );
 
     try {
       const config = await createTempConfig({
-        MAIN_APP_URL: upstream.origin,
-        CLIENT_APP_URL: clientApp.origin
+        ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,localhost"
       });
       const app = await createApp({ config });
 
-      const clientResponse = await app.request("http://localhost/", {
-        headers: { host: "localhost" }
+      const response = await app.request("http://localhost/__bottle/iframe", {
+        headers: {
+          host: "localhost",
+          accept: "text/html",
+          "accept-language": "en-US",
+          cookie: "sid=abc",
+          "user-agent": "vitest"
+        }
       });
-      expect(clientResponse.status).toBe(200);
-      expect(await clientResponse.text()).toContain("AI Client");
 
-      const legacyClientResponse = await app.request("http://localhost/__ai_client/", {
-        headers: { host: "localhost" }
-      });
-      expect(legacyClientResponse.status).toBe(404);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('<script src="/__bottle/bottle-bridge.js" data-bottle-bridge></script>');
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe("http://localhost/");
 
-      const infoResponse = await app.request("http://localhost/v1/bottle", {
-        headers: { host: "localhost" }
-      });
-      const infoBody = await infoResponse.json();
-      expect(infoBody).not.toHaveProperty("appProxyUrl");
-      expect(infoBody).not.toHaveProperty("appUrl");
-      expect(infoBody.features).toMatchObject({
-        mainApp: true,
-        mainAppProxy: true,
-        mainAppDirect: true,
-        clientAtRoot: true
-      });
-      expect(infoBody.mainAppUrl).toBe("http://localhost");
-
-      const cookieHeaders = {
-        host: "localhost",
-        cookie: "bottle_target_app_url=http%3A%2F%2Flocalhost%2F"
-      };
-      const infoWithCookieResponse = await app.request("http://localhost/v1/bottle", {
-        headers: cookieHeaders
-      });
-      const infoWithCookieBody = await infoWithCookieResponse.json();
-      expect(infoWithCookieBody.appUrl).toBe("http://localhost/");
-      expect(infoWithCookieBody.features.clientAtRoot).toBe(false);
-
-      const rootResponse = await app.request("http://localhost/", {
-        headers: cookieHeaders
-      });
-      expect(rootResponse.status).toBe(200);
-      const rootHtml = await rootResponse.text();
-      expect(rootHtml).toContain("Target App");
-      expect(rootHtml).toContain('<script src="/bottle-bridge.js" data-bottle-bridge></script>');
-
-      const dashboardResponse = await app.request("http://localhost/dashboard?tab=monthly", {
-        headers: cookieHeaders
-      });
-      expect(dashboardResponse.status).toBe(200);
-      expect(clientRequests).toEqual(expect.arrayContaining(["/"]));
-      expect(upstreamRequests).toEqual(expect.arrayContaining(["/", "/dashboard?tab=monthly"]));
+      const requestInit = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+      const headers = requestInit.headers as Headers;
+      expect(headers.get("accept")).toBe("text/html");
+      expect(headers.get("accept-language")).toBe("en-US");
+      expect(headers.get("cookie")).toBe("sid=abc");
+      expect(headers.get("user-agent")).toBe("vitest");
+      expect(headers.get("x-pinggy-no-screen")).toBe("1");
     } finally {
-      await clientApp.close();
-      await upstream.close();
+      fetchSpy.mockRestore();
     }
   });
 
-  it("proxies fixed app routes, rewrites root assets, and injects the generic bridge", async () => {
-    const upstreamRequests: string[] = [];
-    const upstream = await createTestHttpServer((request, response) => {
-      upstreamRequests.push(request.url ?? "");
-      if (request.url?.startsWith("/assets/app.js")) {
-        response.writeHead(200, { "content-type": "application/javascript", "content-length": "18" });
-        response.end("console.log('app')");
-        return;
-      }
-
-      response.writeHead(200, {
-        "content-type": "text/html; charset=utf-8",
-        "content-security-policy": "default-src 'self'",
-        "x-frame-options": "DENY"
-      });
-      response.end(
-        '<!doctype html><html><head><title>Target</title><script type="module" src="/assets/app.js"></script></head><body><a href="/activity-log">Activity</a></body></html>'
-      );
-    });
+  it("maps nested /iframe routes and query strings onto the detected forwarded origin", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html><head></head><body>Dashboard</body></html>", {
+        headers: { "content-type": "text/html" }
+      })
+    );
 
     try {
-      const config = await createTempConfig({ MAIN_APP_URL: upstream.origin, MAIN_APP_DIRECT: "false" });
+      const config = await createTempConfig({
+        ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,localhost"
+      });
       const app = await createApp({ config });
 
-      const infoResponse = await app.request("http://localhost/v1/bottle", {
-        headers: { host: "localhost" }
+      const response = await app.request("http://ai-proto-dev-1.devnstg.com/__bottle/iframe/dashboard?tab=a", {
+        headers: {
+          host: "ai-proto-dev-1.devnstg.com",
+          "x-forwarded-proto": "https"
+        }
       });
-      const infoBody = await infoResponse.json();
-      expect(infoBody.mainAppUrl).toBe(upstream.origin);
-      expect(infoBody.appProxyUrl).toBe("http://localhost/__app/");
-      expect(infoBody).not.toHaveProperty("appUrl");
 
-      const htmlResponse = await app.request("http://localhost/__app/dashboard?tab=monthly", {
-        headers: { host: "localhost" }
-      });
-      const html = await htmlResponse.text();
-
-      expect(htmlResponse.status).toBe(200);
-      expect(upstreamRequests).toContain("/dashboard?tab=monthly");
-      expect(html).toContain("window.__BOTTLE_BRIDGE_CONFIG__");
-      expect(html).toContain('"appProxyPath":"/__app"');
-      expect(html).toContain('<script src="/bottle-bridge.js" data-bottle-bridge></script>');
-      expect(html).toContain('src="/__app/assets/app.js"');
-      expect(html).toContain('href="/__app/activity-log"');
-      expect(htmlResponse.headers.get("content-security-policy")).toBeNull();
-      expect(htmlResponse.headers.get("x-frame-options")).toBeNull();
-
-      const assetResponse = await app.request("http://localhost/__app/assets/app.js", {
-        headers: { host: "localhost" }
-      });
-      expect(assetResponse.status).toBe(200);
-      expect(await assetResponse.text()).toBe("console.log('app')");
-
-      const rootAssetResponse = await app.request("http://localhost/assets/app.js", {
-        headers: { host: "localhost", referer: "http://localhost/__app/dashboard" }
-      });
-      expect(rootAssetResponse.status).toBe(200);
-      expect(await rootAssetResponse.text()).toBe("console.log('app')");
+      expect(response.status).toBe(200);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ai-proto-dev-1.devnstg.com/dashboard?tab=a");
     } finally {
-      await upstream.close();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not inject a second iframe bridge when upstream HTML already has one", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('<html><head><script src="/__bottle/bottle-bridge.js" data-bottle-bridge></script></head><body>App</body></html>', {
+        headers: { "content-type": "text/html" }
+      })
+    );
+
+    try {
+      const config = await createTempConfig();
+      const app = await createApp({ config });
+
+      const response = await app.request("http://localhost/__bottle/iframe/dashboard", {
+        headers: { host: "localhost" }
+      });
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(body.match(/data-bottle-bridge/g)).toHaveLength(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("serves /iframe routes without MAIN_APP_URL configured", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<html><head></head><body>Dashboard</body></html>", {
+        headers: { "content-type": "text/html" }
+      })
+    );
+
+    try {
+      const config = await createTempConfig();
+      const app = await createApp({ config });
+
+      const response = await app.request("http://localhost/__bottle/iframe/dashboard", {
+        headers: { host: "localhost" }
+      });
+
+      expect(response.status).toBe(200);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe("http://localhost/dashboard");
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 
@@ -431,7 +382,7 @@ describe("Hono API", () => {
     });
     const app = await createApp({ config });
 
-    const preflightResponse = await app.request("http://localhost/v1/sessions", {
+    const preflightResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "OPTIONS",
       headers: {
         host: "localhost",
@@ -442,17 +393,70 @@ describe("Hono API", () => {
     expect(preflightResponse.status).toBe(204);
     expect(preflightResponse.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
 
-    const unauthorizedResponse = await app.request("http://localhost/v1/root", {
+    const settingsPreflightResponse = await app.request("http://localhost/__bottle/v1/settings", {
+      method: "OPTIONS",
+      headers: {
+        host: "localhost",
+        origin: "http://localhost:5173",
+        "access-control-request-method": "PATCH",
+        "access-control-request-headers": "content-type,x-bottle-api-token,x-pinggy-no-screen"
+      }
+    });
+    expect(settingsPreflightResponse.status).toBe(204);
+    expect(settingsPreflightResponse.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+    expect(settingsPreflightResponse.headers.get("access-control-allow-methods")).toContain("PATCH");
+    expect(settingsPreflightResponse.headers.get("access-control-allow-headers")).toContain("x-bottle-api-token");
+    expect(settingsPreflightResponse.headers.get("access-control-allow-headers")).toContain("x-pinggy-no-screen");
+
+    const unauthorizedResponse = await app.request("http://localhost/__bottle/v1/root", {
       headers: { host: "localhost" }
     });
     expect(unauthorizedResponse.status).toBe(401);
 
-    const authorizedResponse = await app.request("http://localhost/v1/root", {
+    const authorizedResponse = await app.request("http://localhost/__bottle/v1/root", {
       headers: { host: "localhost", authorization: "Bearer secret", origin: "http://localhost:5173" }
     });
     expect(authorizedResponse.status).toBe(200);
     expect(authorizedResponse.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
     expect(authorizedResponse.headers.get("content-security-policy")).toContain("frame-ancestors 'self' http://localhost:5173");
+  });
+
+  it("marks no-origin API responses as origin-varying and uncacheable", async () => {
+    const config = await createTempConfig({ CLIENT_ORIGINS: "http://localhost:5173" });
+    const app = await createApp({ config });
+
+    const response = await app.request("http://localhost/__bottle/v1/bottle", {
+      headers: { host: "localhost" }
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("vary")).toBe("Origin");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("allows settings preflight from configured client origins that are not API hostnames", async () => {
+    const config = await createTempConfig({
+      ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,localhost",
+      CLIENT_ORIGINS: "https://ai-proto.devnstg.com"
+    });
+    const app = await createApp({ config });
+
+    const response = await app.request("http://internal/__bottle/v1/settings", {
+      method: "OPTIONS",
+      headers: {
+        host: "internal",
+        "x-forwarded-host": "ai-proto-dev-1.devnstg.com",
+        "x-forwarded-proto": "https",
+        origin: "https://ai-proto.devnstg.com",
+        "access-control-request-method": "PATCH",
+        "access-control-request-headers": "content-type"
+      }
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://ai-proto.devnstg.com");
+    expect(response.headers.get("access-control-allow-methods")).toContain("PATCH");
   });
 
   it("creates sessions and streams normalized events", async () => {
@@ -474,7 +478,7 @@ describe("Hono API", () => {
       agentService: new AgentService(config, adapter, factory)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Test" })
@@ -482,7 +486,7 @@ describe("Hono API", () => {
     expect(createResponse.status).toBe(201);
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "hello" })
@@ -495,7 +499,7 @@ describe("Hono API", () => {
     expect(streamText).toContain("event: result");
     expect(streamText).toContain("event: done");
 
-    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+    const sessionsResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       headers: { host: "localhost" }
     });
     const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
@@ -507,13 +511,13 @@ describe("Hono API", () => {
     });
     expect(sessionsBody.sessions[0]).not.toHaveProperty("workspacePath");
 
-    const messagesResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages`, {
+    const messagesResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages`, {
       headers: { host: "localhost" }
     });
     expect(messagesResponse.status).toBe(200);
     expect(await messagesResponse.json()).toMatchObject({ messages: [{ type: "user", message: "hi" }] });
 
-    const observeResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/events:stream`, {
+    const observeResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/events:stream`, {
       headers: { host: "localhost" }
     });
     expect(observeResponse.status).toBe(200);
@@ -537,7 +541,7 @@ describe("Hono API", () => {
       agentService: new AgentService(config, undefined, undefined, () => codexAdapter)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "bypass", provider: "codex", title: "Codex" })
@@ -546,7 +550,7 @@ describe("Hono API", () => {
     const created = (await createResponse.json()) as { sessionId: string; provider: string };
     expect(created.provider).toBe("codex");
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "hello codex" })
@@ -563,7 +567,7 @@ describe("Hono API", () => {
       agentSessionId: "codex-app-1"
     });
 
-    const messagesResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages`, {
+    const messagesResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages`, {
       headers: { host: "localhost" }
     });
     const messagesBody = (await messagesResponse.json()) as { messages: unknown[] };
@@ -595,14 +599,14 @@ describe("Hono API", () => {
       }))
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", provider: "codex", title: "Codex question" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "Create crud feature product ask me the fields" })
@@ -625,7 +629,7 @@ describe("Hono API", () => {
     });
   });
 
-  it("streams Codex plan approvals, replays them, and resumes in edit mode after approval", async () => {
+  it("streams Codex plan approvals, replays them, and resumes in bypass mode after approval", async () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);
     const codexThread = createMockCodexThread(
@@ -642,14 +646,14 @@ describe("Hono API", () => {
       agentService: new AgentService(config, undefined, undefined, () => codexAdapter)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", provider: "codex", title: "Codex plan approval" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "Create product CRUD" })
@@ -671,7 +675,7 @@ describe("Hono API", () => {
     expect(codexAdapter.startThread).toHaveBeenCalledTimes(1);
     expect(codexThread.runStreamed).toHaveBeenCalledTimes(1);
 
-    const replayResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const replayResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "continue" })
@@ -683,7 +687,7 @@ describe("Hono API", () => {
     expect(replayText).toContain('"waitingForApproval":true');
     expect(codexThread.runStreamed).toHaveBeenCalledTimes(1);
 
-    const approvedResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const approvedResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -704,7 +708,7 @@ describe("Hono API", () => {
     expect(codexThread.runStreamed).toHaveBeenCalledTimes(2);
     const updated = await sessionStore.get(created.sessionId);
     expect(updated).toMatchObject({
-      mode: "edit",
+      mode: "bypass",
       status: "done"
     });
     expect(updated).not.toHaveProperty("pendingInterrupt");
@@ -715,7 +719,7 @@ describe("Hono API", () => {
     const sessionStore = new SessionStore(config);
     const app = await createApp({ config, sessionStore });
 
-    const namedResponse = await app.request("http://localhost/v1/sessions", {
+    const namedResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "bypass", title: "Named", userName: "  Ada Lovelace  " })
@@ -724,7 +728,7 @@ describe("Hono API", () => {
     const named = (await namedResponse.json()) as { sessionId: string; userName?: string };
     expect(named.userName).toBe("Ada Lovelace");
 
-    const guestResponse = await app.request("http://localhost/v1/sessions", {
+    const guestResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "bypass", title: "Legacy-like" })
@@ -734,7 +738,7 @@ describe("Hono API", () => {
 
     await expect(sessionStore.get(named.sessionId)).resolves.toMatchObject({ userName: "Ada Lovelace" });
 
-    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+    const sessionsResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       headers: { host: "localhost" }
     });
     const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
@@ -755,7 +759,7 @@ describe("Hono API", () => {
     await sessionStore.create({ mode: "bypass", title: "Second" });
     await sessionStore.create({ mode: "plan", title: "Third" });
 
-    const firstPageResponse = await app.request("http://localhost/v1/sessions?limit=2&offset=0", {
+    const firstPageResponse = await app.request("http://localhost/__bottle/v1/sessions?limit=2&offset=0", {
       headers: { host: "localhost" }
     });
     expect(firstPageResponse.status).toBe(200);
@@ -764,7 +768,7 @@ describe("Hono API", () => {
     expect(firstPage.nextOffset).toBe(2);
     expect(firstPage.hasMore).toBe(true);
 
-    const secondPageResponse = await app.request("http://localhost/v1/sessions?limit=2&offset=2", {
+    const secondPageResponse = await app.request("http://localhost/__bottle/v1/sessions?limit=2&offset=2", {
       headers: { host: "localhost" }
     });
     const secondPage = (await secondPageResponse.json()) as { sessions: Array<Record<string, unknown>>; hasMore: boolean };
@@ -778,7 +782,7 @@ describe("Hono API", () => {
     const app = await createApp({ config, sessionStore });
     const session = await sessionStore.create({ mode: "bypass", title: "Lookup", userName: "Ada" });
 
-    const response = await app.request(`http://localhost/v1/sessions/${session.id}`, {
+    const response = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}`, {
       headers: { host: "localhost" }
     });
 
@@ -805,7 +809,7 @@ describe("Hono API", () => {
     });
     const session = await sessionStore.create({ mode: "bypass", title: "History" });
 
-    const fullResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages`, {
+    const fullResponse = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}/messages`, {
       headers: { host: "localhost" }
     });
     await expect(fullResponse.json()).resolves.toMatchObject({
@@ -816,7 +820,7 @@ describe("Hono API", () => {
       hasMoreAfter: false
     });
 
-    const pageResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages?limit=2&offset=1`, {
+    const pageResponse = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}/messages?limit=2&offset=1`, {
       headers: { host: "localhost" }
     });
     await expect(pageResponse.json()).resolves.toMatchObject({
@@ -830,7 +834,7 @@ describe("Hono API", () => {
       hasMoreAfter: true
     });
 
-    const tailResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages?limit=2&tail=true`, {
+    const tailResponse = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}/messages?limit=2&tail=true`, {
       headers: { host: "localhost" }
     });
     await expect(tailResponse.json()).resolves.toMatchObject({
@@ -864,7 +868,7 @@ describe("Hono API", () => {
       agentService: new AgentService(config, adapter, factory)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Cost" })
@@ -872,7 +876,7 @@ describe("Hono API", () => {
     expect(createResponse.status).toBe(201);
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "hello" })
@@ -882,7 +886,7 @@ describe("Hono API", () => {
 
     await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({ costUsd: 0.1682 });
 
-    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+    const sessionsResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       headers: { host: "localhost" }
     });
     const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
@@ -905,14 +909,14 @@ describe("Hono API", () => {
       agentService: new AgentService(config, undefined, factory)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "bypass", title: "V2" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "hello" })
@@ -925,14 +929,14 @@ describe("Hono API", () => {
       claudeSessionId: "claude-app-1"
     });
 
-    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+    const sessionsResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       headers: { host: "localhost" }
     });
     const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
     expect(sessionsBody.sessions[0]).not.toHaveProperty("claudeSessionId");
   });
 
-  it("pauses on persisted ExitPlanMode approval and resumes in edit mode after approval", async () => {
+  it("pauses on persisted ExitPlanMode approval and resumes in bypass mode after approval", async () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);
     let seenPermissionMode: unknown;
@@ -973,7 +977,7 @@ describe("Hono API", () => {
       }
     });
 
-    const pausedResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
+    const pausedResponse = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "continue" })
@@ -986,7 +990,7 @@ describe("Hono API", () => {
     expect(factory.createSession).not.toHaveBeenCalled();
     expect(factory.resumeSession).not.toHaveBeenCalled();
 
-    const approvedResponse = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
+    const approvedResponse = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1003,10 +1007,10 @@ describe("Hono API", () => {
 
     expect(approvedResponse.status).toBe(200);
     expect(approvedText).toContain("event: result");
-    expect(seenPermissionMode).toBe("acceptEdits");
+    expect(seenPermissionMode).toBe("bypassPermissions");
     const updated = await sessionStore.get(session.id);
     expect(updated).toMatchObject({
-      mode: "edit",
+      mode: "bypass",
       status: "done"
     });
     expect(updated).not.toHaveProperty("pendingInterrupt");
@@ -1045,7 +1049,7 @@ describe("Hono API", () => {
       }
     });
 
-    const response = await app.request(`http://localhost/v1/sessions/${session.id}/messages:stream`, {
+    const response = await app.request(`http://localhost/__bottle/v1/sessions/${session.id}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "Continue", mode: "plan" })
@@ -1075,14 +1079,14 @@ describe("Hono API", () => {
       agentService: new AgentService(config, undefined, factory)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Images" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1131,14 +1135,14 @@ describe("Hono API", () => {
       agentService: new AgentService(config, undefined, factory)
     });
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Context" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const streamResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const streamResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1162,14 +1166,14 @@ describe("Hono API", () => {
   it("rejects invalid image prompt requests", async () => {
     const config = await createTempConfig();
     const app = await createApp({ config });
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Images" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const invalidMediaResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const invalidMediaResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1179,7 +1183,7 @@ describe("Hono API", () => {
     });
     expect(invalidMediaResponse.status).toBe(400);
 
-    const invalidBase64Response = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const invalidBase64Response = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1189,7 +1193,7 @@ describe("Hono API", () => {
     });
     expect(invalidBase64Response.status).toBe(400);
 
-    const tooManyResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const tooManyResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1199,7 +1203,7 @@ describe("Hono API", () => {
     });
     expect(tooManyResponse.status).toBe(400);
 
-    const oversizedResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/messages:stream`, {
+    const oversizedResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/messages:stream`, {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1221,7 +1225,7 @@ describe("Hono API", () => {
       fs.writeFile(path.join(config.projectRoot, "node_modules/temp/agent-chat/ignored.js"), "ignored", "utf8")
     ]);
     const app = await createApp({ config });
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({
@@ -1231,7 +1235,7 @@ describe("Hono API", () => {
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const directoryResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=docs`, {
+    const directoryResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/files:search?q=docs`, {
       headers: { host: "localhost" }
     });
     expect(directoryResponse.status).toBe(200);
@@ -1242,7 +1246,7 @@ describe("Hono API", () => {
       type: "directory"
     });
 
-    const fuzzyResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=cmpbtn&limit=3`, {
+    const fuzzyResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/files:search?q=cmpbtn&limit=3`, {
       headers: { host: "localhost" }
     });
     expect(fuzzyResponse.status).toBe(200);
@@ -1255,13 +1259,13 @@ describe("Hono API", () => {
     expect(fuzzyBody.results[0]?.score).toEqual(expect.any(Number));
     expect(fuzzyBody.results[0]?.updatedAt).toEqual(expect.any(String));
 
-    const ignoredResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=ignored`, {
+    const ignoredResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/files:search?q=ignored`, {
       headers: { host: "localhost" }
     });
     expect(ignoredResponse.status).toBe(200);
     await expect(ignoredResponse.json()).resolves.toMatchObject({ results: [] });
 
-    const emptyResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}/files:search?q=&limit=2`, {
+    const emptyResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}/files:search?q=&limit=2`, {
       headers: { host: "localhost" }
     });
     expect(emptyResponse.status).toBe(200);
@@ -1272,7 +1276,7 @@ describe("Hono API", () => {
       score: 0
     });
 
-    const rootSearchResponse = await app.request("http://localhost/v1/files:search?q=cmpbtn&limit=3", {
+    const rootSearchResponse = await app.request("http://localhost/__bottle/v1/files:search?q=cmpbtn&limit=3", {
       headers: { host: "localhost" }
     });
     expect(rootSearchResponse.status).toBe(200);
@@ -1289,7 +1293,7 @@ describe("Hono API", () => {
     const sessionStore = new SessionStore(config);
     const app = await createApp({ config, sessionStore });
 
-    const saveResponse = await app.request("http://localhost/v1/claude-commands", {
+    const saveResponse = await app.request("http://localhost/__bottle/v1/claude-commands", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
@@ -1300,7 +1304,7 @@ describe("Hono API", () => {
     const rootCommandPath = path.join(config.commandsDir, "review", "fix.md");
     await expect(fs.readFile(rootCommandPath, "utf8")).resolves.toBe("Fix it");
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "No command copy" })
@@ -1310,7 +1314,7 @@ describe("Hono API", () => {
     expect(session).toMatchObject({ workspacePath: config.projectRoot });
     await expect(fs.stat(config.workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
 
-    const deleteResponse = await app.request("http://localhost/v1/claude-commands", {
+    const deleteResponse = await app.request("http://localhost/__bottle/v1/claude-commands", {
       method: "DELETE",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ path: "review/fix.md" })
@@ -1325,14 +1329,14 @@ describe("Hono API", () => {
     const rootFile = path.join(config.projectRoot, "keep.txt");
     await fs.writeFile(rootFile, "keep me", "utf8");
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Delete" })
     });
     const created = (await createResponse.json()) as { sessionId: string };
 
-    const deleteResponse = await app.request(`http://localhost/v1/sessions/${created.sessionId}`, {
+    const deleteResponse = await app.request(`http://localhost/__bottle/v1/sessions/${created.sessionId}`, {
       method: "DELETE",
       headers: { host: "localhost" }
     });
@@ -1347,7 +1351,7 @@ describe("Hono API", () => {
     const config = await createTempConfig();
     const app = await createApp({ config });
 
-    const getResponse = await app.request("http://localhost/v1/settings", {
+    const getResponse = await app.request("http://localhost/__bottle/v1/settings", {
       headers: { host: "localhost" }
     });
     expect(getResponse.status).toBe(200);
@@ -1362,7 +1366,7 @@ describe("Hono API", () => {
     expect(initial.defaultAgentProvider).toBe("claude");
     expect(initial.availableAgentProviders).toEqual(["claude", "codex"]);
 
-    const patchResponse = await app.request("http://localhost/v1/settings", {
+    const patchResponse = await app.request("http://localhost/__bottle/v1/settings", {
       method: "PATCH",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ maxConcurrentRuns: 8, maxTurns: 50, defaultAgentProvider: "codex" })
@@ -1387,14 +1391,14 @@ describe("Hono API", () => {
     expect(persisted.maxTurns).toBe(50);
     expect(persisted.defaultAgentProvider).toBe("codex");
 
-    const sessionsResponse = await app.request("http://localhost/v1/sessions", {
+    const sessionsResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       headers: { host: "localhost" }
     });
     expect(sessionsResponse.status).toBe(200);
     const sessionsBody = (await sessionsResponse.json()) as { sessions: unknown[] };
     expect(sessionsBody.sessions).toEqual([]);
 
-    const createResponse = await app.request("http://localhost/v1/sessions", {
+    const createResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ mode: "plan", title: "Default provider" })
@@ -1404,7 +1408,7 @@ describe("Hono API", () => {
 
     // Verify a fresh app instance loads persisted values
     const freshApp = await createApp({ config });
-    const freshGet = await freshApp.request("http://localhost/v1/settings", {
+    const freshGet = await freshApp.request("http://localhost/__bottle/v1/settings", {
       headers: { host: "localhost" }
     });
     const freshSettings = (await freshGet.json()) as {
@@ -1445,26 +1449,5 @@ async function* codexResultStream(threadId: string, text: string): AsyncGenerato
   yield {
     type: "turn.completed",
     usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0 }
-  };
-}
-
-async function createTestHttpServer(
-  handler: (request: http.IncomingMessage, response: http.ServerResponse) => void
-): Promise<{ origin: string; close: () => Promise<void> }> {
-  const server = http.createServer(handler);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("Test server did not bind to a TCP port");
-  }
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) reject(error);
-          else resolve();
-        });
-      })
   };
 }

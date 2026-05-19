@@ -112,7 +112,7 @@ describe("web chat contract", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    const contract = createClaudeWebChatContract({ baseUrl: "https://api.example.com", fetch: fetchMock });
+    const contract = createClaudeWebChatContract({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
     const seenMessages: WebChatMessage[] = [];
     const onRunResult = vi.fn();
 

@@ -3,7 +3,6 @@ import { serve } from "@hono/node-server";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
-import { installGatewayUpgradeProxy } from "./gateway.js";
 import { createSessionFactory } from "./session-adapter.js";
 
 const config = loadConfig();
@@ -20,7 +19,6 @@ const server = serve(
     console.log(`Bottle listening on http://${info.address}:${info.port}`);
   }
 );
-installGatewayUpgradeProxy(server, config);
 
 function shutdown(): void {
   agentService.dispose();

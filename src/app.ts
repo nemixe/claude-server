@@ -4,19 +4,20 @@ import { z } from "zod";
 import {
   AgentService,
   ConcurrencyLimitError,
+  CodexSandboxUnsupportedError,
   isPendingInterruptPayloadValid,
   RunAbortedError,
   RunTimeoutError,
   ValidationErrorLimitError
 } from "./agent-service.js";
 import {
+  BOTTLE_API_PATH,
   bottleInfoForRequest,
   createBottleAuthMiddleware,
   createClientAccessMiddleware,
   registerBottleRoutes
 } from "./bottle.js";
 import type { AppConfig } from "./config.js";
-import { registerGatewayRoutes } from "./gateway.js";
 import { createHostnameGate } from "./hostname-gate.js";
 import { createSessionFactory, MissingClaudeSessionIdError } from "./session-adapter.js";
 import { SessionStore } from "./session-store.js";
@@ -55,7 +56,7 @@ type HeartbeatStream = Pick<SSEStreamingApi, "aborted" | "closed"> & {
 
 function prepareSseResponse(c: Context): void {
   c.header("X-Accel-Buffering", "no");
-  c.header("Cache-Control", "no-cache, no-transform");
+  c.header("Cache-Control", "no-store, no-cache, no-transform");
   c.header("Connection", "keep-alive");
 }
 
@@ -213,22 +214,22 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
 
   app.use("*", createHostnameGate(dependencies.config));
   app.use("*", createClientAccessMiddleware(dependencies.config));
-  app.use("/v1/*", createBottleAuthMiddleware(dependencies.config));
-  registerBottleRoutes(app);
+  app.use(`${BOTTLE_API_PATH}/*`, createBottleAuthMiddleware(dependencies.config));
+  registerBottleRoutes(app, dependencies.config);
 
   app.get("/health", (c) => {
     return c.json({ ok: true, service: "bottle", timestamp: new Date().toISOString() });
   });
 
-  app.get("/v1/bottle", (c) => {
+  app.get(`${BOTTLE_API_PATH}/bottle`, (c) => {
     return c.json(bottleInfoForRequest(dependencies.config, c.req.url, c.req.raw.headers));
   });
 
-  app.get("/v1/settings", (c) => {
+  app.get(`${BOTTLE_API_PATH}/settings`, (c) => {
     return c.json(settingsResponse(dependencies.config, agentService));
   });
 
-  app.get("/v1/root", (c) => {
+  app.get(`${BOTTLE_API_PATH}/root`, (c) => {
     const rootInfo: RootInfoResponse = {
       projectRoot: dependencies.config.projectRoot,
       bottleDir: dependencies.config.bottleDir,
@@ -243,7 +244,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json(rootInfo);
   });
 
-  app.get("/v1/files:search", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/files:search`, async (c) => {
     const query = workspaceSearchSchema.parse({
       q: c.req.query("q"),
       limit: c.req.query("limit")
@@ -252,7 +253,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json({ results });
   });
 
-  app.patch("/v1/settings", async (c) => {
+  app.patch(`${BOTTLE_API_PATH}/settings`, async (c) => {
     const body = z
       .object({
         maxConcurrentRuns: z.number().int().min(1).max(64).optional(),
@@ -283,13 +284,13 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     });
   });
 
-  app.post("/v1/sessions", async (c) => {
+  app.post(`${BOTTLE_API_PATH}/sessions`, async (c) => {
     const body = createSessionSchema.parse(await c.req.json().catch(() => ({})));
     const session = await sessionStore.create(body);
     return c.json(toPublicSession(session), 201);
   });
 
-  app.get("/v1/sessions", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/sessions`, async (c) => {
     const query = listSessionsSchema.parse({
       limit: c.req.query("limit"),
       offset: c.req.query("offset")
@@ -305,13 +306,13 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json(body);
   });
 
-  app.get("/v1/sessions/:sessionId", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/sessions/:sessionId`, async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
     return c.json(toPublicSession(session));
   });
 
-  app.get("/v1/sessions/:sessionId/messages", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/sessions/:sessionId/messages`, async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
@@ -327,7 +328,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json(pageMessages(messages, query));
   });
 
-  app.get("/v1/claude-commands", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/claude-commands`, async (c) => {
     const commandPath = c.req.query("path");
     if (commandPath) {
       const command = await sessionStore.readSharedClaudeCommand(commandPath);
@@ -338,20 +339,20 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json({ commands });
   });
 
-  app.post("/v1/claude-commands", async (c) => {
+  app.post(`${BOTTLE_API_PATH}/claude-commands`, async (c) => {
     const body = claudeCommandSchema.parse(await c.req.json());
     const command = await sessionStore.saveSharedClaudeCommand(body);
     return c.json({ command }, 201);
   });
 
-  app.delete("/v1/claude-commands", async (c) => {
+  app.delete(`${BOTTLE_API_PATH}/claude-commands`, async (c) => {
     const body = deleteClaudeCommandSchema.parse(await c.req.json());
     const deleted = await sessionStore.deleteSharedClaudeCommand(body.path);
     if (!deleted) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
     return c.json({ deleted: true });
   });
 
-  app.get("/v1/sessions/:sessionId/files:search", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/sessions/:sessionId/files:search`, async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
@@ -363,7 +364,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json({ results });
   });
 
-  app.get("/v1/sessions/:sessionId/events:stream", async (c) => {
+  app.get(`${BOTTLE_API_PATH}/sessions/:sessionId/events:stream`, async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
@@ -392,7 +393,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     });
   });
 
-  app.post("/v1/sessions/:sessionId/messages:stream", async (c) => {
+  app.post(`${BOTTLE_API_PATH}/sessions/:sessionId/messages:stream`, async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
@@ -493,7 +494,10 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
               ? "concurrency_limit"
               : error instanceof ValidationErrorLimitError
                 ? error.code
-                : error instanceof MissingClaudeSessionIdError || error instanceof RunTimeoutError || error instanceof RunAbortedError
+                : error instanceof CodexSandboxUnsupportedError ||
+                    error instanceof MissingClaudeSessionIdError ||
+                    error instanceof RunTimeoutError ||
+                    error instanceof RunAbortedError
                   ? error.code
                   : "agent_error";
           await stream.writeSSE({
@@ -505,7 +509,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     });
   });
 
-  app.post("/v1/sessions/:sessionId/interrupt", async (c) => {
+  app.post(`${BOTTLE_API_PATH}/sessions/:sessionId/interrupt`, async (c) => {
     const session = await sessionStore.get(c.req.param("sessionId"));
     if (!session) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
 
@@ -513,22 +517,20 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json({ interrupted });
   });
 
-  app.patch("/v1/sessions/:sessionId", async (c) => {
+  app.patch(`${BOTTLE_API_PATH}/sessions/:sessionId`, async (c) => {
     const body = updateSessionSchema.parse(await c.req.json().catch(() => ({})));
     const updated = await sessionStore.update(c.req.param("sessionId"), body);
     if (!updated) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
     return c.json(toPublicSession(updated));
   });
 
-  app.delete("/v1/sessions/:sessionId", async (c) => {
+  app.delete(`${BOTTLE_API_PATH}/sessions/:sessionId`, async (c) => {
     const sessionId = c.req.param("sessionId");
     agentService.closeSession(sessionId);
     const deleted = await sessionStore.delete(sessionId);
     if (!deleted) return c.json({ error: { code: "session_not_found", message: "Session not found" } }, 404);
     return c.json({ deleted: true });
   });
-
-  registerGatewayRoutes(app, dependencies.config);
 
   app.onError((error, c) => {
     if (error instanceof z.ZodError) {
@@ -563,7 +565,7 @@ function applyToolResultToSession(session: SessionMetadata, request: StreamMessa
 
   if (pending.type === "approval") {
     const approved = request.toolResult.approved ?? parseApprovalContent(request.toolResult.content);
-    session.mode = approved ? "edit" : "plan";
+    session.mode = approved ? "bypass" : "plan";
     request.mode = session.mode;
   }
 

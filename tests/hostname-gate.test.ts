@@ -19,6 +19,7 @@ describe("hostname gate middleware", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://example.com");
+    expect(response.headers.get("access-control-allow-credentials")).toBe("true");
   });
 
   it("rejects unlisted hosts before route handlers", async () => {
@@ -35,8 +36,8 @@ describe("hostname gate middleware", () => {
     expect(await response.json()).toMatchObject({ error: { code: "host_not_allowed" } });
   });
 
-  it("uses X-Forwarded-Host when TRUST_PROXY is enabled", async () => {
-    const config = await createTempConfig({ TRUST_PROXY: "true" });
+  it("uses X-Forwarded-Host by default", async () => {
+    const config = await createTempConfig();
     const app = new Hono();
     app.use("*", createHostnameGate(config));
     app.get("/", (c) => c.json({ ok: true }));

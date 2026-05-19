@@ -10,17 +10,14 @@ describe("config and hostname parsing", () => {
     const config = loadConfig({
       BOTTLE_NAME: "prototype-a",
       ALLOWED_HOSTNAMES: "LOCALHOST,example.com,app.example.com:8443",
-      TRUST_PROXY: "true",
       MAX_CONCURRENT_RUNS: "7",
-      CLIENT_ORIGINS: "http://localhost:5173,https://client.example.com",
-      MAIN_APP_URL: "http://localhost:3000"
+      CLIENT_ORIGINS: "http://localhost:5173,https://client.example.com"
     });
 
     expect(config.bottleName).toBe("prototype-a");
-    expect(config.trustProxy).toBe(true);
+    expect(config).not.toHaveProperty("trustProxy");
     expect(config.maxConcurrentRuns).toBe(7);
     expect(config.clientOrigins).toEqual(["http://localhost:5173", "https://client.example.com"]);
-    expect(config.mainAppUrl).toBe("http://localhost:3000");
     expect(config.defaultAgentProvider).toBe("claude");
     expect(config.runTimeoutMs).toBe(3_600_000);
     expect(config.allowedHosts).toEqual([
@@ -40,7 +37,8 @@ describe("config and hostname parsing", () => {
       CODEX_PATH: "/usr/local/bin/codex",
       CODEX_REASONING_EFFORT: "high",
       CODEX_NETWORK_ACCESS: "true",
-      CODEX_SKIP_GIT_REPO_CHECK: "false"
+      CODEX_SKIP_GIT_REPO_CHECK: "false",
+      CODEX_PLAN_SANDBOX_MODE: "danger-full-access"
     });
 
     expect(config.defaultAgentProvider).toBe("codex");
@@ -51,6 +49,13 @@ describe("config and hostname parsing", () => {
     expect(config.codexReasoningEffort).toBe("high");
     expect(config.codexNetworkAccess).toBe(true);
     expect(config.codexSkipGitRepoCheck).toBe(false);
+    expect(config.codexPlanSandboxMode).toBe("danger-full-access");
+  });
+
+  it("rejects invalid Codex sandbox modes", () => {
+    expect(() => loadConfig({ CODEX_PLAN_SANDBOX_MODE: "locked-down" })).toThrow(
+      /CODEX_PLAN_SANDBOX_MODE must be one of: read-only, workspace-write, danger-full-access/
+    );
   });
 
   it("ignores removed ENABLE_SESSION_API values", () => {
@@ -103,78 +108,38 @@ describe("config and hostname parsing", () => {
     expect(config.commandsDir).toBe(path.join(cwd, "bundle", ".bottle", "commands"));
   });
 
-  it("loads main app URL and token configuration", async () => {
+  it("loads token configuration", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-config-root-"));
     const config = loadConfig(
       {
         PROJECT_ROOT: root,
-        MAIN_APP_URL: "http://localhost:3000/api",
         BOTTLE_API_TOKEN: "secret",
         BOTTLE_API_TOKEN_REQUIRED: "true"
       },
       process.cwd()
     );
 
-    expect(config.mainAppUrl).toBe("http://localhost:3000/api");
     expect(config.bottleApiToken).toBe("secret");
     expect(config.bottleApiTokenRequired).toBe(true);
   });
 
-  it("supports API-only host app mode", async () => {
+  it("supports API-only host app configuration", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-api-only-root-"));
     const config = loadConfig(
       {
         PROJECT_ROOT: root,
-        MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
-        MAIN_APP_PROXY: "false",
         ALLOWED_HOSTNAMES: "ai-proto-dev-1.devnstg.com,localhost",
-        CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com",
-        TRUST_PROXY: "true"
-      },
-      process.cwd()
-    );
-
-    expect(config.mainAppUrl).toBe("https://ai-proto-dev-1.devnstg.com");
-    expect(config.mainAppProxy).toBe(false);
-    expect(config.mainAppDirect).toBe(false);
-    expect(config.trustProxy).toBe(true);
-    expect(config.clientOrigins).toEqual(["https://ai-wrapper.devnstg.com"]);
-    expect(config.allowedHosts).toEqual([{ hostname: "ai-proto-dev-1.devnstg.com" }, { hostname: "localhost" }]);
-  });
-
-  it("supports AI iframe proxy mode without direct main app routing", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-iframe-proxy-root-"));
-    const config = loadConfig(
-      {
-        PROJECT_ROOT: root,
-        MAIN_APP_URL: "https://ai-proto-dev-1.devnstg.com",
-        MAIN_APP_PROXY: "true",
-        MAIN_APP_DIRECT: "false",
         CLIENT_ORIGINS: "https://ai-wrapper.devnstg.com"
       },
       process.cwd()
     );
 
-    expect(config.mainAppUrl).toBe("https://ai-proto-dev-1.devnstg.com");
-    expect(config.mainAppProxy).toBe(true);
-    expect(config.mainAppDirect).toBe(false);
+    expect(config).not.toHaveProperty("mainAppUrl");
+    expect(config).not.toHaveProperty("mainAppProxy");
+    expect(config).not.toHaveProperty("mainAppDirect");
+    expect(config).not.toHaveProperty("trustProxy");
     expect(config.clientOrigins).toEqual(["https://ai-wrapper.devnstg.com"]);
-  });
-
-  it("serves the AI client from root in conditional gateway mode", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-root-client-"));
-    const config = loadConfig(
-      {
-        PROJECT_ROOT: root,
-        MAIN_APP_URL: "http://localhost:3000",
-        CLIENT_APP_PATH: "/__ai_client"
-      },
-      process.cwd()
-    );
-
-    expect(config.clientAppPath).toBe("/");
-    expect(config.mainAppProxy).toBe(true);
-    expect(config.mainAppDirect).toBe(true);
+    expect(config.allowedHosts).toEqual([{ hostname: "ai-proto-dev-1.devnstg.com" }, { hostname: "localhost" }]);
   });
 
   it("requires a Bottle API token when production token auth is enabled", async () => {
@@ -239,15 +204,14 @@ describe("config and hostname parsing", () => {
     expect(isAllowedHost(parseHostLike("app.example.com:3000"), rules)).toBe(false);
   });
 
-  it("builds public origins from forwarded proxy headers only when trusted", () => {
+  it("builds public origins from forwarded proxy headers by default", () => {
     const headers = new Headers({
       host: "internal:3001",
       "x-forwarded-host": "prototype.example.com",
       "x-forwarded-proto": "https"
     });
 
-    expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers, true)).toBe("https://prototype.example.com");
-    expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers, false)).toBe("http://internal:3001");
+    expect(getEffectiveOrigin("http://internal:3001/v1/bottle", headers)).toBe("https://prototype.example.com");
   });
 
   it("uses a matching public origin hint when forwarded proto is unavailable", () => {
@@ -258,10 +222,10 @@ describe("config and hostname parsing", () => {
       host: "other.example.com"
     });
 
-    expect(getEffectiveOrigin("http://prototype.example.com/v1/bottle", headers, true, "https://prototype.example.com")).toBe(
+    expect(getEffectiveOrigin("http://prototype.example.com/v1/bottle", headers, "https://prototype.example.com")).toBe(
       "https://prototype.example.com"
     );
-    expect(getEffectiveOrigin("http://other.example.com/v1/bottle", mismatchedHeaders, true, "https://prototype.example.com")).toBe(
+    expect(getEffectiveOrigin("http://other.example.com/v1/bottle", mismatchedHeaders, "https://prototype.example.com")).toBe(
       "http://other.example.com"
     );
   });

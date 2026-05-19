@@ -6,20 +6,18 @@ import { AGENT_PROVIDERS, type AgentProvider } from "./types.js";
 
 export const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
+export const CODEX_SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
+export type CodexSandboxMode = (typeof CODEX_SANDBOX_MODES)[number];
 
 export type AppConfig = {
   bottleName: string;
   defaultAgentProvider: AgentProvider;
-  mainAppUrl?: string;
   clientAppUrl?: string;
   clientAppPath: "/";
-  mainAppProxy: boolean;
-  mainAppDirect: boolean;
   projectRoot: string;
   port: number;
   bindHost: string;
   allowedHosts: AllowedHostRule[];
-  trustProxy: boolean;
   clientOrigins: string[];
   bottleApiToken?: string;
   bottleApiTokenRequired: boolean;
@@ -47,6 +45,7 @@ export type AppConfig = {
   codexReasoningEffort?: CodexReasoningEffort;
   codexNetworkAccess?: boolean;
   codexSkipGitRepoCheck: boolean;
+  codexPlanSandboxMode: CodexSandboxMode;
 };
 
 export type LoadConfigOptions = {
@@ -62,13 +61,8 @@ const RawEnvSchema = z.object({
   PORT: z.string().optional(),
   BIND_HOST: z.string().optional(),
   ALLOWED_HOSTNAMES: z.string().optional(),
-  TRUST_PROXY: z.string().optional(),
   CLIENT_ORIGINS: z.string().optional(),
-  MAIN_APP_URL: z.string().optional(),
-  APP_URL: z.string().optional(),
   CLIENT_APP_URL: z.string().optional(),
-  MAIN_APP_PROXY: z.string().optional(),
-  MAIN_APP_DIRECT: z.string().optional(),
   BOTTLE_API_TOKEN: z.string().optional(),
   BOTTLE_API_TOKEN_REQUIRED: z.string().optional(),
   BOTTLE_DIR: z.string().optional(),
@@ -89,7 +83,8 @@ const RawEnvSchema = z.object({
   CODEX_PATH: z.string().optional(),
   CODEX_REASONING_EFFORT: z.string().optional(),
   CODEX_NETWORK_ACCESS: z.string().optional(),
-  CODEX_SKIP_GIT_REPO_CHECK: z.string().optional()
+  CODEX_SKIP_GIT_REPO_CHECK: z.string().optional(),
+  CODEX_PLAN_SANDBOX_MODE: z.string().optional()
 });
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string | LoadConfigOptions = process.cwd()): AppConfig {
@@ -115,26 +110,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
   const commandsDir = path.join(bottleDir, "commands");
   const skillsDir = path.join(bottleDir, "skills");
   const extraSkillRoots = resolveExtraSkillRoots(raw.BOTTLE_EXTRA_SKILL_ROOTS, cwd);
-  const mainAppUrl = normalizeOptionalUrl(raw.MAIN_APP_URL ?? raw.APP_URL, "MAIN_APP_URL");
-  const mainAppProxy = parseBoolean(raw.MAIN_APP_PROXY, Boolean(mainAppUrl), "MAIN_APP_PROXY");
-  const mainAppDirect = mainAppProxy && parseBoolean(raw.MAIN_APP_DIRECT, true, "MAIN_APP_DIRECT");
-  if (mainAppProxy && !mainAppUrl) {
-    throw new Error("MAIN_APP_URL is required when MAIN_APP_PROXY is true");
-  }
 
   return {
     bottleName: normalizeOptionalString(raw.BOTTLE_NAME) ?? normalizeOptionalString(raw.CLAUDE_SERVER_INSTANCE) ?? "bottle",
     defaultAgentProvider: parseAgentProvider(raw.AGENT_PROVIDER),
-    mainAppUrl,
     clientAppUrl: normalizeOptionalUrl(raw.CLIENT_APP_URL ?? "http://localhost:5173", "CLIENT_APP_URL"),
     clientAppPath: "/",
-    mainAppProxy,
-    mainAppDirect,
     projectRoot,
     port: parseInteger(raw.PORT, 3001, "PORT"),
     bindHost: raw.BIND_HOST ?? "0.0.0.0",
     allowedHosts,
-    trustProxy: parseBoolean(raw.TRUST_PROXY, false, "TRUST_PROXY"),
     clientOrigins: parseOrigins(raw.CLIENT_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173"),
     bottleApiToken,
     bottleApiTokenRequired,
@@ -161,7 +146,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
     codexPath: normalizeOptionalString(raw.CODEX_PATH),
     codexReasoningEffort: parseCodexReasoningEffort(raw.CODEX_REASONING_EFFORT),
     codexNetworkAccess: parseOptionalBoolean(raw.CODEX_NETWORK_ACCESS, "CODEX_NETWORK_ACCESS"),
-    codexSkipGitRepoCheck: parseBoolean(raw.CODEX_SKIP_GIT_REPO_CHECK, true, "CODEX_SKIP_GIT_REPO_CHECK")
+    codexSkipGitRepoCheck: parseBoolean(raw.CODEX_SKIP_GIT_REPO_CHECK, true, "CODEX_SKIP_GIT_REPO_CHECK"),
+    codexPlanSandboxMode: parseCodexSandboxMode(raw.CODEX_PLAN_SANDBOX_MODE, "read-only", "CODEX_PLAN_SANDBOX_MODE")
   };
 }
 
@@ -176,6 +162,12 @@ function parseCodexReasoningEffort(value: string | undefined): CodexReasoningEff
   if (!normalized) return undefined;
   if ((CODEX_REASONING_EFFORTS as readonly string[]).includes(normalized)) return normalized as CodexReasoningEffort;
   throw new Error(`CODEX_REASONING_EFFORT must be one of: ${CODEX_REASONING_EFFORTS.join(", ")}`);
+}
+
+function parseCodexSandboxMode(value: string | undefined, fallback: CodexSandboxMode, name: string): CodexSandboxMode {
+  const normalized = normalizeOptionalString(value) ?? fallback;
+  if ((CODEX_SANDBOX_MODES as readonly string[]).includes(normalized)) return normalized as CodexSandboxMode;
+  throw new Error(`${name} must be one of: ${CODEX_SANDBOX_MODES.join(", ")}`);
 }
 
 function resolveExistingProjectRoot(value: string, cwd: string): string {

@@ -1,18 +1,28 @@
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { AppConfig } from "./config.js";
-import { APP_PROXY_PATH, hasTargetAppUrlCookie, isDirectMainAppGateway } from "./gateway.js";
-import { getEffectiveOrigin } from "./hostname.js";
 import { AGENT_PROVIDERS, BOTTLE_PROTOCOL_VERSION, type BottleInfoResponse } from "./types.js";
 
-const BRIDGE_PATH = "/bottle-bridge.js";
+export const BOTTLE_BASE_PATH = "/__bottle";
+export const BOTTLE_API_PATH = `${BOTTLE_BASE_PATH}/v1`;
+export const BRIDGE_PATH = `${BOTTLE_BASE_PATH}/bottle-bridge.js`;
+export const IFRAME_PATH = `${BOTTLE_BASE_PATH}/iframe`;
+const BOTTLE_BRIDGE_SCRIPT = `<script src="${BRIDGE_PATH}" data-bottle-bridge></script>`;
+const PINGGY_NO_SCREEN_HEADER = "x-pinggy-no-screen";
+const FORWARDED_IFRAME_REQUEST_HEADERS = ["accept", "accept-language", "cookie", "user-agent"] as const;
 
 export function createClientAccessMiddleware(config: AppConfig): MiddlewareHandler {
   return async (c, next) => {
+    if (isBottleApiRequest(c.req.url)) {
+      c.header("Vary", "Origin");
+      c.header("Cache-Control", "no-store");
+    }
+
     const origin = c.req.header("origin");
     if (origin && isAllowedClientOrigin(origin, config.clientOrigins)) {
       c.header("Access-Control-Allow-Origin", new URL(origin).origin);
       c.header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
-      c.header("Access-Control-Allow-Headers", "content-type, authorization, x-bottle-api-token");
+      c.header("Access-Control-Allow-Headers", "content-type, authorization, x-bottle-api-token, x-pinggy-no-screen");
+      c.header("Access-Control-Allow-Credentials", "true");
       c.header("Access-Control-Max-Age", "86400");
       c.header("Vary", "Origin");
     }
@@ -25,6 +35,15 @@ export function createClientAccessMiddleware(config: AppConfig): MiddlewareHandl
 
     await next();
   };
+}
+
+function isBottleApiRequest(requestUrl: string): boolean {
+  try {
+    const { pathname } = new URL(requestUrl);
+    return pathname === BOTTLE_API_PATH || pathname.startsWith(`${BOTTLE_API_PATH}/`);
+  } catch {
+    return false;
+  }
 }
 
 export function createBottleAuthMiddleware(config: AppConfig): MiddlewareHandler {
@@ -47,37 +66,16 @@ export function createBottleAuthMiddleware(config: AppConfig): MiddlewareHandler
 }
 
 export function bottleInfoForRequest(config: AppConfig, requestUrl: string, headers?: Headers): BottleInfoResponse {
-  const origin = getEffectiveOrigin(requestUrl, headers, config.trustProxy, config.mainAppUrl);
-  const isGatewayProxyEnabled = Boolean(config.mainAppProxy && config.mainAppUrl);
-  const isDirectMainApp = isDirectMainAppGateway(config);
-  const isConditionalRootClient = isDirectMainApp && !hasTargetAppUrlCookie(headers);
-  const isClientAtRoot = isGatewayProxyEnabled && (!isDirectMainApp || isConditionalRootClient);
-  const publicMainAppUrl = isDirectMainApp ? origin : config.mainAppUrl;
-  const appUrl = isDirectMainApp
-    ? isConditionalRootClient
-      ? undefined
-      : `${origin}/`
-    : isClientAtRoot
-    ? undefined
-    : isGatewayProxyEnabled
-      ? `${origin}/`
-      : config.mainAppUrl;
-  const appProxyUrl = isGatewayProxyEnabled && !isDirectMainApp ? `${origin}${APP_PROXY_PATH}/` : undefined;
+  const mainAppUrl = requestOrigin(requestUrl, headers);
 
   return {
     protocolVersion: BOTTLE_PROTOCOL_VERSION,
     name: config.bottleName,
-    apiBaseUrl: origin,
-    ...(appUrl ? { appUrl } : {}),
-    ...(publicMainAppUrl ? { mainAppUrl: publicMainAppUrl } : {}),
-    ...(appProxyUrl ? { appProxyUrl } : {}),
+    mainAppUrl,
     defaultAgentProvider: config.defaultAgentProvider,
     availableAgentProviders: [...AGENT_PROVIDERS],
     features: {
-      mainApp: Boolean(config.mainAppUrl),
-      mainAppProxy: isGatewayProxyEnabled,
-      mainAppDirect: isDirectMainApp,
-      clientAtRoot: isClientAtRoot,
+      mainApp: true,
       iframeBridge: true,
       sessions: true,
       streaming: true,
@@ -93,13 +91,17 @@ export function bottleInfoForRequest(config: AppConfig, requestUrl: string, head
   };
 }
 
-export function registerBottleRoutes(app: Hono): void {
+export function registerBottleRoutes(app: Hono, _config: AppConfig): void {
   app.get(BRIDGE_PATH, (c) => {
     return c.body(renderBottleBridgeScript(), 200, {
       "content-type": "application/javascript; charset=utf-8",
       "cache-control": "no-store"
     });
   });
+
+  const serveIframe = (c: Context) => serveIframeApp(c);
+  app.get(IFRAME_PATH, serveIframe);
+  app.get(`${IFRAME_PATH}/*`, serveIframe);
 }
 
 function isAllowedClientOrigin(origin: string, allowedOrigins: string[]): boolean {
@@ -115,75 +117,122 @@ function frameAncestorsPolicy(clientOrigins: string[]): string {
   return `frame-ancestors ${ancestors}`;
 }
 
+async function serveIframeApp(c: Context): Promise<Response> {
+  const targetUrl = iframeTargetUrl(c.req.url, c.req.raw.headers);
+
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(targetUrl.href, {
+      headers: forwardedIframeHeaders(c.req.raw.headers)
+    });
+  } catch {
+    return c.json(
+      {
+        error: {
+          code: "main_app_fetch_failed",
+          message: "Failed to fetch the detected main app URL."
+        }
+      },
+      502
+    );
+  }
+
+  const contentType = upstreamResponse.headers.get("content-type") ?? "";
+  const responseText = await upstreamResponse.text();
+  if (!contentType.toLowerCase().includes("text/html")) {
+    return new Response(responseText, {
+      status: upstreamResponse.status,
+      statusText: upstreamResponse.statusText,
+      headers: passthroughIframeHeaders(upstreamResponse.headers)
+    });
+  }
+
+  return new Response(injectBottleBridge(responseText), {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers: {
+      "content-type": contentType || "text/html; charset=utf-8",
+      "cache-control": "no-cache"
+    }
+  });
+}
+
+function iframeTargetUrl(requestUrl: string, requestHeaders: Headers): URL {
+  const request = new URL(requestUrl);
+  const target = new URL(requestOrigin(requestUrl, requestHeaders));
+  const iframePath = request.pathname === IFRAME_PATH ? "/" : request.pathname.slice(IFRAME_PATH.length) || "/";
+
+  target.pathname = joinPaths(target.pathname, iframePath);
+  target.search = request.search;
+  target.hash = "";
+  return target;
+}
+
+function requestOrigin(requestUrl: string, requestHeaders?: Headers): string {
+  const request = new URL(requestUrl);
+  const forwardedHost = firstHeaderValue(requestHeaders?.get("x-forwarded-host"));
+  const host = forwardedHost ?? firstHeaderValue(requestHeaders?.get("host")) ?? request.host;
+  const forwardedProto = firstHeaderValue(requestHeaders?.get("x-forwarded-proto"));
+  const protocol = forwardedProto ?? request.protocol.replace(/:$/, "");
+  return `${protocol}://${host}`;
+}
+
+function firstHeaderValue(value: string | null | undefined): string | undefined {
+  return value
+    ?.split(",")
+    .map((entry) => entry.trim())
+    .find(Boolean);
+}
+
+function joinPaths(basePath: string, requestPath: string): string {
+  const normalizedBase = basePath.replace(/\/+$/, "");
+  const normalizedRequest = requestPath.startsWith("/") ? requestPath : `/${requestPath}`;
+  if (!normalizedBase || normalizedBase === "/") return normalizedRequest;
+  return `${normalizedBase}${normalizedRequest}`;
+}
+
+function forwardedIframeHeaders(requestHeaders: Headers): Headers {
+  const headers = new Headers();
+  for (const headerName of FORWARDED_IFRAME_REQUEST_HEADERS) {
+    const value = requestHeaders.get(headerName);
+    if (value) headers.set(headerName, value);
+  }
+  headers.set(PINGGY_NO_SCREEN_HEADER, requestHeaders.get(PINGGY_NO_SCREEN_HEADER) || "1");
+  return headers;
+}
+
+function passthroughIframeHeaders(upstreamHeaders: Headers): Headers {
+  const headers = new Headers();
+  for (const headerName of ["content-type", "location"] as const) {
+    const value = upstreamHeaders.get(headerName);
+    if (value) headers.set(headerName, value);
+  }
+  headers.set("cache-control", "no-cache");
+  return headers;
+}
+
+function injectBottleBridge(html: string): string {
+  if (html.includes("data-bottle-bridge") || html.includes(BRIDGE_PATH)) {
+    return html;
+  }
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, `${BOTTLE_BRIDGE_SCRIPT}</head>`);
+  }
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${BOTTLE_BRIDGE_SCRIPT}</body>`);
+  }
+  return `${html}${BOTTLE_BRIDGE_SCRIPT}`;
+}
+
 function renderBottleBridgeScript(): string {
   return `(() => {
   const protocolVersion = ${BOTTLE_PROTOCOL_VERSION};
   const source = "bottle";
-  const config = window.__BOTTLE_BRIDGE_CONFIG__ || {};
 
   function post(message) {
     if (window.parent && window.parent !== window) {
       window.parent.postMessage({ source, ...message }, "*");
     }
-  }
-
-  function normalizeUrl(value) {
-    try {
-      return new URL(value, window.location.href);
-    } catch {
-      return null;
-    }
-  }
-
-  function normalizePathPrefix(value) {
-    const raw = String(value || "").replace(/\\/+$/, "");
-    return raw && raw !== "/" ? raw : "";
-  }
-
-  function joinPath(basePath, requestPath) {
-    const base = normalizePathPrefix(basePath);
-    const path = String(requestPath || "/").startsWith("/") ? String(requestPath || "/") : "/" + requestPath;
-    return (base + path) || "/";
-  }
-
-  function pathWithoutBase(pathname, basePath) {
-    const base = normalizePathPrefix(basePath);
-    if (!base) return pathname || "/";
-    if (pathname === base) return "/";
-    if (pathname.startsWith(base + "/")) return pathname.slice(base.length) || "/";
-    return pathname || "/";
-  }
-
-  function isInsideProxy(url) {
-    const proxyPath = normalizePathPrefix(config.appProxyPath || "/__app");
-    return Boolean(proxyPath && (url.pathname === proxyPath || url.pathname.startsWith(proxyPath + "/")));
-  }
-
-  function canonicalUrl(value) {
-    const url = normalizeUrl(value || window.location.href);
-    if (!url) return String(value || "");
-    const mainAppUrl = normalizeUrl(config.mainAppUrl || "");
-    if (!mainAppUrl || !isInsideProxy(url)) return url.href;
-    const next = new URL(mainAppUrl.href);
-    next.pathname = joinPath(mainAppUrl.pathname, pathWithoutBase(url.pathname, config.appProxyPath || "/__app"));
-    next.search = url.search;
-    next.hash = url.hash;
-    return next.href;
-  }
-
-  function proxiedHistoryUrl(value) {
-    if (value === undefined || value === null || !config.appProxyPath || !isInsideProxy(window.location)) return value;
-    const url = normalizeUrl(value);
-    if (!url) return value;
-    if (isInsideProxy(url)) return url.pathname + url.search + url.hash;
-    if (url.origin === window.location.origin) {
-      return joinPath(config.appProxyPath, url.pathname) + url.search + url.hash;
-    }
-    const mainAppUrl = normalizeUrl(config.mainAppUrl || "");
-    if (mainAppUrl && url.origin === mainAppUrl.origin) {
-      return joinPath(config.appProxyPath, pathWithoutBase(url.pathname, mainAppUrl.pathname)) + url.search + url.hash;
-    }
-    return value;
   }
 
   function selectedElementHint() {
@@ -204,7 +253,7 @@ function renderBottleBridgeScript(): string {
   function currentContext() {
     const selection = window.getSelection && window.getSelection();
     const selectedText = selection ? String(selection).trim().slice(0, 4000) : "";
-    const currentUrl = new URL(canonicalUrl());
+    const currentUrl = new URL(window.location.href);
     return {
       url: currentUrl.href,
       route: currentUrl.pathname + currentUrl.search + currentUrl.hash,
@@ -223,7 +272,7 @@ function renderBottleBridgeScript(): string {
   }
 
   function navigation() {
-    post({ type: "bottle:navigation", url: canonicalUrl(), title: document.title || undefined });
+    post({ type: "bottle:navigation", url: window.location.href, title: document.title || undefined });
   }
 
   window.addEventListener("message", (event) => {
@@ -243,9 +292,7 @@ function renderBottleBridgeScript(): string {
   for (const methodName of ["pushState", "replaceState"]) {
     const original = window.history[methodName];
     window.history[methodName] = function patchedHistoryMethod() {
-      const args = Array.prototype.slice.call(arguments);
-      if (args.length >= 3) args[2] = proxiedHistoryUrl(args[2]);
-      const result = original.apply(this, args);
+      const result = original.apply(this, arguments);
       window.setTimeout(navigation, 0);
       return result;
     };

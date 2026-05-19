@@ -14,12 +14,8 @@ describe("config file loading", () => {
           port: 3003,
           bindHost: "127.0.0.1",
           allowedHostnames: ["app.example.com", "localhost"],
-          trustProxy: true,
           clientOrigins: ["https://client.example.com"],
-          mainAppUrl: "http://localhost:3000",
           clientAppUrl: "http://localhost:5173",
-          mainAppProxy: true,
-          mainAppDirect: true,
           bottleApiToken: "secret",
           bottleApiTokenRequired: true,
           projectRoot: "/srv/app",
@@ -33,7 +29,8 @@ describe("config file loading", () => {
           codexModel: "gpt-5.5",
           codexReasoningEffort: "high",
           codexNetworkAccess: true,
-          codexSkipGitRepoCheck: false
+          codexSkipGitRepoCheck: false,
+          codexPlanSandboxMode: "danger-full-access"
         })
       )
     ).toMatchObject({
@@ -41,13 +38,9 @@ describe("config file loading", () => {
       BIND_HOST: "127.0.0.1",
       AGENT_PROVIDER: "codex",
       ALLOWED_HOSTNAMES: "app.example.com,localhost",
-      TRUST_PROXY: "true",
       BOTTLE_NAME: "prototype-a",
       CLIENT_ORIGINS: "https://client.example.com",
-      MAIN_APP_URL: "http://localhost:3000",
       CLIENT_APP_URL: "http://localhost:5173",
-      MAIN_APP_PROXY: "true",
-      MAIN_APP_DIRECT: "true",
       BOTTLE_API_TOKEN: "secret",
       BOTTLE_API_TOKEN_REQUIRED: "true",
       PROJECT_ROOT: "/srv/app",
@@ -61,7 +54,8 @@ describe("config file loading", () => {
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "high",
       CODEX_NETWORK_ACCESS: "true",
-      CODEX_SKIP_GIT_REPO_CHECK: "false"
+      CODEX_SKIP_GIT_REPO_CHECK: "false",
+      CODEX_PLAN_SANDBOX_MODE: "danger-full-access"
     });
   });
 

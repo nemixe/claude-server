@@ -26,11 +26,11 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.createSession({ mode: "plan", userName: "Ada" })).resolves.toMatchObject({ sessionId: "s1" });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions",
+      "https://api.example.com/__bottle/v1/sessions",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ mode: "plan", userName: "Ada" })
@@ -45,11 +45,11 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createBottleClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.createSession({ provider: "codex", mode: "plan" })).resolves.toMatchObject({ provider: "codex" });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions",
+      "https://api.example.com/__bottle/v1/sessions",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ provider: "codex", mode: "plan" })
@@ -64,12 +64,12 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await client.listSessions({ limit: 30, offset: 30 });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions?limit=30&offset=30",
+      "https://api.example.com/__bottle/v1/sessions?limit=30&offset=30",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
@@ -83,12 +83,12 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getSession("s1")).resolves.toMatchObject({ sessionId: "s1" });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions/s1",
+      "https://api.example.com/__bottle/v1/sessions/s1",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
@@ -112,7 +112,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getRoot()).resolves.toMatchObject({
       projectRoot: "/repo/app",
@@ -122,7 +122,7 @@ describe("browser client", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/root",
+      "https://api.example.com/__bottle/v1/root",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
@@ -131,17 +131,17 @@ describe("browser client", () => {
 
   it("loads Bottle discovery metadata", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
-      return new Response(JSON.stringify({ protocolVersion: 1, name: "prototype-a", apiBaseUrl: "https://api.example.com", features: { mainApp: false, iframeBridge: true } }), {
+      return new Response(JSON.stringify({ protocolVersion: 1, name: "prototype-a", features: { mainApp: false, iframeBridge: true } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getBottle()).resolves.toMatchObject({ protocolVersion: 1, name: "prototype-a" });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/bottle",
+      "https://api.example.com/__bottle/v1/bottle",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
@@ -163,7 +163,7 @@ describe("browser client", () => {
         }
       );
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getSettings()).resolves.toMatchObject({
       defaultAgentProvider: "codex",
@@ -173,14 +173,14 @@ describe("browser client", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.example.com/v1/settings",
+      "https://api.example.com/__bottle/v1/settings",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.example.com/v1/settings",
+      "https://api.example.com/__bottle/v1/settings",
       expect.objectContaining({
         method: "PATCH",
         body: JSON.stringify({ defaultAgentProvider: "codex" })
@@ -195,12 +195,12 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await client.getMessages("s1", { limit: 200, offset: 800, tail: true });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions/s1/messages?limit=200&offset=800&tail=true",
+      "https://api.example.com/__bottle/v1/sessions/s1/messages?limit=200&offset=800&tail=true",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
@@ -214,7 +214,7 @@ describe("browser client", () => {
         headers: { "content-type": "text/event-stream" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await client.streamMessage("s1", {
       prompt: "describe this",
@@ -222,7 +222,7 @@ describe("browser client", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions/s1/messages:stream",
+      "https://api.example.com/__bottle/v1/sessions/s1/messages:stream",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -240,7 +240,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.saveCommand("s1", { path: "review/fix.md", content: "Fix it" })).resolves.toMatchObject({
       command: { path: "review/fix.md" }
@@ -251,7 +251,7 @@ describe("browser client", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.example.com/v1/claude-commands",
+      "https://api.example.com/__bottle/v1/claude-commands",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
@@ -259,12 +259,12 @@ describe("browser client", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.example.com/v1/claude-commands?path=review%2Ffix.md",
+      "https://api.example.com/__bottle/v1/claude-commands?path=review%2Ffix.md",
       expect.objectContaining({ headers: expect.objectContaining({ "content-type": "application/json" }) })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "https://api.example.com/v1/claude-commands",
+      "https://api.example.com/__bottle/v1/claude-commands",
       expect.objectContaining({
         method: "DELETE",
         body: JSON.stringify({ path: "review/fix.md" })
@@ -272,7 +272,7 @@ describe("browser client", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       4,
-      "https://api.example.com/v1/claude-commands",
+      "https://api.example.com/__bottle/v1/claude-commands",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
@@ -287,14 +287,14 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.searchFiles("s1", "sat", { limit: 5 })).resolves.toMatchObject({
       results: [{ path: "src/app.ts", type: "file" }]
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.com/v1/sessions/s1/files:search?q=sat&limit=5",
+      "https://api.example.com/__bottle/v1/sessions/s1/files:search?q=sat&limit=5",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
@@ -305,14 +305,14 @@ describe("browser client", () => {
     });
 
     expect(fetchMock).toHaveBeenLastCalledWith(
-      "https://api.example.com/v1/files:search?q=sat&limit=5",
+      "https://api.example.com/__bottle/v1/files:search?q=sat&limit=5",
       expect.objectContaining({
         headers: expect.objectContaining({ "content-type": "application/json" })
       })
     );
   });
 
-  it("uses only standard /v1 routes for AI tool operations", async () => {
+  it("uses only prefixed /__bottle/v1 routes for AI tool operations", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       if (url.endsWith("/v1/sessions")) {
@@ -347,7 +347,7 @@ describe("browser client", () => {
       }
       return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/", fetch: fetchMock });
+    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     const session = await client.createSession({ mode: "plan", title: "Prototype" });
     await client.streamMessage(session.sessionId, { prompt: "Change the UI" });
@@ -357,13 +357,13 @@ describe("browser client", () => {
 
     const urls = fetchMock.mock.calls.map(([input]) => String(input));
     expect(urls).toEqual([
-      "https://api.example.com/v1/sessions",
-      "https://api.example.com/v1/sessions/s1/messages:stream",
-      "https://api.example.com/v1/sessions/s1/interrupt",
-      "https://api.example.com/v1/sessions/s1/files:search?q=button",
-      "https://api.example.com/v1/claude-commands"
+      "https://api.example.com/__bottle/v1/sessions",
+      "https://api.example.com/__bottle/v1/sessions/s1/messages:stream",
+      "https://api.example.com/__bottle/v1/sessions/s1/interrupt",
+      "https://api.example.com/__bottle/v1/sessions/s1/files:search?q=button",
+      "https://api.example.com/__bottle/v1/claude-commands"
     ]);
-    expect(urls.every((url) => url.includes("/v1/"))).toBe(true);
+    expect(urls.every((url) => url.includes("/__bottle/v1/"))).toBe(true);
     expect(urls.every((url) => !url.includes("/api/agent"))).toBe(true);
   });
 });

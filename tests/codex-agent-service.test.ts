@@ -6,6 +6,7 @@ import {
   AgentService,
   buildCodexClientOptions,
   buildCodexThreadOptions,
+  CodexSandboxUnsupportedError,
   normalizeCodexEvent,
   RunAbortedError,
   RunTimeoutError,
@@ -31,7 +32,17 @@ describe("Codex AgentService runtime", () => {
       additionalDirectories: [config.bottleDir],
       skipGitRepoCheck: true
     });
-    expect(buildCodexThreadOptions(config, session, { prompt: "edit", mode: "edit" }).sandboxMode).toBe("workspace-write");
+    expect(buildCodexThreadOptions(config, session, { prompt: "run", mode: "bypass" }).sandboxMode).toBe("danger-full-access");
+  });
+
+  it("uses configured Codex sandbox overrides for trusted hosts", async () => {
+    const config = await createTempConfig({
+      AGENT_PROVIDER: "codex",
+      CODEX_PLAN_SANDBOX_MODE: "danger-full-access"
+    });
+    const session = metadata(config.workspaceDir);
+
+    expect(buildCodexThreadOptions(config, session, { prompt: "plan", mode: "plan" }).sandboxMode).toBe("danger-full-access");
     expect(buildCodexThreadOptions(config, session, { prompt: "run", mode: "bypass" }).sandboxMode).toBe("danger-full-access");
   });
 
@@ -282,11 +293,11 @@ describe("Codex AgentService runtime", () => {
       codexResultStream(
         "codex-plan-route-query",
         [
-          "Sandbox masih menolak semua command baca, jadi scope dari prompt sudah cukup jelas untuk rencana edit.",
+          "Sandbox masih menolak semua command baca, jadi scope dari prompt sudah cukup jelas untuk rencana eksekusi.",
           "",
           "**Rencana Implementasi**",
           "",
-          "1. Saat edit mode tersedia, baca file wajib:",
+          "1. Saat bypass mode tersedia, baca file wajib:",
           "   - `.bottle/skills/manage-page/SKILL.md`",
           "   - `.clinerules`",
           "",
@@ -333,9 +344,9 @@ describe("Codex AgentService runtime", () => {
       codexResultStream("codex-inline-route-query", "The active route is `/configuration/promotion-demotion/123?tab=promosi`.")
     );
     const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
-    const session = metadata(config.workspaceDir, { mode: "edit" });
+    const session = metadata(config.workspaceDir, { mode: "bypass" });
 
-    const events = await collect(service.stream({ session, request: { prompt: "Inspect the current route", mode: "edit" } }));
+    const events = await collect(service.stream({ session, request: { prompt: "Inspect the current route", mode: "bypass" } }));
 
     expect(events.map((event) => event.type)).toEqual(["codex_event", "message", "codex_event", "result", "codex_event"]);
     expect(session.pendingInterrupt).toBeUndefined();
@@ -362,11 +373,11 @@ describe("Codex AgentService runtime", () => {
 
   it("does not synthesize Codex plan approvals outside plan mode", async () => {
     const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
-    const thread = createMockThread(() => codexResultStream("codex-edit", "Implementation plan:\n\n- Add the product store."));
+    const thread = createMockThread(() => codexResultStream("codex-bypass", "Implementation plan:\n\n- Add the product store."));
     const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
-    const session = metadata(config.workspaceDir, { mode: "edit" });
+    const session = metadata(config.workspaceDir, { mode: "bypass" });
 
-    const events = await collect(service.stream({ session, request: { prompt: "Create product CRUD", mode: "edit" } }));
+    const events = await collect(service.stream({ session, request: { prompt: "Create product CRUD", mode: "bypass" } }));
 
     expect(events.map((event) => event.type)).not.toContain("approval_pending");
     expect(session.pendingInterrupt).toBeUndefined();
@@ -494,6 +505,48 @@ describe("Codex AgentService runtime", () => {
       service.dispose();
       vi.useRealTimers();
     }
+  });
+
+  it("reports unsupported Codex read-only sandbox startup failures clearly", async () => {
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
+    const thread = createMockThread(async function* () {
+      yield { type: "thread.started", thread_id: "codex-bwrap" };
+      yield {
+        type: "item.completed",
+        item: {
+          id: "cmd-1",
+          type: "command_execution",
+          command: "sed -n '1,40p' AGENTS.md",
+          aggregated_output: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+          exit_code: 1,
+          status: "failed"
+        }
+      };
+    });
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+
+    await expect(collect(service.stream({ session: metadata(config.workspaceDir, { mode: "plan" }), request: { prompt: "inspect", mode: "plan" } }))).rejects.toMatchObject({
+      code: "codex_sandbox_unsupported",
+      sandboxMode: "read-only",
+      settingName: "CODEX_PLAN_SANDBOX_MODE"
+    });
+  });
+
+  it("does not turn a bwrap fallback plan into an approval", async () => {
+    const config = await createTempConfig({ AGENT_PROVIDER: "codex" });
+    const thread = createMockThread(() =>
+      codexResultStream(
+        "codex-bwrap-plan",
+        "Saya belum bisa membaca file repo karena semua command read-only gagal di sandbox dengan error `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. Jadi rencana ini berbasis instruksi saja."
+      )
+    );
+    const service = new AgentService(config, undefined, undefined, () => createMockCodexAdapter(thread));
+    const session = metadata(config.workspaceDir, { mode: "plan" });
+
+    await expect(collect(service.stream({ session, request: { prompt: "adjust filter", mode: "plan" } }))).rejects.toBeInstanceOf(
+      CodexSandboxUnsupportedError
+    );
+    expect(session.pendingInterrupt).toBeUndefined();
   });
 
   it("normalizes failed Codex turns as Bottle errors", () => {

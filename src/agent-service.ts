@@ -158,6 +158,19 @@ export class RunAbortedError extends Error {
   }
 }
 
+export class CodexSandboxUnsupportedError extends Error {
+  readonly code = "codex_sandbox_unsupported";
+
+  constructor(
+    public readonly sandboxMode: SandboxMode,
+    public readonly settingName: string,
+    public readonly causeMessage: string
+  ) {
+    super(codexSandboxUnsupportedMessage(sandboxMode, settingName, causeMessage));
+    this.name = "CodexSandboxUnsupportedError";
+  }
+}
+
 export class AgentService {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly pool: SessionPool;
@@ -418,7 +431,9 @@ export class AgentService {
     input: AgentRunInput,
     register: (handle: ActiveRunHandle, options: { closeOnFinish: boolean; closeOnError: boolean }) => ActiveRun
   ): AsyncGenerator<NormalizedAgentEvent> {
+    const effectiveMode = input.request.mode ?? input.session.mode;
     const threadOptions = buildCodexThreadOptions(this.config, input.session, input.request);
+    logCodexThreadOptions(input.session, effectiveMode, threadOptions);
     const codex = this.codexFactory(buildCodexClientOptions(this.config));
     const persistedThreadId = input.session.agentSessionId;
     const thread =
@@ -437,7 +452,6 @@ export class AgentService {
       { closeOnFinish: false, closeOnError: false }
     );
 
-    const effectiveMode = input.request.mode ?? input.session.mode;
     const codexInput = await buildCodexInput(
       input.request,
       projectRulesPromptFromCodexOptions(this.config),
@@ -448,17 +462,36 @@ export class AgentService {
     let lastAgentItemId = "";
 
     try {
-      const streamed = await thread.runStreamed(codexInput.input, { signal: activeRun.abortController.signal });
+      let streamed: { events: AsyncGenerator<ThreadEvent> };
+      try {
+        streamed = await thread.runStreamed(codexInput.input, { signal: activeRun.abortController.signal });
+      } catch (error) {
+        throw codexErrorFromUnknown(error, threadOptions, effectiveMode);
+      }
+
       for await (const event of streamed.events) {
         if (event.type === "thread.started") {
           input.session.agentSessionId = event.thread_id;
           await input.onAgentSessionId?.(event.thread_id);
         }
 
-        const isTerminalError = event.type === "turn.failed" || event.type === "error";
-        const normalized = isTerminalError
-          ? [{ type: "codex_event", data: event }]
-          : normalizeCodexEvent(event, input.session.agentSessionId ?? thread.id ?? input.session.id, lastAgentText);
+        const sandboxFailureMessage = codexSandboxUnsupportedMessageFromEvent(event);
+        if (sandboxFailureMessage) {
+          throw new CodexSandboxUnsupportedError(
+            threadOptions.sandboxMode ?? codexSandboxModeFor(effectiveMode, this.config),
+            codexSandboxSettingNameForMode(effectiveMode),
+            sandboxFailureMessage
+          );
+        }
+
+        if (event.type === "turn.failed") {
+          throw codexErrorFromMessage(event.error.message, threadOptions, effectiveMode);
+        }
+        if (event.type === "error") {
+          throw codexErrorFromMessage(event.message, threadOptions, effectiveMode);
+        }
+
+        const normalized = normalizeCodexEvent(event, input.session.agentSessionId ?? thread.id ?? input.session.id, lastAgentText);
         if (event.type === "item.completed" && event.item.type === "agent_message") {
           lastAgentText = event.item.text;
           lastAgentItemId = event.item.id;
@@ -478,14 +511,9 @@ export class AgentService {
             yield this.emitEvent(activeRun, pendingEventFromInterrupt(interrupt));
           }
         }
-
-        if (event.type === "turn.failed") {
-          throw new Error(event.error.message);
-        }
-        if (event.type === "error") {
-          throw new Error(event.message);
-        }
       }
+    } catch (error) {
+      throw codexErrorFromUnknown(error, threadOptions, effectiveMode);
     } finally {
       await codexInput.cleanup();
     }
@@ -676,7 +704,7 @@ export function buildCodexThreadOptions(config: AppConfig, session: SessionMetad
   const additionalDirectories = existingDirectories([config.bottleDir, ...config.extraSkillRoots]);
   const options: ThreadOptions = {
     workingDirectory: config.projectRoot,
-    sandboxMode: codexSandboxModeFor(mode),
+    sandboxMode: codexSandboxModeFor(mode, config),
     approvalPolicy: "never",
     skipGitRepoCheck: config.codexSkipGitRepoCheck,
     ...(additionalDirectories.length > 0 ? { additionalDirectories } : {})
@@ -686,6 +714,31 @@ export function buildCodexThreadOptions(config: AppConfig, session: SessionMetad
   if (config.codexReasoningEffort) options.modelReasoningEffort = config.codexReasoningEffort as ModelReasoningEffort;
   if (config.codexNetworkAccess !== undefined) options.networkAccessEnabled = config.codexNetworkAccess;
   return options;
+}
+
+export function codexThreadOptionsDiagnostic(
+  session: Pick<SessionMetadata, "id" | "hasRun" | "agentSessionId">,
+  mode: ClaudeMode,
+  options: ThreadOptions
+): Record<string, unknown> {
+  return {
+    sessionId: session.id,
+    mode,
+    resume: Boolean(session.hasRun && session.agentSessionId),
+    workingDirectory: options.workingDirectory,
+    sandboxMode: options.sandboxMode,
+    approvalPolicy: options.approvalPolicy,
+    skipGitRepoCheck: options.skipGitRepoCheck,
+    model: options.model,
+    modelReasoningEffort: options.modelReasoningEffort,
+    networkAccessEnabled: options.networkAccessEnabled,
+    additionalDirectories: options.additionalDirectories ?? []
+  };
+}
+
+function logCodexThreadOptions(session: SessionMetadata, mode: ClaudeMode, options: ThreadOptions): void {
+  if (process.env.NODE_ENV === "test") return;
+  console.info(`[Bottle] Codex thread options ${JSON.stringify(codexThreadOptionsDiagnostic(session, mode, options))}`);
 }
 
 export function buildSessionOptions(config: AppConfig, session: SessionMetadata, request: StreamMessageRequest): SessionOptions {
@@ -1514,7 +1567,7 @@ function prependCodexPlanGuidanceToPrompt(
     "Bottle plan mode guidance:",
     "You are in plan mode. Inspect/read only. Do not modify files.",
     "Use the Bottle discovery folders and configured extra skill roots as the authoritative source for project instructions.",
-    "Present an implementation plan and stop; Bottle will ask the user for approval before edit mode.",
+    "Present an implementation plan and stop; Bottle will ask the user for approval before bypass mode.",
     "If you need user input before planning, ask one direct question and include 2-4 concise suggested options as simple bullet lines when reasonable.",
     "",
     prompt
@@ -1537,16 +1590,19 @@ function extensionForMediaType(mediaType: NonNullable<StreamMessageRequest["imag
   return "png";
 }
 
-function permissionModeFor(mode: ClaudeMode): "plan" | "bypassPermissions" | "acceptEdits" {
+function permissionModeFor(mode: ClaudeMode): "plan" | "bypassPermissions" {
   if (mode === "plan") return "plan";
-  if (mode === "bypass") return "bypassPermissions";
-  return "acceptEdits";
+  return "bypassPermissions";
 }
 
-function codexSandboxModeFor(mode: ClaudeMode): SandboxMode {
-  if (mode === "plan") return "read-only";
-  if (mode === "bypass") return "danger-full-access";
-  return "workspace-write";
+function codexSandboxModeFor(mode: ClaudeMode, config: AppConfig): SandboxMode {
+  if (mode === "plan") return config.codexPlanSandboxMode;
+  return "danger-full-access";
+}
+
+function codexSandboxSettingNameForMode(mode: ClaudeMode): string {
+  if (mode === "plan") return "CODEX_PLAN_SANDBOX_MODE";
+  return "the selected Codex sandbox mode";
 }
 
 function disallowedToolsFor(mode: ClaudeMode): string[] {
@@ -2179,6 +2235,56 @@ function getSessionIdFromEvent(event: unknown): string | undefined {
   return typeof record.session_id === "string" ? record.session_id : undefined;
 }
 
+function codexErrorFromUnknown(error: unknown, options: ThreadOptions, mode: ClaudeMode): Error {
+  if (error instanceof CodexSandboxUnsupportedError) return error;
+  return codexErrorFromMessage(errorMessage(error), options, mode);
+}
+
+function codexErrorFromMessage(message: string, options: ThreadOptions, mode: ClaudeMode): Error {
+  if (isCodexBwrapLoopbackError(message)) {
+    return new CodexSandboxUnsupportedError(
+      options.sandboxMode ?? "read-only",
+      codexSandboxSettingNameForMode(mode),
+      message
+    );
+  }
+  return new Error(message);
+}
+
+function codexSandboxUnsupportedMessageFromEvent(event: ThreadEvent): string | undefined {
+  if ((event.type === "item.completed" || event.type === "item.updated") && event.item.type === "command_execution") {
+    return codexSandboxUnsupportedText(event.item.aggregated_output);
+  }
+  if (event.type === "item.completed" && event.item.type === "agent_message") {
+    return codexSandboxUnsupportedText(event.item.text);
+  }
+  if (event.type === "item.completed" && event.item.type === "error") {
+    return codexSandboxUnsupportedText(event.item.message);
+  }
+  return undefined;
+}
+
+function codexSandboxUnsupportedText(text: string): string | undefined {
+  if (!isCodexBwrapLoopbackError(text)) return undefined;
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => isCodexBwrapLoopbackError(line)) ?? text.trim();
+}
+
+function isCodexBwrapLoopbackError(text: string): boolean {
+  return /\bbwrap:\s*loopback\b/i.test(text) && /(Failed RTM_NEWADDR|Operation not permitted|not permitted)/i.test(text);
+}
+
+function codexSandboxUnsupportedMessage(sandboxMode: SandboxMode, settingName: string, causeMessage: string): string {
+  const cause = causeMessage.trim() || "Codex reported a Bubblewrap loopback failure.";
+  const override =
+    sandboxMode === "danger-full-access"
+      ? "The selected Codex sandbox mode is already danger-full-access, so fix the host Codex/Bubblewrap configuration before retrying."
+      : `In a trusted local environment, set ${settingName}=danger-full-access to let Codex inspect the repo without the OS sandbox, or fix host Bubblewrap/user-namespace networking support.`;
+  return `Codex ${sandboxMode} sandbox could not start because this host blocked Bubblewrap loopback setup: ${cause}. ${override}`;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
 }
@@ -2186,6 +2292,7 @@ function errorMessage(error: unknown): string {
 function errorCode(error: unknown): string {
   if (error instanceof ConcurrencyLimitError) return "concurrency_limit";
   if (error instanceof ValidationErrorLimitError) return error.code;
+  if (error instanceof CodexSandboxUnsupportedError) return error.code;
   if (error instanceof MissingClaudeSessionIdError) return error.code;
   if (error instanceof RunTimeoutError || error instanceof RunAbortedError) return error.code;
   return "agent_error";

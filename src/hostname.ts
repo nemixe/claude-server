@@ -58,23 +58,19 @@ export function isAllowedHost(parsed: ParsedHost | undefined, rules: AllowedHost
   });
 }
 
-export function getEffectiveHost(headers: Headers, trustProxy: boolean): string | undefined {
-  if (trustProxy) {
-    const forwardedHost = headers.get("x-forwarded-host");
-    if (forwardedHost) return forwardedHost;
-  }
-
+export function getEffectiveHost(headers: Headers): string | undefined {
+  const forwardedHost = headers.get("x-forwarded-host");
+  if (forwardedHost) return forwardedHost;
   return headers.get("host") ?? undefined;
 }
 
 export function getEffectiveOrigin(
   requestUrl: string,
   headers: Headers | undefined,
-  trustProxy: boolean,
   publicOriginHint?: string
 ): string {
   const fallbackUrl = new URL(requestUrl);
-  if (!trustProxy || !headers) return coerceToPublicOriginHint(fallbackUrl.origin, publicOriginHint);
+  if (!headers) return coerceToPublicOriginHint(fallbackUrl.origin, publicOriginHint);
 
   const forwarded = parseForwardedHeader(headers.get("forwarded"));
   const forwardedHost = firstHeaderValue(headers.get("x-forwarded-host")) ?? forwarded.host;

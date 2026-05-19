@@ -1,4 +1,4 @@
-export const CLAUDE_MODES = ["plan", "edit", "bypass"] as const;
+export const CLAUDE_MODES = ["plan", "bypass"] as const;
 export const AGENT_PROVIDERS = ["claude", "codex"] as const;
 export const BOTTLE_PROTOCOL_VERSION = 1 as const;
 
@@ -79,17 +79,11 @@ export type BottleWebAppContext = {
 export type BottleInfoResponse = {
   protocolVersion: typeof BOTTLE_PROTOCOL_VERSION;
   name: string;
-  apiBaseUrl: string;
-  appUrl?: string;
   mainAppUrl?: string;
-  appProxyUrl?: string;
   defaultAgentProvider: AgentProvider;
   availableAgentProviders: AgentProvider[];
   features: {
     mainApp: boolean;
-    mainAppProxy: boolean;
-    mainAppDirect?: boolean;
-    clientAtRoot?: boolean;
     iframeBridge: boolean;
     sessions: boolean;
     streaming: boolean;

@@ -3,15 +3,11 @@
   "bottleInfo": {
     "protocolVersion": 1,
     "name": "prototype-a",
-    "apiBaseUrl": "http://localhost:3001",
     "mainAppUrl": "http://localhost:3001",
     "defaultAgentProvider": "claude",
     "availableAgentProviders": ["claude", "codex"],
     "features": {
       "mainApp": true,
-      "mainAppProxy": true,
-      "mainAppDirect": true,
-      "clientAtRoot": true,
       "iframeBridge": true,
       "sessions": true,
       "streaming": true,
@@ -34,7 +30,7 @@
   "createSessionResponse": {
     "id": "session-1",
     "sessionId": "session-1",
-    "title": "Prototype edit",
+    "title": "Prototype plan",
     "userName": "Ada",
     "provider": "claude",
     "mode": "plan",
@@ -48,7 +44,7 @@
       {
         "id": "session-1",
         "sessionId": "session-1",
-        "title": "Prototype edit",
+        "title": "Prototype plan",
         "provider": "claude",
         "mode": "plan",
         "createdAt": "2026-04-30T00:00:00.000Z",

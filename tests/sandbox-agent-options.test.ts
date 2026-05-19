@@ -50,7 +50,6 @@ describe("sandbox and agent options", () => {
     };
 
     const planOptions = buildSessionOptions(config, session, { prompt: "inspect", mode: "plan" });
-    const editOptions = buildSessionOptions(config, session, { prompt: "edit", mode: "edit" });
     const bypassOptions = buildSessionOptions(config, session, { prompt: "run", mode: "bypass" });
 
     expect(planOptions.permissionMode).toBe("plan");
@@ -58,7 +57,6 @@ describe("sandbox and agent options", () => {
     expect(planOptions.disallowedTools).not.toContain("Write");
     expect(planOptions.disallowedTools).not.toContain("Edit");
     expect(planOptions.disallowedTools).not.toContain("MultiEdit");
-    expect(editOptions.permissionMode).toBe("acceptEdits");
     expect(bypassOptions.permissionMode).toBe("bypassPermissions");
     expect(bypassOptions.allowDangerouslySkipPermissions).toBe(true);
     expect(planOptions.cwd).toBe(config.projectRoot);
