@@ -70,7 +70,7 @@ Point a browser or AI Client at the Bottle base URL, for example `http://localho
 Bottle-local agent context lives under `.bottle`:
 
 ```txt
-.bottle/agents/    # Claude-compatible agent definitions
+.bottle/agents/    # agent definitions
 .bottle/commands/  # slash command markdown
 .bottle/rules/     # default rules injected into Claude and Codex
 .bottle/skills/    # discoverable skills using <name>/SKILL.md
@@ -124,15 +124,15 @@ If `BOTTLE_API_TOKEN` is set, `/__bottle/v1/*` requests must include either `Aut
 - `PATCH /__bottle/v1/sessions/:sessionId`
 - `GET /__bottle/v1/sessions/:sessionId/messages`
 - `GET /__bottle/v1/sessions/:sessionId/files:search?q=button&limit=50`
-- `GET /__bottle/v1/claude-commands`
-- `POST /__bottle/v1/claude-commands`
-- `DELETE /__bottle/v1/claude-commands`
+- `GET /__bottle/v1/commands`
+- `POST /__bottle/v1/commands`
+- `DELETE /__bottle/v1/commands`
 - `GET /__bottle/v1/sessions/:sessionId/events:stream`
 - `POST /__bottle/v1/sessions/:sessionId/messages:stream`
 - `POST /__bottle/v1/sessions/:sessionId/interrupt`
 - `DELETE /__bottle/v1/sessions/:sessionId`
 
-Modes are `plan` and `bypass`. Tool execution runs from the configured project root with the selected provider's sandbox settings. Session metadata remains under `SESSION_DIR`. The existing `/__bottle/v1/claude-commands` endpoints are compatibility aliases for commands stored in `.bottle/commands`.
+Modes are `plan` and `bypass`. Tool execution runs from the configured project root with the selected provider's sandbox settings. Session metadata remains under `SESSION_DIR`. Bottle commands are stored in `.bottle/commands`.
 
 `GET /__bottle/v1/settings` includes `defaultAgentProvider` and `availableAgentProviders` so AI Client settings can show both Claude and Codex. `PATCH /__bottle/v1/settings` can persist `defaultAgentProvider`, `maxConcurrentRuns`, and `maxTurns`.
 
@@ -153,6 +153,6 @@ The iframe replies with:
 { type: "bottle:navigation", url, title }
 ```
 
-`POST /__bottle/v1/sessions/:sessionId/messages:stream` accepts an optional `context` object. Bottle prepends that main app context to the agent prompt before streaming.
+`POST /__bottle/v1/sessions/:sessionId/messages:stream` accepts an optional `context` object. Bottle prepends that Host App context to the agent prompt before streaming.
 
 Long-running streams send SSE keep-alive comments while the agent is quiet. `RUN_TIMEOUT_MS` controls the hard run timeout and defaults to 60 minutes. Timeout and abort failures are reported with specific codes such as `run_timeout`, `run_interrupted`, and `run_closed` instead of the generic `agent_error`.

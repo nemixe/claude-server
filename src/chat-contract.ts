@@ -1,5 +1,5 @@
-import { createClaudeClient, type ClaudeClientOptions, type ClientSseEvent } from "./client.js";
-import type { AgentProvider, ClaudeMode, PromptImage, PublicSession, StreamMessageRequest, UploadedFile } from "./types.js";
+import { createBottleClient, type BottleClientOptions, type ClientSseEvent } from "./client.js";
+import type { AgentProvider, AgentMode, PromptImage, PublicSession, StreamMessageRequest, UploadedFile } from "./types.js";
 
 export type WebChatRole = "user" | "assistant" | "system" | "tool";
 
@@ -44,7 +44,7 @@ export type WebChatEvent =
 
 export type CreateWebChatSessionRequest = {
   provider?: AgentProvider;
-  mode?: ClaudeMode;
+  mode?: AgentMode;
   title?: string;
   files?: UploadedFile[];
 };
@@ -55,7 +55,7 @@ export type SendWebChatMessageRequest = {
   prompt: string;
   images?: PromptImage[];
   provider?: AgentProvider;
-  mode?: ClaudeMode;
+  mode?: AgentMode;
   model?: string;
   maxTurns?: number;
 };
@@ -80,8 +80,8 @@ export type WebChatHandlers = {
   onDone?: (data: unknown) => void;
 };
 
-export function createClaudeWebChatContract(options: ClaudeClientOptions) {
-  const client = createClaudeClient(options);
+export function createBottleWebChatContract(options: BottleClientOptions) {
+  const client = createBottleClient(options);
 
   async function createSession(request: CreateWebChatSessionRequest = {}): Promise<PublicSession> {
     return client.createSession({
@@ -206,7 +206,7 @@ function emitMessage(
   handlers.onEvent?.(event ?? { type: "message", message, raw: { event: "message", data: message } });
 }
 
-async function findSession(client: ReturnType<typeof createClaudeClient>, sessionId: string): Promise<PublicSession> {
+async function findSession(client: ReturnType<typeof createBottleClient>, sessionId: string): Promise<PublicSession> {
   const { sessions } = await client.listSessions();
   const session = sessions.find((candidate) => candidate.sessionId === sessionId || candidate.id === sessionId);
   if (!session) throw new Error(`Session ${sessionId} was not found`);

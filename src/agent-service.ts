@@ -16,13 +16,13 @@ import type { AppConfig } from "./config.js";
 import { buildSafeAgentEnv } from "./sandbox.js";
 import {
   createSessionFactory,
-  MissingClaudeSessionIdError,
+  MissingAgentSessionIdError,
   SessionPool,
   type SessionFactory,
   type SessionLike,
   type SessionOptions
 } from "./session-adapter.js";
-import type { AgentProvider, AgentStatus, ClaudeMode, NormalizedAgentEvent, PendingInterrupt, SessionMetadata, StreamMessageRequest } from "./types.js";
+import type { AgentProvider, AgentStatus, AgentMode, NormalizedAgentEvent, PendingInterrupt, SessionMetadata, StreamMessageRequest } from "./types.js";
 
 export type AgentPrompt = string | AsyncIterable<SDKUserMessage>;
 
@@ -35,7 +35,6 @@ export type AgentRunInput = {
   request: StreamMessageRequest;
   signal?: AbortSignal;
   onAgentSessionId?: (agentSessionId: string) => void | Promise<void>;
-  onClaudeSessionId?: (claudeSessionId: string) => void | Promise<void>;
 };
 
 export type CodexThreadLike = {
@@ -122,7 +121,7 @@ export const defaultCodexSdkFactory: CodexSdkFactory = (options) => new Codex(op
 
 export class ConcurrencyLimitError extends Error {
   constructor() {
-    super("Too many active Claude runs");
+    super("Too many active agent runs");
     this.name = "ConcurrencyLimitError";
   }
 }
@@ -352,9 +351,9 @@ export class AgentService {
       return [];
     }
 
-    const sessionId = session.agentSessionId ?? session.claudeSessionId;
+    const sessionId = session.agentSessionId;
     if (session.hasRun && !sessionId) {
-      throw new MissingClaudeSessionIdError(session.id);
+      throw new MissingAgentSessionIdError(session.id);
     }
 
     return this.adapter.getSessionMessages(sessionId ?? session.id, {
@@ -388,10 +387,9 @@ export class AgentService {
     const validationCounters = new Map<string, number>();
 
     for await (const message of sdkSession.stream()) {
-      const claudeSessionId = getSessionIdFromEvent(message);
-      if (claudeSessionId) {
-        await input.onAgentSessionId?.(claudeSessionId);
-        await input.onClaudeSessionId?.(claudeSessionId);
+      const agentSessionId = getSessionIdFromEvent(message);
+      if (agentSessionId) {
+        await input.onAgentSessionId?.(agentSessionId);
       }
 
       recordToolUses(message, toolLedger);
@@ -718,7 +716,7 @@ export function buildCodexThreadOptions(config: AppConfig, session: SessionMetad
 
 export function codexThreadOptionsDiagnostic(
   session: Pick<SessionMetadata, "id" | "hasRun" | "agentSessionId">,
-  mode: ClaudeMode,
+  mode: AgentMode,
   options: ThreadOptions
 ): Record<string, unknown> {
   return {
@@ -736,16 +734,16 @@ export function codexThreadOptionsDiagnostic(
   };
 }
 
-function logCodexThreadOptions(session: SessionMetadata, mode: ClaudeMode, options: ThreadOptions): void {
+function logCodexThreadOptions(session: SessionMetadata, mode: AgentMode, options: ThreadOptions): void {
   if (process.env.NODE_ENV === "test") return;
   console.info(`[Bottle] Codex thread options ${JSON.stringify(codexThreadOptionsDiagnostic(session, mode, options))}`);
 }
 
 export function buildSessionOptions(config: AppConfig, session: SessionMetadata, request: StreamMessageRequest): SessionOptions {
   const mode = request.mode ?? session.mode;
-  const model = request.model ?? config.defaultModel;
+  const model = request.model ?? config.agentModel;
   if (!model) {
-    throw new Error("CLAUDE_MODEL must be set or the stream request must include model");
+    throw new Error("AGENT_MODEL must be set or the stream request must include model");
   }
   const rulesPrompt = loadBottleRulesPrompt(config);
   const agents = loadBottleAgentDefinitions(config.agentsDir);
@@ -1055,7 +1053,7 @@ export function buildAgentPrompt(request: StreamMessageRequest, projectRulesProm
 function prependBottleContextToPrompt(prompt: string, context: StreamMessageRequest["context"]): string {
   if (!context || typeof context !== "object") return prompt;
 
-  const lines = ["Bottle main app context:"];
+  const lines = ["Bottle Host App context:"];
   const title = truncateContextValue(context.title, 300);
   const route = truncateContextValue(context.route, 1_000);
   const url = truncateContextValue(context.url, 1_000);
@@ -1466,7 +1464,7 @@ function safeReadText(filePath: string): string {
 async function buildCodexInput(
   request: StreamMessageRequest,
   projectRulesPrompt?: string,
-  mode?: ClaudeMode,
+  mode?: AgentMode,
   discoveryCatalog?: string
 ): Promise<{ input: CodexInput; cleanup: () => Promise<void> }> {
   const text = buildCodexPromptText(request, projectRulesPrompt, mode, discoveryCatalog);
@@ -1494,7 +1492,7 @@ async function buildCodexInput(
 function buildCodexPromptText(
   request: StreamMessageRequest,
   projectRulesPrompt?: string,
-  mode?: ClaudeMode,
+  mode?: AgentMode,
   discoveryCatalog?: string
 ): string {
   if (request.toolResult) {
@@ -1558,7 +1556,7 @@ function buildQuestionAnswerText(
 
 function prependCodexPlanGuidanceToPrompt(
   prompt: string,
-  mode?: ClaudeMode,
+  mode?: AgentMode,
   toolResultKind?: NonNullable<StreamMessageRequest["toolResult"]>["kind"]
 ): string {
   if (mode !== "plan" || toolResultKind === "approval") return prompt;
@@ -1590,22 +1588,22 @@ function extensionForMediaType(mediaType: NonNullable<StreamMessageRequest["imag
   return "png";
 }
 
-function permissionModeFor(mode: ClaudeMode): "plan" | "bypassPermissions" {
+function permissionModeFor(mode: AgentMode): "plan" | "bypassPermissions" {
   if (mode === "plan") return "plan";
   return "bypassPermissions";
 }
 
-function codexSandboxModeFor(mode: ClaudeMode, config: AppConfig): SandboxMode {
+function codexSandboxModeFor(mode: AgentMode, config: AppConfig): SandboxMode {
   if (mode === "plan") return config.codexPlanSandboxMode;
   return "danger-full-access";
 }
 
-function codexSandboxSettingNameForMode(mode: ClaudeMode): string {
+function codexSandboxSettingNameForMode(mode: AgentMode): string {
   if (mode === "plan") return "CODEX_PLAN_SANDBOX_MODE";
   return "the selected Codex sandbox mode";
 }
 
-function disallowedToolsFor(mode: ClaudeMode): string[] {
+function disallowedToolsFor(mode: AgentMode): string[] {
   // Claude Code plan mode still needs Write available for the generated plan file.
   // The built-in plan permission mode owns the read-only guard for implementation files.
   return mode === "plan" ? ["Bash"] : [];
@@ -1640,7 +1638,7 @@ function codexQuestionInterruptFromAgentMessage(text: string, itemId: string): P
   };
 }
 
-function codexPlanInterruptFromAgentMessage(text: string, itemId: string, mode: ClaudeMode): PendingInterrupt | undefined {
+function codexPlanInterruptFromAgentMessage(text: string, itemId: string, mode: AgentMode): PendingInterrupt | undefined {
   if (mode !== "plan") return undefined;
   const plan = normalizeCodexPlanText(text);
   if (!plan) return undefined;
@@ -2235,12 +2233,12 @@ function getSessionIdFromEvent(event: unknown): string | undefined {
   return typeof record.session_id === "string" ? record.session_id : undefined;
 }
 
-function codexErrorFromUnknown(error: unknown, options: ThreadOptions, mode: ClaudeMode): Error {
+function codexErrorFromUnknown(error: unknown, options: ThreadOptions, mode: AgentMode): Error {
   if (error instanceof CodexSandboxUnsupportedError) return error;
   return codexErrorFromMessage(errorMessage(error), options, mode);
 }
 
-function codexErrorFromMessage(message: string, options: ThreadOptions, mode: ClaudeMode): Error {
+function codexErrorFromMessage(message: string, options: ThreadOptions, mode: AgentMode): Error {
   if (isCodexBwrapLoopbackError(message)) {
     return new CodexSandboxUnsupportedError(
       options.sandboxMode ?? "read-only",
@@ -2293,7 +2291,7 @@ function errorCode(error: unknown): string {
   if (error instanceof ConcurrencyLimitError) return "concurrency_limit";
   if (error instanceof ValidationErrorLimitError) return error.code;
   if (error instanceof CodexSandboxUnsupportedError) return error.code;
-  if (error instanceof MissingClaudeSessionIdError) return error.code;
+  if (error instanceof MissingAgentSessionIdError) return error.code;
   if (error instanceof RunTimeoutError || error instanceof RunAbortedError) return error.code;
   return "agent_error";
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MissingClaudeSessionIdError, SessionPool, type SessionLike, type SessionOptions } from "../src/session-adapter.js";
+import { MissingAgentSessionIdError, SessionPool, type SessionLike, type SessionOptions } from "../src/session-adapter.js";
 import type { SessionMetadata } from "../src/types.js";
 
 describe("SessionPool", () => {
@@ -28,14 +28,14 @@ describe("SessionPool", () => {
     const appSession = metadata({ hasRun: false });
 
     pool.getOrCreate(appSession, defaultOptions());
-    const second = pool.getOrCreate({ ...appSession, hasRun: true, claudeSessionId: "claude-1" }, defaultOptions());
+    const second = pool.getOrCreate({ ...appSession, hasRun: true, agentSessionId: "claude-1" }, defaultOptions());
 
     expect(second).toBe(mockSession);
     expect(factory.createSession).toHaveBeenCalledTimes(1);
     expect(factory.resumeSession).not.toHaveBeenCalled();
   });
 
-  it("cold-resumes with persisted Claude session ID", () => {
+  it("cold-resumes with persisted agent session ID", () => {
     const resumed = createMockSession("claude-2");
     const factory = {
       createSession: vi.fn(() => createMockSession("unused")),
@@ -43,19 +43,19 @@ describe("SessionPool", () => {
     };
     const pool = new SessionPool(factory);
 
-    const result = pool.getOrCreate(metadata({ hasRun: true, claudeSessionId: "claude-2" }), defaultOptions());
+    const result = pool.getOrCreate(metadata({ hasRun: true, agentSessionId: "claude-2" }), defaultOptions());
 
     expect(result).toBe(resumed);
     expect(factory.resumeSession).toHaveBeenCalledWith("claude-2", expect.any(Object));
   });
 
-  it("throws when an already-run session has no persisted Claude session ID", () => {
+  it("throws when an already-run session has no persisted agent session ID", () => {
     const pool = new SessionPool({
       createSession: vi.fn(() => createMockSession("unused")),
       resumeSession: vi.fn(() => createMockSession("unused"))
     });
 
-    expect(() => pool.getOrCreate(metadata({ hasRun: true }), defaultOptions())).toThrow(MissingClaudeSessionIdError);
+    expect(() => pool.getOrCreate(metadata({ hasRun: true }), defaultOptions())).toThrow(MissingAgentSessionIdError);
   });
 
   it("closes and cold-resumes when fixed options change", () => {
@@ -70,7 +70,7 @@ describe("SessionPool", () => {
 
     pool.getOrCreate(appSession, defaultOptions({ model: "claude-sonnet-4-6" }));
     const result = pool.getOrCreate(
-      { ...appSession, hasRun: true, claudeSessionId: "claude-1" },
+      { ...appSession, hasRun: true, agentSessionId: "claude-1" },
       defaultOptions({ model: "claude-opus-4-7" })
     );
 

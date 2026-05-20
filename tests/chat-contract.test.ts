@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createClaudeWebChatContract,
+  createBottleWebChatContract,
   mapSseEventToWebChatEvent,
   toWebChatMessages,
   type WebChatMessage
 } from "../src/chat-contract.js";
 
 describe("web chat contract", () => {
-  it("maps persisted Claude messages into legacy web chat messages", () => {
+  it("maps persisted agent messages into web chat messages", () => {
     const messages = toWebChatMessages(
       [
         {
@@ -112,7 +112,7 @@ describe("web chat contract", () => {
       }
       return new Response("not found", { status: 404 });
     });
-    const contract = createClaudeWebChatContract({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const contract = createBottleWebChatContract({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
     const seenMessages: WebChatMessage[] = [];
     const onRunResult = vi.fn();
 

@@ -91,11 +91,10 @@ describe("Hono API", () => {
     expect(body).toMatchObject({
       protocolVersion: 1,
       name: "prototype-a",
-      mainAppUrl: "http://localhost",
+      hostAppOrigin: "http://localhost",
       defaultAgentProvider: "claude",
       availableAgentProviders: ["claude", "codex"],
       features: {
-        mainApp: true,
         iframeBridge: true,
         sessions: true,
         streaming: true,
@@ -123,12 +122,11 @@ describe("Hono API", () => {
     expect(infoBody).not.toHaveProperty("appProxyUrl");
     expect(infoBody).not.toHaveProperty("apiBaseUrl");
     expect(infoBody).not.toHaveProperty("appUrl");
+    expect(infoBody).not.toHaveProperty("mainAppUrl");
     expect(infoBody).toMatchObject({
-      mainAppUrl: "http://localhost",
-      features: {
-        mainApp: true
-      }
+      hostAppOrigin: "http://localhost"
     });
+    expect(infoBody.features).not.toHaveProperty("mainApp");
     expect(infoBody.features).not.toHaveProperty("mainAppProxy");
     expect(infoBody.features).not.toHaveProperty("mainAppDirect");
     expect(infoBody.features).not.toHaveProperty("clientAtRoot");
@@ -161,8 +159,9 @@ describe("Hono API", () => {
     expect(infoResponse.headers.get("access-control-allow-credentials")).toBe("true");
     expect(infoBody).not.toHaveProperty("apiBaseUrl");
     expect(infoBody).not.toHaveProperty("appUrl");
+    expect(infoBody).not.toHaveProperty("mainAppUrl");
     expect(infoBody).toMatchObject({
-      mainAppUrl: "https://ai-proto-dev-1.devnstg.com"
+      hostAppOrigin: "https://ai-proto-dev-1.devnstg.com"
     });
     expect(infoBody.features).not.toHaveProperty("mainAppProxy");
     expect(infoBody.features).not.toHaveProperty("mainAppDirect");
@@ -186,8 +185,9 @@ describe("Hono API", () => {
     expect(infoResponse.status).toBe(200);
     expect(infoBody).not.toHaveProperty("apiBaseUrl");
     expect(infoBody).not.toHaveProperty("appUrl");
+    expect(infoBody).not.toHaveProperty("mainAppUrl");
     expect(infoBody).toMatchObject({
-      mainAppUrl: "http://ai-proto-dev-1.devnstg.com"
+      hostAppOrigin: "http://ai-proto-dev-1.devnstg.com"
     });
   });
 
@@ -208,12 +208,11 @@ describe("Hono API", () => {
       rulesDir: config.rulesDir,
       skillsDir: config.skillsDir,
       extraSkillRoots: config.extraSkillRoots,
-      skillRoots: config.skillRoots,
-      claudeCommandsDir: config.claudeCommandsDir
+      skillRoots: config.skillRoots
     });
   });
 
-  it("serves the optional iframe bridge without hosting the main app", async () => {
+  it("serves the optional iframe bridge without hosting the Host App", async () => {
     const config = await createTempConfig({
       CLIENT_ORIGINS: "http://localhost:5174"
     });
@@ -223,7 +222,7 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     await expect(infoResponse.json()).resolves.toMatchObject({
-      features: { mainApp: true }
+      features: { iframeBridge: true }
     });
 
     const bridgeResponse = await app.request("http://localhost/__bottle/bottle-bridge.js", {
@@ -262,7 +261,7 @@ describe("Hono API", () => {
     expect(iframeResponse.status).toBe(404);
   });
 
-  it("serves /iframe by fetching the main app root and injecting the bridge", async () => {
+  it("serves /iframe by fetching the Host App root and injecting the bridge", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("<!doctype html><html><head><title>Main</title></head><body>App</body></html>", {
         headers: { "content-type": "text/html; charset=utf-8" }
@@ -893,7 +892,7 @@ describe("Hono API", () => {
     expect(sessionsBody.sessions[0]).toMatchObject({ costUsd: 0.1682 });
   });
 
-  it("persists Claude SDK session IDs from V2 stream events", async () => {
+  it("persists agent session IDs from stream events", async () => {
     const config = await createTempConfig();
     const sdkSession = createMockSdkSession("claude-app-1", async function* () {
       yield { type: "result", session_id: "claude-app-1", is_error: false };
@@ -926,14 +925,14 @@ describe("Hono API", () => {
     expect(await streamResponse.text()).toContain("event: result");
     await expect(sessionStore.get(created.sessionId)).resolves.toMatchObject({
       hasRun: true,
-      claudeSessionId: "claude-app-1"
+      agentSessionId: "claude-app-1"
     });
 
     const sessionsResponse = await app.request("http://localhost/__bottle/v1/sessions", {
       headers: { host: "localhost" }
     });
     const sessionsBody = (await sessionsResponse.json()) as { sessions: Array<Record<string, unknown>> };
-    expect(sessionsBody.sessions[0]).not.toHaveProperty("claudeSessionId");
+    expect(sessionsBody.sessions[0]).not.toHaveProperty("agentSessionId");
   });
 
   it("pauses on persisted ExitPlanMode approval and resumes in bypass mode after approval", async () => {
@@ -1158,7 +1157,7 @@ describe("Hono API", () => {
 
     expect(streamResponse.status).toBe(200);
     await streamResponse.text();
-    expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("Bottle main app context:"));
+    expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("Bottle Host App context:"));
     expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("Dashboard"));
     expect(sdkSession.send).toHaveBeenCalledWith(expect.stringContaining("User prompt:\nimprove this page"));
   });
@@ -1288,12 +1287,12 @@ describe("Hono API", () => {
     });
   });
 
-  it("stores Claude commands only under the configured project root", async () => {
+  it("stores Bottle commands only under the configured project root", async () => {
     const config = await createTempConfig();
     const sessionStore = new SessionStore(config);
     const app = await createApp({ config, sessionStore });
 
-    const saveResponse = await app.request("http://localhost/__bottle/v1/claude-commands", {
+    const saveResponse = await app.request("http://localhost/__bottle/v1/commands", {
       method: "POST",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
@@ -1314,7 +1313,7 @@ describe("Hono API", () => {
     expect(session).toMatchObject({ workspacePath: config.projectRoot });
     await expect(fs.stat(config.workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
 
-    const deleteResponse = await app.request("http://localhost/__bottle/v1/claude-commands", {
+    const deleteResponse = await app.request("http://localhost/__bottle/v1/commands", {
       method: "DELETE",
       headers: { host: "localhost", "content-type": "application/json" },
       body: JSON.stringify({ path: "review/fix.md" })

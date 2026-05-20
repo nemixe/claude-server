@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { loadConfigFromFile } from "./config-file.js";
-import { installShutdownHandlers, startClaudeServer } from "./server.js";
+import { installShutdownHandlers, startBottleServer } from "./server.js";
 
 type Writable = {
   write(chunk: string): unknown;
@@ -165,7 +165,7 @@ async function startCommand(args: string[], options: { cwd: string; env: NodeJS.
   const config = configPath || defaultConfigPath
     ? await loadConfigFromFile(path.resolve(options.cwd, configPath ?? defaultConfigPath ?? ""), options.env)
     : loadConfig(options.env, options.cwd);
-  const running = await startClaudeServer(config, {
+  const running = await startBottleServer(config, {
     onListen(info) {
       writeLine(options.stdout, `Bottle listening on http://${info.address}:${info.port}`);
     }
@@ -459,7 +459,7 @@ function renderConfigFile(input: {
     clientOrigins: input.clientOrigins,
     ...(input.clientAppUrl ? { clientAppUrl: input.clientAppUrl } : {}),
     sessionDir: input.sessionDir,
-    claudeModel: DEFAULT_MODEL
+    agentModel: DEFAULT_MODEL
   };
 
   return `export default ${JSON.stringify(config, null, 2)};
@@ -646,7 +646,7 @@ ${proxyPathLines}
 
 This bundle keeps normal app routes on the same public origin that receives \`/__bottle/*\`. Proxy only \`/__bottle/*\` to Bottle; Bottle serves \`/__bottle/iframe/*\` by fetching the matching app route from that detected origin and injecting \`/__bottle/bottle-bridge.js\` server-side.
 
-Use \`createClaudeClient({ baseUrl })\` from the copied Bottle client contract in AI tools. The configured project root is:
+Use \`createBottleClient({ baseUrl })\` from the copied Bottle client contract in AI tools. The configured project root is:
 
 \`\`\`txt
 ${input.projectRoot}

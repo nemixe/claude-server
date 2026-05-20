@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createBottleClient, createClaudeClient, readSseStream } from "../src/client.js";
+import { createBottleClient, readSseStream } from "../src/client.js";
 
 describe("browser client", () => {
   it("parses SSE events and dispatches typed handlers", async () => {
@@ -26,7 +26,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.createSession({ mode: "plan", userName: "Ada" })).resolves.toMatchObject({ sessionId: "s1" });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -38,7 +38,7 @@ describe("browser client", () => {
     );
   });
 
-  it("exports createBottleClient as a non-breaking neutral alias", async () => {
+  it("supports Codex provider session creation through the Bottle client", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response(JSON.stringify({ id: "s1", sessionId: "s1", provider: "codex", mode: "plan", createdAt: "now", updatedAt: "now", hasRun: false }), {
         status: 201,
@@ -64,7 +64,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await client.listSessions({ limit: 30, offset: 30 });
 
@@ -83,7 +83,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getSession("s1")).resolves.toMatchObject({ sessionId: "s1" });
 
@@ -105,20 +105,18 @@ describe("browser client", () => {
         rulesDir: "/repo/.bottle/rules",
         skillsDir: "/repo/.bottle/skills",
         extraSkillRoots: ["/repo/shared-skills"],
-        skillRoots: ["/repo/.bottle/skills", "/repo/shared-skills"],
-        claudeCommandsDir: "/repo/.bottle/commands"
+        skillRoots: ["/repo/.bottle/skills", "/repo/shared-skills"]
       }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getRoot()).resolves.toMatchObject({
       projectRoot: "/repo/app",
       commandsDir: "/repo/.bottle/commands",
-      skillRoots: ["/repo/.bottle/skills", "/repo/shared-skills"],
-      claudeCommandsDir: "/repo/.bottle/commands"
+      skillRoots: ["/repo/.bottle/skills", "/repo/shared-skills"]
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -131,12 +129,12 @@ describe("browser client", () => {
 
   it("loads Bottle discovery metadata", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
-      return new Response(JSON.stringify({ protocolVersion: 1, name: "prototype-a", features: { mainApp: false, iframeBridge: true } }), {
+      return new Response(JSON.stringify({ protocolVersion: 1, name: "prototype-a", features: { iframeBridge: true } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getBottle()).resolves.toMatchObject({ protocolVersion: 1, name: "prototype-a" });
 
@@ -163,7 +161,7 @@ describe("browser client", () => {
         }
       );
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.getSettings()).resolves.toMatchObject({
       defaultAgentProvider: "codex",
@@ -195,7 +193,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await client.getMessages("s1", { limit: 200, offset: 800, tail: true });
 
@@ -214,7 +212,7 @@ describe("browser client", () => {
         headers: { "content-type": "text/event-stream" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await client.streamMessage("s1", {
       prompt: "describe this",
@@ -233,25 +231,24 @@ describe("browser client", () => {
     );
   });
 
-  it("calls Bottle command endpoints through neutral and Claude-compatible aliases", async () => {
+  it("calls Bottle command endpoints", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => {
       return new Response(JSON.stringify({ command: { path: "review/fix.md", content: "Fix it", updatedAt: "now" } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.saveCommand("s1", { path: "review/fix.md", content: "Fix it" })).resolves.toMatchObject({
       command: { path: "review/fix.md" }
     });
     await client.getCommand("s1", "review/fix.md");
     await client.deleteCommand("s1", "review/fix.md");
-    await client.saveClaudeCommand("s1", { path: "review/fix.md", content: "Fix it" });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "https://api.example.com/__bottle/v1/claude-commands",
+      "https://api.example.com/__bottle/v1/commands",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
@@ -259,23 +256,15 @@ describe("browser client", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      "https://api.example.com/__bottle/v1/claude-commands?path=review%2Ffix.md",
+      "https://api.example.com/__bottle/v1/commands?path=review%2Ffix.md",
       expect.objectContaining({ headers: expect.objectContaining({ "content-type": "application/json" }) })
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
-      "https://api.example.com/__bottle/v1/claude-commands",
+      "https://api.example.com/__bottle/v1/commands",
       expect.objectContaining({
         method: "DELETE",
         body: JSON.stringify({ path: "review/fix.md" })
-      })
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
-      "https://api.example.com/__bottle/v1/claude-commands",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ path: "review/fix.md", content: "Fix it" })
       })
     );
   });
@@ -287,7 +276,7 @@ describe("browser client", () => {
         headers: { "content-type": "application/json" }
       });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     await expect(client.searchFiles("s1", "sat", { limit: 5 })).resolves.toMatchObject({
       results: [{ path: "src/app.ts", type: "file" }]
@@ -339,7 +328,7 @@ describe("browser client", () => {
           headers: { "content-type": "application/json" }
         });
       }
-      if (url.endsWith("/v1/claude-commands")) {
+      if (url.endsWith("/v1/commands")) {
         return new Response(JSON.stringify({ commands: [] }), {
           status: 200,
           headers: { "content-type": "application/json" }
@@ -347,13 +336,13 @@ describe("browser client", () => {
       }
       return new Response(JSON.stringify({ error: "unexpected" }), { status: 500 });
     });
-    const client = createClaudeClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
+    const client = createBottleClient({ baseUrl: "https://api.example.com/__bottle", fetch: fetchMock });
 
     const session = await client.createSession({ mode: "plan", title: "Prototype" });
     await client.streamMessage(session.sessionId, { prompt: "Change the UI" });
     await client.interrupt(session.sessionId);
     await client.searchFiles(session.sessionId, "button");
-    await client.listClaudeCommands(session.sessionId);
+    await client.listCommands(session.sessionId);
 
     const urls = fetchMock.mock.calls.map(([input]) => String(input));
     expect(urls).toEqual([
@@ -361,7 +350,7 @@ describe("browser client", () => {
       "https://api.example.com/__bottle/v1/sessions/s1/messages:stream",
       "https://api.example.com/__bottle/v1/sessions/s1/interrupt",
       "https://api.example.com/__bottle/v1/sessions/s1/files:search?q=button",
-      "https://api.example.com/__bottle/v1/claude-commands"
+      "https://api.example.com/__bottle/v1/commands"
     ]);
     expect(urls.every((url) => url.includes("/__bottle/v1/"))).toBe(true);
     expect(urls.every((url) => !url.includes("/api/agent"))).toBe(true);

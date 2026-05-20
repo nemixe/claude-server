@@ -25,7 +25,7 @@ describe("config file loading", () => {
           workspaceDir: ".data/bottle/app/workspaces",
           maxConcurrentRuns: 5,
           maxTurns: 40,
-          claudeModel: "claude-sonnet-4-6",
+          agentModel: "claude-sonnet-4-6",
           codexModel: "gpt-5.5",
           codexReasoningEffort: "high",
           codexNetworkAccess: true,
@@ -50,7 +50,7 @@ describe("config file loading", () => {
       WORKSPACE_DIR: ".data/bottle/app/workspaces",
       MAX_CONCURRENT_RUNS: "5",
       MAX_TURNS: "40",
-      CLAUDE_MODEL: "claude-sonnet-4-6",
+      AGENT_MODEL: "claude-sonnet-4-6",
       CODEX_MODEL: "gpt-5.5",
       CODEX_REASONING_EFFORT: "high",
       CODEX_NETWORK_ACCESS: "true",
@@ -73,7 +73,7 @@ describe("config file loading", () => {
         allowedHostnames: ["localhost", "prototype.example.com"],
         sessionDir: ".data/bottle/prototype-c/sessions",
         workspaceDir: ".data/bottle/prototype-c/workspaces",
-        claudeModel: "claude-sonnet-4-6"
+        agentModel: "claude-sonnet-4-6"
       };`,
       "utf8"
     );
@@ -88,7 +88,7 @@ describe("config file loading", () => {
     expect(config.skillRoots).toEqual([path.join(root, "skills"), path.resolve(root, "..", "shared-skills"), "/opt/team-skills"]);
     expect(config.sessionDir).toBe(path.join(root, ".data", "bottle", "prototype-c", "sessions"));
     expect(config.workspaceDir).toBe(path.join(root, ".data", "bottle", "prototype-c", "workspaces"));
-    expect(config.defaultModel).toBe("claude-sonnet-4-6");
+    expect(config.agentModel).toBe("claude-sonnet-4-6");
     expect(config.allowedHosts).toEqual([{ hostname: "localhost" }, { hostname: "prototype.example.com" }]);
   });
 });

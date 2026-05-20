@@ -6,7 +6,7 @@ import type { AgentProvider } from "./types.js";
 export { loadConfig };
 export type { AppConfig };
 
-export type ClaudeServerConfigInput = {
+export type BottleConfigInput = {
   name?: string;
   bottleName?: string;
   agentProvider?: AgentProvider;
@@ -28,8 +28,7 @@ export type ClaudeServerConfigInput = {
   runTimeoutMs?: number;
   sandboxAllowedDomains?: string | string[];
   sessionIdleTtlMs?: number;
-  claudeModel?: string;
-  defaultModel?: string;
+  agentModel?: string;
   codexModel?: string;
   codexApiKey?: string;
   codexBaseUrl?: string;
@@ -40,24 +39,20 @@ export type ClaudeServerConfigInput = {
   codexPlanSandboxMode?: CodexSandboxMode;
 };
 
-export type ClaudeServerConfigFactory = (context: {
+export type BottleConfigFactory = (context: {
   env: NodeJS.ProcessEnv;
   configPath: string;
-}) => ClaudeServerConfigInput | Promise<ClaudeServerConfigInput>;
+}) => BottleConfigInput | Promise<BottleConfigInput>;
 
 type ConfigModuleExport =
-  | ClaudeServerConfigInput
-  | ClaudeServerConfigFactory
+  | BottleConfigInput
+  | BottleConfigFactory
   | {
-      default?: ClaudeServerConfigInput | ClaudeServerConfigFactory;
-      config?: ClaudeServerConfigInput | ClaudeServerConfigFactory;
+      default?: BottleConfigInput | BottleConfigFactory;
+      config?: BottleConfigInput | BottleConfigFactory;
     };
 
-export function defineClaudeServerConfig(config: ClaudeServerConfigInput): ClaudeServerConfigInput {
-  return config;
-}
-
-export function defineBottleConfig(config: ClaudeServerConfigInput): ClaudeServerConfigInput {
+export function defineBottleConfig(config: BottleConfigInput): BottleConfigInput {
   return config;
 }
 
@@ -72,7 +67,7 @@ export async function loadConfigFromFile(
   const input = typeof configExport === "function" ? await configExport({ env, configPath: resolvedPath }) : configExport;
 
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Claude server config must export an object or a config factory");
+    throw new Error("Bottle config must export an object or a config factory");
   }
 
   return loadConfig(
@@ -87,7 +82,7 @@ export async function loadConfigFromFile(
   );
 }
 
-export function configInputToEnv(input: ClaudeServerConfigInput): NodeJS.ProcessEnv {
+export function configInputToEnv(input: BottleConfigInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   setEnv(env, "BOTTLE_NAME", input.bottleName ?? input.name);
   setEnv(env, "AGENT_PROVIDER", input.agentProvider);
@@ -109,7 +104,7 @@ export function configInputToEnv(input: ClaudeServerConfigInput): NodeJS.Process
   setEnv(env, "RUN_TIMEOUT_MS", input.runTimeoutMs);
   setEnv(env, "SANDBOX_ALLOWED_DOMAINS", csv(input.sandboxAllowedDomains));
   setEnv(env, "SESSION_IDLE_TTL_MS", input.sessionIdleTtlMs);
-  setEnv(env, "CLAUDE_MODEL", input.claudeModel ?? input.defaultModel);
+  setEnv(env, "AGENT_MODEL", input.agentModel);
   setEnv(env, "CODEX_MODEL", input.codexModel);
   setEnv(env, "CODEX_API_KEY", input.codexApiKey);
   setEnv(env, "CODEX_BASE_URL", input.codexBaseUrl);
@@ -121,13 +116,13 @@ export function configInputToEnv(input: ClaudeServerConfigInput): NodeJS.Process
   return env;
 }
 
-function resolveConfigExport(loaded: ConfigModuleExport): ClaudeServerConfigInput | ClaudeServerConfigFactory {
+function resolveConfigExport(loaded: ConfigModuleExport): BottleConfigInput | BottleConfigFactory {
   if (typeof loaded === "function") return loaded;
   if (loaded && typeof loaded === "object") {
     if ("default" in loaded && loaded.default !== undefined) return loaded.default;
     if ("config" in loaded && loaded.config !== undefined) return loaded.config;
   }
-  return loaded as ClaudeServerConfigInput;
+  return loaded as BottleConfigInput;
 }
 
 function setEnv(env: NodeJS.ProcessEnv, key: string, value: string | number | boolean | undefined): void {

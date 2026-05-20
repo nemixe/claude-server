@@ -28,7 +28,6 @@ export type AppConfig = {
   skillsDir: string;
   extraSkillRoots: string[];
   skillRoots: string[];
-  claudeCommandsDir: string;
   workspaceDir: string;
   sessionDir: string;
   maxConcurrentRuns: number;
@@ -37,7 +36,7 @@ export type AppConfig = {
   runTimeoutMs: number;
   sandboxAllowedDomains: string[];
   sessionIdleTtlMs: number;
-  defaultModel?: string;
+  agentModel?: string;
   codexModel?: string;
   codexApiKey?: string;
   codexBaseUrl?: string;
@@ -55,7 +54,6 @@ export type LoadConfigOptions = {
 
 const RawEnvSchema = z.object({
   BOTTLE_NAME: z.string().optional(),
-  CLAUDE_SERVER_INSTANCE: z.string().optional(),
   AGENT_PROVIDER: z.string().optional(),
   PROJECT_ROOT: z.string().optional(),
   PORT: z.string().optional(),
@@ -76,7 +74,7 @@ const RawEnvSchema = z.object({
   RUN_TIMEOUT_MS: z.string().optional(),
   SANDBOX_ALLOWED_DOMAINS: z.string().optional(),
   SESSION_IDLE_TTL_MS: z.string().optional(),
-  CLAUDE_MODEL: z.string().optional(),
+  AGENT_MODEL: z.string().optional(),
   CODEX_MODEL: z.string().optional(),
   CODEX_API_KEY: z.string().optional(),
   CODEX_BASE_URL: z.string().optional(),
@@ -112,7 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
   const extraSkillRoots = resolveExtraSkillRoots(raw.BOTTLE_EXTRA_SKILL_ROOTS, cwd);
 
   return {
-    bottleName: normalizeOptionalString(raw.BOTTLE_NAME) ?? normalizeOptionalString(raw.CLAUDE_SERVER_INSTANCE) ?? "bottle",
+    bottleName: normalizeOptionalString(raw.BOTTLE_NAME) ?? "bottle",
     defaultAgentProvider: parseAgentProvider(raw.AGENT_PROVIDER),
     clientAppUrl: normalizeOptionalUrl(raw.CLIENT_APP_URL ?? "http://localhost:5173", "CLIENT_APP_URL"),
     clientAppPath: "/",
@@ -130,7 +128,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
     skillsDir,
     extraSkillRoots,
     skillRoots: [skillsDir, ...extraSkillRoots],
-    claudeCommandsDir: commandsDir,
     workspaceDir: resolveFromRoot(raw.WORKSPACE_DIR ?? ".data/workspaces", projectRoot),
     sessionDir: resolveFromRoot(raw.SESSION_DIR ?? ".data/sessions", projectRoot),
     maxConcurrentRuns: parseInteger(raw.MAX_CONCURRENT_RUNS, 4, "MAX_CONCURRENT_RUNS"),
@@ -139,7 +136,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, options: string
     runTimeoutMs: parseInteger(raw.RUN_TIMEOUT_MS, 3_600_000, "RUN_TIMEOUT_MS"),
     sandboxAllowedDomains: parseCsv(raw.SANDBOX_ALLOWED_DOMAINS ?? "api.anthropic.com,claude.ai,statsig.anthropic.com"),
     sessionIdleTtlMs: parsePositiveInteger(raw.SESSION_IDLE_TTL_MS, 300_000, "SESSION_IDLE_TTL_MS"),
-    defaultModel: normalizeOptionalString(raw.CLAUDE_MODEL),
+    agentModel: normalizeOptionalString(raw.AGENT_MODEL),
     codexModel: normalizeOptionalString(raw.CODEX_MODEL),
     codexApiKey: normalizeOptionalString(raw.CODEX_API_KEY),
     codexBaseUrl: normalizeOptionalUrl(raw.CODEX_BASE_URL, "CODEX_BASE_URL"),

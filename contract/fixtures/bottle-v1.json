@@ -3,16 +3,14 @@
   "bottleInfo": {
     "protocolVersion": 1,
     "name": "prototype-a",
-    "mainAppUrl": "http://localhost:3001",
+    "hostAppOrigin": "http://localhost:3001",
     "defaultAgentProvider": "claude",
     "availableAgentProviders": ["claude", "codex"],
     "features": {
-      "mainApp": true,
       "iframeBridge": true,
       "sessions": true,
       "streaming": true,
       "settings": true,
-      "claudeCommands": true,
       "agents": true,
       "commands": true,
       "rules": true,

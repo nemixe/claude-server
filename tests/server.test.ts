@@ -1,6 +1,6 @@
 import net from "node:net";
 import { describe, expect, it } from "vitest";
-import { startClaudeServer } from "../src/server.js";
+import { startBottleServer } from "../src/server.js";
 import { createTempConfig } from "./helpers.js";
 
 function reservePort(): Promise<{ port: number; server: net.Server }> {
@@ -40,7 +40,7 @@ describe("Bottle startup binding", () => {
     });
 
     try {
-      await expect(startClaudeServer(config)).rejects.toThrow(
+      await expect(startBottleServer(config)).rejects.toThrow(
         `Port ${reserved.port} is already in use. Stop the old Bottle process or change PORT before restarting.`
       );
     } finally {
@@ -52,7 +52,7 @@ describe("Bottle startup binding", () => {
     const config = await createTempConfig({ PORT: "0", BIND_HOST: "127.0.0.1" });
     let listenedPort = 0;
 
-    const running = await startClaudeServer(config, {
+    const running = await startBottleServer(config, {
       onListen(info) {
         listenedPort = info.port;
       }

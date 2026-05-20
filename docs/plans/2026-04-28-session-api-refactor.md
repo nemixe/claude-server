@@ -173,7 +173,7 @@ Create `src/session-adapter.ts`:
 
 ```typescript
 import type { AgentSdkAdapter, AgentPrompt } from "./agent-service.js";
-import type { ClaudeMode, SessionMetadata, StreamMessageRequest } from "./types.js";
+import type { AgentMode, SessionMetadata, StreamMessageRequest } from "./types.js";
 
 export type SessionOptions = {
   cwd: string;
@@ -560,7 +560,7 @@ describe("AgentService with SessionPool", () => {
       bindHost: "0.0.0.0",
       allowedHosts: [],
       trustProxy: false,
-      claudeCommandsDir: "/tmp/commands",
+      commandsDir: "/tmp/commands",
       maxConcurrentRuns: 4,
     } as AppConfig;
 
@@ -925,7 +925,7 @@ describe("Session integration: reuse across messages", () => {
     };
 
     const service = new AgentService(config, undefined, factory);
-    const session = { id: "reuse-1", workspacePath: "/tmp/ws/reuse-1", mode: "bypass" as ClaudeMode, hasRun: false, createdAt: "", updatedAt: "" };
+    const session = { id: "reuse-1", workspacePath: "/tmp/ws/reuse-1", mode: "bypass" as AgentMode, hasRun: false, createdAt: "", updatedAt: "" };
 
     // First message — creates session
     const events1 = [];

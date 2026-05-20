@@ -66,21 +66,19 @@ export function createBottleAuthMiddleware(config: AppConfig): MiddlewareHandler
 }
 
 export function bottleInfoForRequest(config: AppConfig, requestUrl: string, headers?: Headers): BottleInfoResponse {
-  const mainAppUrl = requestOrigin(requestUrl, headers);
+  const hostAppOrigin = requestOrigin(requestUrl, headers);
 
   return {
     protocolVersion: BOTTLE_PROTOCOL_VERSION,
     name: config.bottleName,
-    mainAppUrl,
+    hostAppOrigin,
     defaultAgentProvider: config.defaultAgentProvider,
     availableAgentProviders: [...AGENT_PROVIDERS],
     features: {
-      mainApp: true,
       iframeBridge: true,
       sessions: true,
       streaming: true,
       settings: true,
-      claudeCommands: true,
       agents: true,
       commands: true,
       rules: true,
@@ -130,7 +128,7 @@ async function serveIframeApp(c: Context): Promise<Response> {
       {
         error: {
           code: "main_app_fetch_failed",
-          message: "Failed to fetch the detected main app URL."
+          message: "Failed to fetch the detected Host App URL."
         }
       },
       502

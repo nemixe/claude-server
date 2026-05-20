@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgentService, buildSessionOptions, type AgentSdkAdapter } from "../src/agent-service.js";
-import { MissingClaudeSessionIdError, type SessionFactory, type SessionLike } from "../src/session-adapter.js";
+import { MissingAgentSessionIdError, type SessionFactory, type SessionLike } from "../src/session-adapter.js";
 import type { SessionMetadata } from "../src/types.js";
 import { createTempConfig } from "./helpers.js";
 
@@ -51,14 +51,14 @@ describe("buildSessionOptions", () => {
     });
   });
 
-  it("falls back to CLAUDE_MODEL and errors clearly when missing", async () => {
-    const config = await createTempConfig({ CLAUDE_MODEL: "claude-opus-4-7" });
+  it("falls back to AGENT_MODEL and errors clearly when missing", async () => {
+    const config = await createTempConfig({ AGENT_MODEL: "claude-opus-4-7" });
     const session = metadata(config.workspaceDir);
 
     expect(buildSessionOptions(config, session, { prompt: "hello" }).model).toBe("claude-opus-4-7");
 
-    const missingModelConfig = await createTempConfig({ CLAUDE_MODEL: "" });
-    expect(() => buildSessionOptions(missingModelConfig, session, { prompt: "hello" })).toThrow(/CLAUDE_MODEL/);
+    const missingModelConfig = await createTempConfig({ AGENT_MODEL: "" });
+    expect(() => buildSessionOptions(missingModelConfig, session, { prompt: "hello" })).toThrow(/AGENT_MODEL/);
   });
 
   it("appends Bottle rules from .bottle/rules to the Claude Code system prompt and ignores .claude/rules", async () => {
@@ -159,7 +159,7 @@ describe("AgentService with V2 sessions", () => {
 
     await collect(service.stream({ session, request: { prompt: "hello" } }));
     session.hasRun = true;
-    session.claudeSessionId = "claude-1";
+    session.agentSessionId = "claude-1";
     await collect(service.stream({ session, request: { prompt: "again" } }));
 
     expect(factory.createSession).toHaveBeenCalledTimes(1);
@@ -187,7 +187,7 @@ describe("AgentService with V2 sessions", () => {
     expect(mockSession.send).toHaveBeenCalledWith(expect.stringContaining("User request:\nCreate a product module"));
   });
 
-  it("cold-resumes with persisted Claude session ID", async () => {
+  it("cold-resumes with persisted agent session ID", async () => {
     const config = await createTempConfig();
     const resumed = createMockSession("claude-resume", () => resultStream("claude-resume"));
     const factory: SessionFactory = {
@@ -195,7 +195,7 @@ describe("AgentService with V2 sessions", () => {
       resumeSession: vi.fn(() => resumed)
     };
     const service = new AgentService(config, undefined, factory);
-    const session = metadata(config.workspaceDir, { hasRun: true, claudeSessionId: "claude-resume" });
+    const session = metadata(config.workspaceDir, { hasRun: true, agentSessionId: "claude-resume" });
 
     await collect(service.stream({ session, request: { prompt: "continue" } }));
 
@@ -203,7 +203,7 @@ describe("AgentService with V2 sessions", () => {
     expect(resumed.send).toHaveBeenCalledWith("continue");
   });
 
-  it("includes project rules when cold-resuming a persisted Claude session", async () => {
+  it("includes project rules when cold-resuming a persisted agent session", async () => {
     const config = await createTempConfig();
     const rulesDir = config.rulesDir;
     await fs.mkdir(rulesDir, { recursive: true });
@@ -214,7 +214,7 @@ describe("AgentService with V2 sessions", () => {
       resumeSession: vi.fn(() => resumed)
     };
     const service = new AgentService(config, undefined, factory);
-    const session = metadata(config.workspaceDir, { hasRun: true, claudeSessionId: "claude-rules-resume" });
+    const session = metadata(config.workspaceDir, { hasRun: true, agentSessionId: "claude-rules-resume" });
 
     await collect(service.stream({ session, request: { prompt: "continue product module" } }));
 
@@ -231,7 +231,7 @@ describe("AgentService with V2 sessions", () => {
     expect(resumed.send).toHaveBeenCalledWith(expect.stringContaining("User request:\ncontinue product module"));
   });
 
-  it("throws missing_claude_session_id for already-run sessions without Claude ID", async () => {
+  it("throws missing_agent_session_id for already-run sessions without an agent session ID", async () => {
     const config = await createTempConfig();
     const service = new AgentService(config, undefined, {
       createSession: vi.fn(() => createMockSession("unused", () => resultStream("unused"))),
@@ -240,7 +240,7 @@ describe("AgentService with V2 sessions", () => {
 
     await expect(
       collect(service.stream({ session: metadata(config.workspaceDir, { hasRun: true }), request: { prompt: "continue" } }))
-    ).rejects.toMatchObject({ code: "missing_claude_session_id" });
+    ).rejects.toMatchObject({ code: "missing_agent_session_id" });
   });
 
   it("closes on AskUserQuestion and resumes later with answer text", async () => {
@@ -275,8 +275,8 @@ describe("AgentService with V2 sessions", () => {
       service.stream({
         session,
         request: { prompt: "ask" },
-        onClaudeSessionId: (claudeSessionId) => {
-          session.claudeSessionId = claudeSessionId;
+        onAgentSessionId: (agentSessionId) => {
+          session.agentSessionId = agentSessionId;
         }
       })
     );

@@ -65,7 +65,7 @@ describe("config and hostname parsing", () => {
   });
 
   it("loads PROJECT_ROOT and resolves default data paths from that root", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-root-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-root-"));
     const config = loadConfig({ PROJECT_ROOT: root }, process.cwd());
 
     expect(config.projectRoot).toBe(root);
@@ -76,7 +76,7 @@ describe("config and hostname parsing", () => {
     expect(config.skillsDir).toBe(path.join(root, ".bottle", "skills"));
     expect(config.extraSkillRoots).toEqual([]);
     expect(config.skillRoots).toEqual([path.join(root, ".bottle", "skills")]);
-    expect(config.claudeCommandsDir).toBe(path.join(root, ".bottle", "commands"));
+    expect(config.commandsDir).toBe(path.join(root, ".bottle", "commands"));
     expect(config.workspaceDir).toBe(path.join(root, ".data", "workspaces"));
     expect(config.sessionDir).toBe(path.join(root, ".data", "sessions"));
   });
@@ -149,13 +149,13 @@ describe("config and hostname parsing", () => {
   });
 
   it("loads custom multi-instance port and isolated data directories", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-server-instance-root-"));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "bottle-instance-root-"));
     const config = loadConfig(
       {
         PORT: "3002",
         PROJECT_ROOT: root,
-        SESSION_DIR: ".data/claude-server/prototype-b/sessions",
-        WORKSPACE_DIR: ".data/claude-server/prototype-b/workspaces",
+        SESSION_DIR: ".data/bottle/prototype-b/sessions",
+        WORKSPACE_DIR: ".data/bottle/prototype-b/workspaces",
         ALLOWED_HOSTNAMES: "prototype.example.com,localhost"
       },
       process.cwd()
@@ -163,8 +163,8 @@ describe("config and hostname parsing", () => {
 
     expect(config.port).toBe(3002);
     expect(config.projectRoot).toBe(root);
-    expect(config.sessionDir).toBe(path.join(root, ".data", "claude-server", "prototype-b", "sessions"));
-    expect(config.workspaceDir).toBe(path.join(root, ".data", "claude-server", "prototype-b", "workspaces"));
+    expect(config.sessionDir).toBe(path.join(root, ".data", "bottle", "prototype-b", "sessions"));
+    expect(config.workspaceDir).toBe(path.join(root, ".data", "bottle", "prototype-b", "workspaces"));
     expect(config.allowedHosts).toEqual([{ hostname: "prototype.example.com" }, { hostname: "localhost" }]);
   });
 

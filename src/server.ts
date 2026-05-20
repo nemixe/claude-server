@@ -5,7 +5,7 @@ import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import { createSessionFactory } from "./session-adapter.js";
 
-export type RunningClaudeServer = {
+export type RunningBottleServer = {
   app: Hono;
   config: AppConfig;
   agentService: AgentService;
@@ -13,14 +13,14 @@ export type RunningClaudeServer = {
   stop: () => Promise<void>;
 };
 
-export type StartClaudeServerOptions = {
+export type StartBottleServerOptions = {
   onListen?: (info: { address: string; port: number }) => void;
 };
 
-export async function startClaudeServer(
+export async function startBottleServer(
   config: AppConfig,
-  options: StartClaudeServerOptions = {}
-): Promise<RunningClaudeServer> {
+  options: StartBottleServerOptions = {}
+): Promise<RunningBottleServer> {
   const agentService = new AgentService(config, undefined, createSessionFactory());
   const app = await createApp({ config, agentService });
   let stopped = false;
@@ -113,7 +113,7 @@ export async function startClaudeServer(
 }
 
 export function installShutdownHandlers(
-  running: Pick<RunningClaudeServer, "stop">,
+  running: Pick<RunningBottleServer, "stop">,
   options: { gracefulMs?: number } = {}
 ): void {
   const gracefulMs = options.gracefulMs ?? 5_000;

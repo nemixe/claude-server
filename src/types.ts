@@ -1,8 +1,8 @@
-export const CLAUDE_MODES = ["plan", "bypass"] as const;
+export const AGENT_MODES = ["plan", "bypass"] as const;
 export const AGENT_PROVIDERS = ["claude", "codex"] as const;
 export const BOTTLE_PROTOCOL_VERSION = 1 as const;
 
-export type ClaudeMode = (typeof CLAUDE_MODES)[number];
+export type AgentMode = (typeof AGENT_MODES)[number];
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
 
 export type AgentStatus =
@@ -28,19 +28,16 @@ export type UploadedFile = {
   contentBase64?: string;
 };
 
-export type ClaudeCommand = {
+export type BottleCommand = {
   path: string;
   content: string;
   updatedAt: string;
 };
 
-export type ClaudeCommandInput = {
+export type BottleCommandInput = {
   path: string;
   content: string;
 };
-
-export type BottleCommand = ClaudeCommand;
-export type BottleCommandInput = ClaudeCommandInput;
 
 export type WorkspaceSearchResult = {
   path: string;
@@ -60,7 +57,6 @@ export type RootInfoResponse = {
   skillsDir: string;
   extraSkillRoots: string[];
   skillRoots: string[];
-  claudeCommandsDir: string;
 };
 
 export type BottleWebAppContext = {
@@ -79,16 +75,14 @@ export type BottleWebAppContext = {
 export type BottleInfoResponse = {
   protocolVersion: typeof BOTTLE_PROTOCOL_VERSION;
   name: string;
-  mainAppUrl?: string;
+  hostAppOrigin: string;
   defaultAgentProvider: AgentProvider;
   availableAgentProviders: AgentProvider[];
   features: {
-    mainApp: boolean;
     iframeBridge: boolean;
     sessions: boolean;
     streaming: boolean;
     settings: boolean;
-    claudeCommands: boolean;
     agents: boolean;
     commands: boolean;
     rules: boolean;
@@ -109,7 +103,7 @@ export type SessionMetadata = {
   title?: string;
   userName?: string;
   provider: AgentProvider;
-  mode: ClaudeMode;
+  mode: AgentMode;
   status?: AgentStatus;
   pendingInterrupt?: PendingInterrupt;
   workspacePath: string;
@@ -117,7 +111,6 @@ export type SessionMetadata = {
   updatedAt: string;
   hasRun: boolean;
   agentSessionId?: string;
-  claudeSessionId?: string;
   costUsd?: number;
 };
 
@@ -127,7 +120,7 @@ export type PublicSession = {
   title?: string;
   userName?: string;
   provider: AgentProvider;
-  mode: ClaudeMode;
+  mode: AgentMode;
   status?: AgentStatus;
   pendingInterrupt?: PendingInterrupt;
   createdAt: string;
@@ -183,7 +176,7 @@ export type StreamMessageRequest = {
     kind?: "user_input" | "approval";
     approved?: boolean;
   };
-  mode?: ClaudeMode;
+  mode?: AgentMode;
   model?: string;
   maxTurns?: number;
 };

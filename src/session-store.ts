@@ -4,11 +4,11 @@ import path from "node:path";
 import type { AppConfig } from "./config.js";
 import {
   AGENT_PROVIDERS,
-  CLAUDE_MODES,
+  AGENT_MODES,
   type AgentProvider,
-  type ClaudeCommand,
-  type ClaudeCommandInput,
-  type ClaudeMode,
+  type BottleCommand,
+  type BottleCommandInput,
+  type AgentMode,
   type SessionMetadata,
   type UploadedFile,
   type WorkspaceSearchResult
@@ -20,7 +20,7 @@ const MAX_WORKSPACE_SEARCH_LIMIT = 200;
 const PROJECT_SEARCH_IGNORED_DIRS = new Set([".data", ".git", "dist", "node_modules"]);
 
 export type CreateSessionInput = {
-  mode: ClaudeMode;
+  mode: AgentMode;
   provider?: AgentProvider;
   title?: string;
   userName?: string;
@@ -127,20 +127,10 @@ export class SessionStore {
     await this.save({ ...metadata, hasRun: true });
   }
 
-  async setClaudeSessionId(id: string, claudeSessionId: string): Promise<void> {
-    const metadata = await this.get(id);
-    if (!metadata || metadata.claudeSessionId === claudeSessionId) return;
-    await this.save({ ...metadata, agentSessionId: claudeSessionId, claudeSessionId });
-  }
-
   async setAgentSessionId(id: string, agentSessionId: string): Promise<void> {
     const metadata = await this.get(id);
     if (!metadata || metadata.agentSessionId === agentSessionId) return;
-    await this.save({
-      ...metadata,
-      agentSessionId,
-      ...(metadata.provider === "claude" ? { claudeSessionId: agentSessionId } : {})
-    });
+    await this.save({ ...metadata, agentSessionId });
   }
 
   async readAgentMessages(id: string): Promise<unknown[]> {
@@ -169,7 +159,7 @@ export class SessionStore {
     await this.save({ ...metadata, costUsd });
   }
 
-  async update(id: string, patch: { title?: string; mode?: ClaudeMode }): Promise<SessionMetadata | undefined> {
+  async update(id: string, patch: { title?: string; mode?: AgentMode }): Promise<SessionMetadata | undefined> {
     const metadata = await this.get(id);
     if (!metadata) return undefined;
     const next: SessionMetadata = {
@@ -195,37 +185,37 @@ export class SessionStore {
     return true;
   }
 
-  async listSharedClaudeCommands(): Promise<ClaudeCommand[]> {
+  async listSharedBottleCommands(): Promise<BottleCommand[]> {
     const commandsPath = this.config.commandsDir;
     const files = await listMarkdownFiles(commandsPath);
     const commands = await Promise.all(
-      files.map(async (relativePath) => this.readClaudeCommandFile(commandsPath, relativePath))
+      files.map(async (relativePath) => this.readBottleCommandFile(commandsPath, relativePath))
     );
 
     return commands
-      .filter((command): command is ClaudeCommand => Boolean(command))
+      .filter((command): command is BottleCommand => Boolean(command))
       .sort((left, right) => left.path.localeCompare(right.path));
   }
 
-  async readSharedClaudeCommand(commandPath: string): Promise<ClaudeCommand | undefined> {
-    const relativePath = sanitizeClaudeCommandPath(commandPath);
-    return this.readClaudeCommandFile(this.config.commandsDir, relativePath);
+  async readSharedBottleCommand(commandPath: string): Promise<BottleCommand | undefined> {
+    const relativePath = sanitizeBottleCommandPath(commandPath);
+    return this.readBottleCommandFile(this.config.commandsDir, relativePath);
   }
 
-  async saveSharedClaudeCommand(command: ClaudeCommandInput): Promise<ClaudeCommand> {
-    const relativePath = sanitizeClaudeCommandPath(command.path);
+  async saveSharedBottleCommand(command: BottleCommandInput): Promise<BottleCommand> {
+    const relativePath = sanitizeBottleCommandPath(command.path);
     const targetPath = path.join(this.config.commandsDir, relativePath);
 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, command.content, "utf8");
 
-    const saved = await this.readClaudeCommandFile(this.config.commandsDir, relativePath);
-    if (!saved) throw new Error(`Could not save Claude command: ${relativePath}`);
+    const saved = await this.readBottleCommandFile(this.config.commandsDir, relativePath);
+    if (!saved) throw new Error(`Could not save Bottle command: ${relativePath}`);
     return saved;
   }
 
-  async deleteSharedClaudeCommand(commandPath: string): Promise<boolean> {
-    const relativePath = sanitizeClaudeCommandPath(commandPath);
+  async deleteSharedBottleCommand(commandPath: string): Promise<boolean> {
+    const relativePath = sanitizeBottleCommandPath(commandPath);
     const targetPath = path.join(this.config.commandsDir, relativePath);
 
     let deleted = false;
@@ -308,7 +298,7 @@ export class SessionStore {
     );
   }
 
-  private async readClaudeCommandFile(rootPath: string, relativePath: string): Promise<ClaudeCommand | undefined> {
+  private async readBottleCommandFile(rootPath: string, relativePath: string): Promise<BottleCommand | undefined> {
     const targetPath = path.join(rootPath, relativePath);
 
     try {
@@ -343,7 +333,7 @@ function normalizeSessionMetadata(value: unknown): SessionMetadata | undefined {
     metadata.updatedAt.trim().length > 0 &&
     typeof metadata.hasRun === "boolean" &&
     typeof mode === "string" &&
-    (CLAUDE_MODES as readonly string[]).includes(mode);
+    (AGENT_MODES as readonly string[]).includes(mode);
 
   if (!valid) return undefined;
   const provider = isAgentProvider(metadata.provider) ? metadata.provider : "claude";
@@ -351,7 +341,7 @@ function normalizeSessionMetadata(value: unknown): SessionMetadata | undefined {
     ...metadata,
     mode,
     provider,
-    agentSessionId: metadata.agentSessionId ?? metadata.claudeSessionId
+    agentSessionId: metadata.agentSessionId
   } as SessionMetadata;
 }
 
@@ -379,7 +369,7 @@ export function sanitizeWorkspaceRelativePath(value: string): string {
   return normalized;
 }
 
-export function sanitizeClaudeCommandPath(value: string): string {
+export function sanitizeBottleCommandPath(value: string): string {
   const normalized = sanitizeWorkspaceRelativePath(value);
   const withoutBottlePrefix = normalized.startsWith(`${BOTTLE_COMMANDS_DIR}/`)
     ? normalized.slice(BOTTLE_COMMANDS_DIR.length + 1)

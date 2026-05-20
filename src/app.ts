@@ -19,12 +19,12 @@ import {
 } from "./bottle.js";
 import type { AppConfig } from "./config.js";
 import { createHostnameGate } from "./hostname-gate.js";
-import { createSessionFactory, MissingClaudeSessionIdError } from "./session-adapter.js";
+import { createSessionFactory, MissingAgentSessionIdError } from "./session-adapter.js";
 import { SessionStore } from "./session-store.js";
 import { SettingsStore } from "./settings-store.js";
 import {
   AGENT_PROVIDERS,
-  CLAUDE_MODES,
+  AGENT_MODES,
   type AgentProvider,
   type BottleWebAppContext,
   type ListMessagesResponse,
@@ -97,7 +97,7 @@ export async function withSseHeartbeat<T>(
 }
 
 const createSessionSchema = z.object({
-  mode: z.enum(CLAUDE_MODES).default("bypass"),
+  mode: z.enum(AGENT_MODES).default("bypass"),
   provider: z.enum(AGENT_PROVIDERS).optional(),
   title: z.string().min(1).max(200).optional(),
   userName: z.string().trim().min(1).max(40).optional(),
@@ -159,7 +159,7 @@ const streamMessageSchema = z.object({
       approved: z.boolean().optional()
     })
     .optional(),
-  mode: z.enum(CLAUDE_MODES).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
   model: z.string().min(1).optional(),
   maxTurns: z.number().int().positive().optional()
 });
@@ -167,18 +167,18 @@ const streamMessageSchema = z.object({
 const updateSessionSchema = z
   .object({
     title: z.string().min(1).max(200).optional(),
-    mode: z.enum(CLAUDE_MODES).optional()
+    mode: z.enum(AGENT_MODES).optional()
   })
   .refine((value) => value.title !== undefined || value.mode !== undefined, {
     message: "Provide title or mode"
   });
 
-const claudeCommandSchema = z.object({
+const commandSchema = z.object({
   path: z.string().min(1).max(500),
   content: z.string().max(200_000)
 });
 
-const deleteClaudeCommandSchema = z.object({
+const deleteCommandSchema = z.object({
   path: z.string().min(1).max(500)
 });
 
@@ -238,8 +238,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
       rulesDir: dependencies.config.rulesDir,
       skillsDir: dependencies.config.skillsDir,
       extraSkillRoots: dependencies.config.extraSkillRoots,
-      skillRoots: dependencies.config.skillRoots,
-      claudeCommandsDir: dependencies.config.claudeCommandsDir
+      skillRoots: dependencies.config.skillRoots
     };
     return c.json(rootInfo);
   });
@@ -328,27 +327,27 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return c.json(pageMessages(messages, query));
   });
 
-  app.get(`${BOTTLE_API_PATH}/claude-commands`, async (c) => {
+  app.get(`${BOTTLE_API_PATH}/commands`, async (c) => {
     const commandPath = c.req.query("path");
     if (commandPath) {
-      const command = await sessionStore.readSharedClaudeCommand(commandPath);
-      if (!command) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
+      const command = await sessionStore.readSharedBottleCommand(commandPath);
+      if (!command) return c.json({ error: { code: "command_not_found", message: "Bottle command not found" } }, 404);
       return c.json({ command });
     }
-    const commands = await sessionStore.listSharedClaudeCommands();
+    const commands = await sessionStore.listSharedBottleCommands();
     return c.json({ commands });
   });
 
-  app.post(`${BOTTLE_API_PATH}/claude-commands`, async (c) => {
-    const body = claudeCommandSchema.parse(await c.req.json());
-    const command = await sessionStore.saveSharedClaudeCommand(body);
+  app.post(`${BOTTLE_API_PATH}/commands`, async (c) => {
+    const body = commandSchema.parse(await c.req.json());
+    const command = await sessionStore.saveSharedBottleCommand(body);
     return c.json({ command }, 201);
   });
 
-  app.delete(`${BOTTLE_API_PATH}/claude-commands`, async (c) => {
-    const body = deleteClaudeCommandSchema.parse(await c.req.json());
-    const deleted = await sessionStore.deleteSharedClaudeCommand(body.path);
-    if (!deleted) return c.json({ error: { code: "command_not_found", message: "Claude command not found" } }, 404);
+  app.delete(`${BOTTLE_API_PATH}/commands`, async (c) => {
+    const body = deleteCommandSchema.parse(await c.req.json());
+    const deleted = await sessionStore.deleteSharedBottleCommand(body.path);
+    if (!deleted) return c.json({ error: { code: "command_not_found", message: "Bottle command not found" } }, 404);
     return c.json({ deleted: true });
   });
 
@@ -433,7 +432,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
     return streamSSE(c, async (stream) => {
       await withSseHeartbeat(stream, async () => {
         let sessionMarkedAsRun = false;
-        let persistedAgentSessionId = session.agentSessionId ?? session.claudeSessionId;
+        let persistedAgentSessionId = session.agentSessionId;
         let waitingForUserQuestion = false;
         let waitingForApproval = false;
         if (providerForSession(dependencies.config, session) === "codex") {
@@ -448,7 +447,6 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
               if (persistedAgentSessionId === agentSessionId) return;
               await sessionStore.setAgentSessionId(session.id, agentSessionId);
               session.agentSessionId = agentSessionId;
-              if (providerForSession(dependencies.config, session) === "claude") session.claudeSessionId = agentSessionId;
               persistedAgentSessionId = agentSessionId;
             }
           })) {
@@ -495,7 +493,7 @@ export async function createApp(dependencies: AppDependencies): Promise<Hono> {
               : error instanceof ValidationErrorLimitError
                 ? error.code
                 : error instanceof CodexSandboxUnsupportedError ||
-                    error instanceof MissingClaudeSessionIdError ||
+                    error instanceof MissingAgentSessionIdError ||
                     error instanceof RunTimeoutError ||
                     error instanceof RunAbortedError
                   ? error.code

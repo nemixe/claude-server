@@ -1,0 +1,3 @@
+# Bottle Routes Live Under the Host App Public Origin
+
+Bottle runs as an attached runtime for exactly one Host App, but its browser-facing API, iframe, and bridge routes appear under the Host App Public Origin through the shared `/__bottle/*` prefix. When an AI Client Integration asks the user for a Host App URL, that Selected Host App Origin determines the Bottle base URL, not the AI Client Integration's own origin or Bottle's internal port. This keeps the Host App as the public application boundary, avoids a separate Bottle browser origin for iframe context exchange, and lets web and API Host Apps attach Bottle through the same public contract while proxying only Bottle-owned routes to the internal Bottle port.

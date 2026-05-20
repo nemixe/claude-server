@@ -41,12 +41,12 @@ type PooledSession = {
   running: boolean;
 };
 
-export class MissingClaudeSessionIdError extends Error {
-  readonly code = "missing_claude_session_id";
+export class MissingAgentSessionIdError extends Error {
+  readonly code = "missing_agent_session_id";
 
   constructor(sessionId: string) {
-    super(`Session ${sessionId} has run before but has no persisted Claude session ID`);
-    this.name = "MissingClaudeSessionIdError";
+    super(`Session ${sessionId} has run before but has no persisted agent session ID`);
+    this.name = "MissingAgentSessionIdError";
   }
 }
 
@@ -132,9 +132,9 @@ export class SessionPool {
   }
 
   private resume(metadata: SessionMetadata, options: SessionOptions): SessionLike {
-    const sessionId = metadata.agentSessionId ?? metadata.claudeSessionId;
+    const sessionId = metadata.agentSessionId;
     if (!sessionId) {
-      throw new MissingClaudeSessionIdError(metadata.id);
+      throw new MissingAgentSessionIdError(metadata.id);
     }
     return this.factory.resumeSession(sessionId, options);
   }

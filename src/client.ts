@@ -3,9 +3,7 @@ import type {
   BottleInfoResponse,
   BottleCommand,
   BottleCommandInput,
-  ClaudeCommand,
-  ClaudeCommandInput,
-  ClaudeMode,
+  AgentMode,
   ListMessagesResponse,
   ListSessionsResponse,
   PublicSession,
@@ -17,13 +15,13 @@ import type {
   WorkspaceSearchResult
 } from "./types.js";
 
-export type ClaudeClientOptions = {
+export type BottleClientOptions = {
   baseUrl: string;
   fetch?: typeof fetch;
 };
 
 export type CreateClientSessionRequest = {
-  mode: ClaudeMode;
+  mode: AgentMode;
   provider?: AgentProvider;
   title?: string;
   userName?: string;
@@ -60,7 +58,7 @@ export type StreamHandlers = {
   onDone?: (data: unknown) => void;
 };
 
-export function createClaudeClient(options: ClaudeClientOptions) {
+export function createBottleClient(options: BottleClientOptions) {
   const fetchImpl = options.fetch ?? fetch;
   const baseUrl = options.baseUrl.replace(/\/$/, "");
 
@@ -74,7 +72,7 @@ export function createClaudeClient(options: ClaudeClientOptions) {
     });
 
     if (!response.ok) {
-      throw new Error(`Claude API request failed with ${response.status}: ${await response.text()}`);
+      throw new Error(`Bottle API request failed with ${response.status}: ${await response.text()}`);
     }
 
     return response.json() as Promise<T>;
@@ -99,11 +97,11 @@ export function createClaudeClient(options: ClaudeClientOptions) {
       });
 
       if (!response.ok) {
-        throw new Error(`Claude stream request failed with ${response.status}: ${await response.text()}`);
+        throw new Error(`Bottle stream request failed with ${response.status}: ${await response.text()}`);
       }
 
       if (!response.body) {
-        throw new Error("Claude stream response did not include a body");
+        throw new Error("Bottle stream response did not include a body");
       }
 
       await readSseStream(response.body, handlers);
@@ -166,48 +164,24 @@ export function createClaudeClient(options: ClaudeClientOptions) {
     },
 
     listCommands(_sessionId?: string): Promise<{ commands: BottleCommand[] }> {
-      return requestJson<{ commands: BottleCommand[] }>("/v1/claude-commands");
+      return requestJson<{ commands: BottleCommand[] }>("/v1/commands");
     },
 
     getCommand(_sessionId: string | undefined, commandPath: string): Promise<{ command: BottleCommand }> {
       return requestJson<{ command: BottleCommand }>(
-        `/v1/claude-commands?path=${encodeURIComponent(commandPath)}`
+        `/v1/commands?path=${encodeURIComponent(commandPath)}`
       );
     },
 
     saveCommand(_sessionId: string | undefined, command: BottleCommandInput): Promise<{ command: BottleCommand }> {
-      return requestJson<{ command: BottleCommand }>("/v1/claude-commands", {
+      return requestJson<{ command: BottleCommand }>("/v1/commands", {
         method: "POST",
         body: JSON.stringify(command)
       });
     },
 
     deleteCommand(_sessionId: string | undefined, commandPath: string): Promise<{ deleted: true }> {
-      return requestJson<{ deleted: true }>("/v1/claude-commands", {
-        method: "DELETE",
-        body: JSON.stringify({ path: commandPath })
-      });
-    },
-
-    listClaudeCommands(_sessionId?: string): Promise<{ commands: ClaudeCommand[] }> {
-      return requestJson<{ commands: ClaudeCommand[] }>("/v1/claude-commands");
-    },
-
-    getClaudeCommand(_sessionId: string | undefined, commandPath: string): Promise<{ command: ClaudeCommand }> {
-      return requestJson<{ command: ClaudeCommand }>(
-        `/v1/claude-commands?path=${encodeURIComponent(commandPath)}`
-      );
-    },
-
-    saveClaudeCommand(_sessionId: string | undefined, command: ClaudeCommandInput): Promise<{ command: ClaudeCommand }> {
-      return requestJson<{ command: ClaudeCommand }>("/v1/claude-commands", {
-        method: "POST",
-        body: JSON.stringify(command)
-      });
-    },
-
-    deleteClaudeCommand(_sessionId: string | undefined, commandPath: string): Promise<{ deleted: true }> {
-      return requestJson<{ deleted: true }>("/v1/claude-commands", {
+      return requestJson<{ deleted: true }>("/v1/commands", {
         method: "DELETE",
         body: JSON.stringify({ path: commandPath })
       });
@@ -227,8 +201,6 @@ export function createClaudeClient(options: ClaudeClientOptions) {
     }
   };
 }
-
-export const createBottleClient = createClaudeClient;
 
 export async function readSseStream(body: ReadableStream<Uint8Array>, handlers: StreamHandlers): Promise<void> {
   const reader = body.getReader();
