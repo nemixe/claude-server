@@ -19,6 +19,27 @@
       "authToken": false
     }
   },
+  "bridgeMessages": {
+    "requestScreenshot": {
+      "type": "ai-client:request-screenshot",
+      "requestId": "screenshot-1",
+      "protocolVersion": 1
+    },
+    "screenshot": {
+      "type": "bottle:screenshot",
+      "requestId": "screenshot-1",
+      "protocolVersion": 1,
+      "dataUrl": "data:image/png;base64,aGVsbG8=",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scroll": {
+        "x": 0,
+        "y": 120
+      }
+    }
+  },
   "settingsResponse": {
     "maxConcurrentRuns": 4,
     "maxTurns": 30,

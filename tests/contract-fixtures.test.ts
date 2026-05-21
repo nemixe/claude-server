@@ -17,6 +17,15 @@ describe("Bottle contract fixture", () => {
     expect(fixture.streamEvents.map((event: { event: string }) => event.event)).toEqual(["message", "result", "done"]);
     expect(fixture.pendingUserInputEvent.event).toBe("question_pending");
     expect(fixture.pendingApprovalEvent.event).toBe("approval_pending");
+    expect(fixture.bridgeMessages.requestScreenshot).toMatchObject({
+      type: "ai-client:request-screenshot",
+      protocolVersion: BOTTLE_PROTOCOL_VERSION
+    });
+    expect(fixture.bridgeMessages.screenshot).toMatchObject({
+      type: "bottle:screenshot",
+      requestId: "screenshot-1",
+      protocolVersion: BOTTLE_PROTOCOL_VERSION
+    });
     expect(fixture.streamMessageRequestWithContext.context.viewport).toEqual({ width: 1440, height: 900 });
   });
 });

@@ -143,6 +143,7 @@ Bottle serves `/__bottle/bottle-bridge.js` for richer iframe context. Bottle als
 ```js
 { type: "ai-client:hello", protocolVersion: 1 }
 { type: "ai-client:request-context", requestId: "..." }
+{ type: "ai-client:request-screenshot", requestId: "...", protocolVersion: 1 }
 ```
 
 The iframe replies with:
@@ -150,6 +151,7 @@ The iframe replies with:
 ```js
 { type: "bottle:ready", protocolVersion: 1, appName: "..." }
 { type: "bottle:context", requestId: "...", context: { url, route, title, selectedText, selectedElement, viewport } }
+{ type: "bottle:screenshot", requestId: "...", protocolVersion: 1, dataUrl, viewport: { width, height }, scroll: { x, y } }
 { type: "bottle:navigation", url, title }
 ```
 

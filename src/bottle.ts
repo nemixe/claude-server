@@ -273,6 +273,274 @@ function renderBottleBridgeScript(): string {
     post({ type: "bottle:navigation", url: window.location.href, title: document.title || undefined });
   }
 
+  function screenshotErrorMessage(error) {
+    if (error && typeof error.message === "string" && error.message) return error.message;
+    return "Screenshot capture failed";
+  }
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Screenshot image failed to load"));
+      image.src = src;
+    });
+  }
+
+  async function svgToPngDataUrl(svg, width, height) {
+    const blobUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+    try {
+      const image = await loadImage(blobUrl);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Could not create screenshot canvas");
+      context.drawImage(image, 0, 0, width, height);
+      return canvas.toDataURL("image/png");
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+
+  function visibleArea(element) {
+    const rect = element.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(window.innerWidth, rect.right);
+    const bottom = Math.min(window.innerHeight, rect.bottom);
+    return Math.max(0, right - left) * Math.max(0, bottom - top);
+  }
+
+  function isScrolledElement(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    if (element === document.documentElement || element === document.body) return false;
+    if (element.scrollTop <= 0 && element.scrollLeft <= 0) return false;
+
+    const style = window.getComputedStyle(element);
+    const canScrollY =
+      element.scrollHeight > element.clientHeight + 1 &&
+      /auto|scroll|overlay/i.test(style.overflowY || style.overflow);
+    const canScrollX =
+      element.scrollWidth > element.clientWidth + 1 &&
+      /auto|scroll|overlay/i.test(style.overflowX || style.overflow);
+
+    return (canScrollY || canScrollX) && visibleArea(element) > 0;
+  }
+
+  function scrolledElements(root) {
+    const originalElements = Array.from(root.querySelectorAll("*"));
+    return originalElements
+      .map((element, index) => ({
+        element,
+        index,
+        area: visibleArea(element),
+        scrollLeft: Math.max(0, Math.round(element.scrollLeft || 0)),
+        scrollTop: Math.max(0, Math.round(element.scrollTop || 0))
+      }))
+      .filter((entry) => isScrolledElement(entry.element))
+      .sort((a, b) => b.area - a.area);
+  }
+
+  function applyScrolledElementOffsets(clone, scrollContainers) {
+    const clonedElements = Array.from(clone.querySelectorAll("*"));
+
+    scrollContainers.forEach(({ element, index, scrollLeft, scrollTop }) => {
+      const clonedElement = clonedElements[index];
+      if (!clonedElement || !clonedElement.style) return;
+
+      const clonedChildren = Array.from(clonedElement.children).filter((child) => child instanceof HTMLElement);
+      if (!clonedChildren.length) return;
+
+      clonedElement.style.overflow = "hidden";
+      clonedElement.style.overflowX = "hidden";
+      clonedElement.style.overflowY = "hidden";
+
+      clonedChildren.forEach((child, childIndex) => {
+        const originalChild = element.children[childIndex];
+        const computedTransform = originalChild ? window.getComputedStyle(originalChild).transform : "";
+        const existingTransform =
+          originalChild?.style?.transform || (computedTransform && computedTransform !== "none" ? computedTransform : "");
+        child.style.transform = ["translate(" + -scrollLeft + "px, " + -scrollTop + "px)", existingTransform]
+          .filter(Boolean)
+          .join(" ");
+        child.style.transformOrigin = "top left";
+      });
+    });
+  }
+
+  function freezeScrolledElement({ element, scrollLeft, scrollTop }) {
+    const children = Array.from(element.children).filter((child) => child instanceof HTMLElement);
+    if (!children.length) return () => {};
+
+    const elementStyle = {
+      overflow: element.style.overflow,
+      overflowX: element.style.overflowX,
+      overflowY: element.style.overflowY
+    };
+    const childStyles = children.map((child) => ({
+      child,
+      transform: child.style.transform,
+      transformOrigin: child.style.transformOrigin
+    }));
+    const offsetTransform = "translate(" + -scrollLeft + "px, " + -scrollTop + "px)";
+
+    element.style.overflow = "hidden";
+    element.style.overflowX = "hidden";
+    element.style.overflowY = "hidden";
+
+    children.forEach((child) => {
+      const computedTransform = window.getComputedStyle(child).transform;
+      const existingTransform =
+        child.style.transform || (computedTransform && computedTransform !== "none" ? computedTransform : "");
+      child.style.transform = [offsetTransform, existingTransform].filter(Boolean).join(" ");
+      child.style.transformOrigin = "top left";
+    });
+
+    return () => {
+      element.style.overflow = elementStyle.overflow;
+      element.style.overflowX = elementStyle.overflowX;
+      element.style.overflowY = elementStyle.overflowY;
+      childStyles.forEach(({ child, transform, transformOrigin }) => {
+        child.style.transform = transform;
+        child.style.transformOrigin = transformOrigin;
+      });
+    };
+  }
+
+  function freezeScrolledElements(scrollContainers) {
+    const restoreFns = scrollContainers.map(freezeScrolledElement);
+    return () => {
+      restoreFns.reverse().forEach((restore) => restore());
+    };
+  }
+
+  async function loadHtmlToImageRenderer() {
+    if (window.htmlToImage && typeof window.htmlToImage.toPng === "function") {
+      return window.htmlToImage;
+    }
+
+    const candidates = [
+      "/node_modules/.vite/deps/html-to-image.js",
+      "/node_modules/html-to-image/es/index.js"
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const module = await import(candidate);
+        if (module && typeof module.toPng === "function") return module;
+      } catch {
+        // Try the next known development-server path.
+      }
+    }
+
+    return null;
+  }
+
+  async function captureWithHtmlToImage(root, body, metrics, scrollContainers) {
+    const renderer = await loadHtmlToImageRenderer();
+    if (!renderer) return null;
+
+    const restoreScrolledElements = freezeScrolledElements(scrollContainers);
+    try {
+      const dataUrl = await renderer.toPng(root, {
+        cacheBust: true,
+        skipAutoScale: true,
+        width: metrics.width,
+        height: metrics.height,
+        style: {
+          transform: "translate(" + -metrics.scrollX + "px, " + -metrics.scrollY + "px)",
+          transformOrigin: "top left",
+          width: Math.max(metrics.width + metrics.scrollX, root.scrollWidth || 0, body?.scrollWidth || 0) + "px",
+          minHeight: Math.max(metrics.height + metrics.scrollY, root.scrollHeight || 0, body?.scrollHeight || 0) + "px"
+        }
+      });
+
+      if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) return null;
+      return {
+        dataUrl,
+        viewport: { width: metrics.width, height: metrics.height },
+        scroll: {
+          x: scrollContainers[0]?.scrollLeft ?? metrics.scrollX,
+          y: scrollContainers[0]?.scrollTop ?? metrics.scrollY
+        }
+      };
+    } catch {
+      return null;
+    } finally {
+      restoreScrolledElements();
+    }
+  }
+
+  async function captureScreenshot() {
+    const root = document.documentElement;
+    const body = document.body;
+    const width = Math.max(1, Math.round(window.innerWidth || root.clientWidth || 1));
+    const height = Math.max(1, Math.round(window.innerHeight || root.clientHeight || 1));
+    const scrollX = Math.max(0, Math.round(window.scrollX || root.scrollLeft || body?.scrollLeft || 0));
+    const scrollY = Math.max(0, Math.round(window.scrollY || root.scrollTop || body?.scrollTop || 0));
+
+    if (typeof window.__bottleCaptureScreenshot === "function") {
+      try {
+        const hostScreenshot = await window.__bottleCaptureScreenshot({ width, height, scrollX, scrollY });
+        if (typeof hostScreenshot === "string" && hostScreenshot.startsWith("data:image/")) {
+          return { dataUrl: hostScreenshot, viewport: { width, height }, scroll: { x: scrollX, y: scrollY } };
+        }
+        if (hostScreenshot && typeof hostScreenshot.dataUrl === "string" && hostScreenshot.dataUrl.startsWith("data:image/")) {
+          return {
+            dataUrl: hostScreenshot.dataUrl,
+            viewport: hostScreenshot.viewport || { width, height },
+            scroll: hostScreenshot.scroll || { x: scrollX, y: scrollY }
+          };
+        }
+      } catch {
+        // Fall through to the generic DOM clone renderer.
+      }
+    }
+
+    const scrollContainers = scrolledElements(root);
+    const htmlToImageScreenshot = await captureWithHtmlToImage(root, body, { width, height, scrollX, scrollY }, scrollContainers);
+    if (htmlToImageScreenshot) return htmlToImageScreenshot;
+
+    const clone = root.cloneNode(true);
+    applyScrolledElementOffsets(clone, scrollContainers);
+
+    clone.querySelectorAll("script,noscript,[data-bottle-bridge]").forEach((node) => node.remove());
+
+    const head = clone.querySelector("head");
+    if (head) {
+      const base = document.createElement("base");
+      base.href = window.location.href;
+      head.prepend(base);
+    }
+
+    const clonedBody = clone.querySelector("body");
+    if (clonedBody) {
+      clonedBody.style.transform = "translate(" + -scrollX + "px, " + -scrollY + "px)";
+      clonedBody.style.transformOrigin = "top left";
+      clonedBody.style.width = Math.max(width + scrollX, root.scrollWidth || 0, body?.scrollWidth || 0) + "px";
+      clonedBody.style.minHeight = Math.max(height + scrollY, root.scrollHeight || 0, body?.scrollHeight || 0) + "px";
+    }
+
+    const serializedHtml = new XMLSerializer().serializeToString(clone);
+    const svg = [
+      '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + " " + height + '">',
+      '<foreignObject width="100%" height="100%" x="0" y="0">',
+      serializedHtml,
+      "</foreignObject>",
+      "</svg>"
+    ].join("");
+
+    return {
+      dataUrl: await svgToPngDataUrl(svg, width, height),
+      viewport: { width, height },
+      scroll: {
+        x: scrollContainers[0]?.scrollLeft ?? scrollX,
+        y: scrollContainers[0]?.scrollTop ?? scrollY
+      }
+    };
+  }
+
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (!message || typeof message !== "object") return;
@@ -280,6 +548,15 @@ function renderBottleBridgeScript(): string {
     if (message.type === "ai-client:hello") ready();
     if (message.type === "ai-client:request-context") {
       post({ type: "bottle:context", requestId: message.requestId, context: currentContext() });
+    }
+    if (message.type === "ai-client:request-screenshot") {
+      captureScreenshot()
+        .then((screenshot) => {
+          post({ type: "bottle:screenshot", protocolVersion, requestId: message.requestId, ...screenshot });
+        })
+        .catch((error) => {
+          post({ type: "bottle:screenshot", protocolVersion, requestId: message.requestId, error: screenshotErrorMessage(error) });
+        });
     }
   });
 

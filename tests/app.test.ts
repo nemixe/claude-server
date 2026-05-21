@@ -229,7 +229,12 @@ describe("Hono API", () => {
       headers: { host: "localhost" }
     });
     expect(bridgeResponse.status).toBe(200);
-    expect(await bridgeResponse.text()).toContain("ai-client:request-context");
+    const bridgeScript = await bridgeResponse.text();
+    expect(bridgeScript).toContain("ai-client:request-context");
+    expect(bridgeScript).toContain("ai-client:request-screenshot");
+    expect(bridgeScript).toContain("bottle:screenshot");
+    expect(bridgeScript).toContain("captureWithHtmlToImage");
+    expect(bridgeScript).toContain("applyScrolledElementOffsets");
 
     const removedAppHostingResponse = await app.request("http://localhost/app/", {
       headers: { host: "localhost" }
