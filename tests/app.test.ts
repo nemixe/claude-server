@@ -266,14 +266,11 @@ describe("Hono API", () => {
     expect(iframeResponse.status).toBe(404);
   });
 
-  it("serves /iframe by fetching the Host App root and injecting the route bootstrap and bridge", async () => {
+  it("serves /iframe by fetching the Host App root and injecting the bridge", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        '<!doctype html><html><head><title>Main</title><script type="module" src="/src/main.jsx"></script></head><body>App</body></html>',
-        {
-          headers: { "content-type": "text/html; charset=utf-8" }
-        }
-      )
+      new Response("<!doctype html><html><head><title>Main</title></head><body>App</body></html>", {
+        headers: { "content-type": "text/html; charset=utf-8" }
+      })
     );
 
     try {
@@ -293,14 +290,7 @@ describe("Hono API", () => {
       });
 
       expect(response.status).toBe(200);
-      const body = await response.text();
-      expect(body).toContain("data-bottle-iframe-route-bootstrap");
-      expect(body).toContain('const iframePath = "/__bottle/iframe";');
-      expect(body).toContain("installStorageFallback(\"localStorage\")");
-      expect(body).toContain("installStorageFallback(\"sessionStorage\")");
-      expect(body).toContain("window.__bottleIframeRoute = route");
-      expect(body).toContain('<script src="/__bottle/bottle-bridge.js" data-bottle-bridge></script>');
-      expect(body.indexOf("data-bottle-iframe-route-bootstrap")).toBeLessThan(body.indexOf('src="/src/main.jsx"'));
+      expect(await response.text()).toContain('<script src="/__bottle/bottle-bridge.js" data-bottle-bridge></script>');
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(fetchSpy.mock.calls[0]?.[0]).toBe("http://localhost/");
 
@@ -337,10 +327,6 @@ describe("Hono API", () => {
       });
 
       expect(response.status).toBe(200);
-      const body = await response.text();
-      expect(body).toContain("currentPath.startsWith(iframePath + \"/\")");
-      expect(body).toContain("currentPath.slice(iframePath.length)");
-      expect(body).toContain("window.location.search + window.location.hash");
       expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://ai-proto-dev-1.devnstg.com/dashboard?tab=a");
     } finally {
       fetchSpy.mockRestore();
@@ -365,7 +351,6 @@ describe("Hono API", () => {
 
       expect(response.status).toBe(200);
       expect(body.match(/data-bottle-bridge/g)).toHaveLength(1);
-      expect(body.match(/data-bottle-iframe-route-bootstrap/g)).toHaveLength(1);
     } finally {
       fetchSpy.mockRestore();
     }

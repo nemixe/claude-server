@@ -7,70 +7,6 @@ export const BOTTLE_API_PATH = `${BOTTLE_BASE_PATH}/v1`;
 export const BRIDGE_PATH = `${BOTTLE_BASE_PATH}/bottle-bridge.js`;
 export const IFRAME_PATH = `${BOTTLE_BASE_PATH}/iframe`;
 const BOTTLE_BRIDGE_SCRIPT = `<script src="${BRIDGE_PATH}" data-bottle-bridge></script>`;
-const IFRAME_ROUTE_BOOTSTRAP_MARKER = "data-bottle-iframe-route-bootstrap";
-const IFRAME_ROUTE_BOOTSTRAP_SCRIPT = `<script ${IFRAME_ROUTE_BOOTSTRAP_MARKER}>(() => {
-  const iframePath = ${JSON.stringify(IFRAME_PATH)};
-  function createMemoryStorage() {
-    const values = new Map();
-    return {
-      get length() {
-        return values.size;
-      },
-      clear() {
-        values.clear();
-      },
-      getItem(key) {
-        const normalizedKey = String(key);
-        return values.has(normalizedKey) ? values.get(normalizedKey) : null;
-      },
-      key(index) {
-        return Array.from(values.keys())[Number(index)] ?? null;
-      },
-      removeItem(key) {
-        values.delete(String(key));
-      },
-      setItem(key, value) {
-        values.set(String(key), String(value));
-      }
-    };
-  }
-  function storageAvailable(name) {
-    try {
-      const storage = window[name];
-      const probeKey = "__bottle_storage_probe__";
-      storage.setItem(probeKey, "1");
-      storage.removeItem(probeKey);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  function installStorageFallback(name) {
-    if (storageAvailable(name)) return;
-    try {
-      Object.defineProperty(window, name, {
-        configurable: true,
-        value: createMemoryStorage()
-      });
-    } catch {
-      // Some browsers expose an unconfigurable Storage getter. Keep booting; the Host App may still avoid storage access.
-    }
-  }
-  installStorageFallback("localStorage");
-  installStorageFallback("sessionStorage");
-  const currentPath = window.location.pathname;
-  let routePath = currentPath || "/";
-  if (currentPath === iframePath) {
-    routePath = "/";
-  } else if (currentPath.startsWith(iframePath + "/")) {
-    routePath = currentPath.slice(iframePath.length) || "/";
-  }
-  const route = routePath + window.location.search + window.location.hash;
-  window.__bottleIframeRoute = route;
-  if (route !== window.location.pathname + window.location.search + window.location.hash) {
-    window.history.replaceState(window.history.state, "", route);
-  }
-})();</script>`;
 const PINGGY_NO_SCREEN_HEADER = "x-pinggy-no-screen";
 const FORWARDED_IFRAME_REQUEST_HEADERS = ["accept", "accept-language", "cookie", "user-agent"] as const;
 
@@ -209,7 +145,7 @@ async function serveIframeApp(c: Context): Promise<Response> {
     });
   }
 
-  return new Response(injectBottleBridge(injectIframeRouteBootstrap(responseText)), {
+  return new Response(injectBottleBridge(responseText), {
     status: upstreamResponse.status,
     statusText: upstreamResponse.statusText,
     headers: {
@@ -271,19 +207,6 @@ function passthroughIframeHeaders(upstreamHeaders: Headers): Headers {
   }
   headers.set("cache-control", "no-cache");
   return headers;
-}
-
-function injectIframeRouteBootstrap(html: string): string {
-  if (html.includes(IFRAME_ROUTE_BOOTSTRAP_MARKER)) {
-    return html;
-  }
-  if (/<head\b[^>]*>/i.test(html)) {
-    return html.replace(/<head\b[^>]*>/i, (match) => `${match}${IFRAME_ROUTE_BOOTSTRAP_SCRIPT}`);
-  }
-  if (/<body\b[^>]*>/i.test(html)) {
-    return html.replace(/<body\b[^>]*>/i, (match) => `${match}${IFRAME_ROUTE_BOOTSTRAP_SCRIPT}`);
-  }
-  return `${IFRAME_ROUTE_BOOTSTRAP_SCRIPT}${html}`;
 }
 
 function injectBottleBridge(html: string): string {
